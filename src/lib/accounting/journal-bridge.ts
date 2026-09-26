@@ -13,6 +13,7 @@
 // `@/lib/auth/local-store` so we don't introduce a new connection primitive.
 
 import { localDb } from '@/lib/auth/local-store';
+import { assertPeriodOpenForPosting } from './periods';
 import type { PostResult } from './journal';
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
@@ -28,10 +29,17 @@ interface UserCtx {
  * for this (source_type, source_id).
  */
 async function persistJournal(sql: Sql, ctx: UserCtx, result: PostResult, description: string): Promise<string> {
-  // 1. Look up or create the period for the current month.
+  // 1. Determine the current month (UTC).
   const now = new Date();
   const year  = now.getUTCFullYear();
   const month = now.getUTCMonth() + 1;
+
+  // 2. Hard period-lock guard. If the period is closed or locked, this throws
+  //    and the transaction rolls back; no journal entry is written. Spec §5
+  //    "Per-period safety."
+  await assertPeriodOpenForPosting(year, month);
+
+  // 3. Look up or create the period for the current month.
   const periodRows = (await sql`
     insert into accounting.periods (year, month)
     values (${year}, ${month})
@@ -40,7 +48,7 @@ async function persistJournal(sql: Sql, ctx: UserCtx, result: PostResult, descri
   `) as Array<{ id: string }>;
   const periodId = periodRows[0].id;
 
-  // 2. If a journal_entry already exists for this (source_type, source_id),
+  // 4. If a journal_entry already exists for this (source_type, source_id),
   //    return its id without writing again. Idempotency.
   const existing = (await sql`
     select id from accounting.journal_entries
@@ -49,7 +57,7 @@ async function persistJournal(sql: Sql, ctx: UserCtx, result: PostResult, descri
   `) as Array<{ id: string }>;
   if (existing.length) return existing[0].id;
 
-  // 3. Insert the journal_entry.
+  // 5. Insert the journal_entry.
   const entryRows = (await sql`
     insert into accounting.journal_entries
       (posted_at, period_id, description, source_type, source_id, posted_by_user_id)
@@ -60,7 +68,7 @@ async function persistJournal(sql: Sql, ctx: UserCtx, result: PostResult, descri
   `) as Array<{ id: string }>;
   const journalId = entryRows[0].id;
 
-  // 4. Insert each journal_line. The deferred trigger journal_balanced() runs
+  // 5. Insert each journal_line. The deferred trigger journal_balanced() runs
   //    at COMMIT time. If the lines are unbalanced, the whole transaction
   //    rolls back and we throw.
   for (const line of result.lines) {
@@ -76,7 +84,7 @@ async function persistJournal(sql: Sql, ctx: UserCtx, result: PostResult, descri
     `;
   }
 
-  // 5. Audit log entry. Append-only.
+  // 6. Audit log entry. Append-only.
   await sql`
     insert into accounting.audit_log (user_id, action, entity, entity_id, after)
     values (${ctx.userId}, 'journal_posted', 'journal_entry', ${journalId}::uuid,
