@@ -1,0 +1,227 @@
+@import 'tailwindcss';
+
+/* ── Elite Fleet Management design tokens ─────────────────────────────────────────────── */
+@theme {
+  /* Surfaces — obsidian navy, layered for depth */
+  --color-ink: #060b14;
+  --color-navy: #0a1628;
+  --color-navy-2: #0f1d33;
+  --color-navy-3: #16294a;
+
+  /* Metallic gold accent */
+  --color-gold: #b8972a;
+  --color-gold-bright: #e6c558;
+  --color-gold-dim: #8c7320;
+  /* Gold used for TEXT (.eyebrow, table headers). Split from --color-gold because that
+     token doubles as a fill/border: darkening it far enough for 4.5:1 text contrast in
+     the light theme would push the dark label on the gold button below AA. */
+  --color-gold-text: #b8972a;
+  /* Foreground that sits ON gold (buttons, active tabs) — stays dark in both themes */
+  --color-on-gold: #0a1628;
+
+  /* Text */
+  --color-cream: #f6f1e4;
+  --color-parchment: #cdbfa3;
+  --color-muted: #8a97a8;
+
+  /* Lines */
+  --color-hair: rgba(184, 151, 42, 0.22);
+  --color-hair-soft: rgba(255, 255, 255, 0.07);
+
+  /* Semantic */
+  --color-profit: #4caf7d;
+  --color-loss: #d6584f;
+  --color-warn: #d9a23b;
+  --color-info: #6ea8d8;
+
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-sans: var(--font-archivo), system-ui, -apple-system, sans-serif;
+
+  --radius: 0.625rem;
+}
+
+/* Overlay surfaces, referenced as bg-[var(--surface)] etc. Dark by default so the
+   public (dark-only) landing/login keep today's look; flipped under data-theme. */
+:root {
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-soft: rgba(255, 255, 255, 0.02);
+  --surface-strong: rgba(255, 255, 255, 0.07);
+}
+
+/* ── Light theme ──────────────────────────────────────────────────────────────
+   Applied via data-theme="light" on the authenticated app shell only (the
+   marketing landing + login stay dark by design). Overriding the token VALUES
+   re-colours every token-based utility (text-cream, bg-navy, border-hair, …). */
+[data-theme='light'] {
+  --color-ink: #f4f1ea;      /* page background */
+  --color-navy: #ffffff;     /* card / panel surface */
+  --color-navy-2: #f6f3ec;   /* dropdowns, raised */
+  --color-navy-3: #ece5d5;   /* deeper raised */
+
+  --color-gold: #9c7c1c;        /* fill/border only — 3:1 non-text, see 1.4.11 */
+  --color-gold-bright: #7d6410; /* darker so gold TEXT/links read on white */
+  --color-gold-dim: #b8972a;
+  --color-gold-text: #7d6410;   /* 4.97:1 on the page bg, 5.61:1 on card white */
+
+  --color-cream: #1a2438;    /* primary text */
+  --color-parchment: #47526a;/* secondary text */
+  --color-muted: #5f6a7c;    /* muted text — was #6b7688 (4.07:1, failed AA) */
+
+  --color-hair: rgba(156, 124, 28, 0.3);
+  --color-hair-soft: rgba(16, 24, 40, 0.12);
+
+  /* Semantic colours darkened for AA as TEXT on the light page background. All were
+     between 2.99:1 and 4.29:1 before; each now clears 4.5:1 on both #f4f1ea and #fff.
+     They stay well above the 3:1 needed where they are used as badge borders. */
+  --color-profit: #2f7551;   /* was #3f9468 (3.30:1) */
+  --color-loss: #b83c34;     /* was #c8463d (4.23:1) */
+  --color-warn: #8a6212;     /* was #b5831f (2.99:1) */
+  --color-info: #35719e;     /* was #3f7fb3 (3.80:1) */
+
+  --surface: rgba(16, 24, 40, 0.05);
+  --surface-soft: rgba(16, 24, 40, 0.03);
+  --surface-strong: rgba(16, 24, 40, 0.08);
+}
+
+/* The shell paints the page background itself in light mode (the global body stays
+   dark for the public pages, which don't use the shell). */
+[data-theme='light'].app-shell,
+[data-theme='light'] .app-shell {
+  background: var(--color-ink);
+}
+[data-theme='light'] .card-surface {
+  background: linear-gradient(180deg, rgba(16, 24, 40, 0.02), transparent), var(--color-navy);
+  border-color: var(--color-hair-soft);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+[data-theme='light'] select {
+  color-scheme: light;
+}
+[data-theme='light'] select option {
+  background-color: #ffffff;
+  color: #1a2438;
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────── */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scrollbar-color: var(--color-gold-dim) transparent;
+  }
+  body {
+    background-color: var(--color-ink);
+    color: var(--color-cream);
+    font-family: var(--font-sans);
+    font-feature-settings: 'tnum' 1, 'cv01' 1;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100dvh;
+    /* atmospheric depth: gold glow top, deep navy vignette */
+    background-image:
+      radial-gradient(1200px 600px at 85% -10%, rgba(184, 151, 42, 0.10), transparent 60%),
+      radial-gradient(900px 500px at -10% 0%, rgba(22, 41, 74, 0.6), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  /* fine grain overlay for a brushed-metal feel */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background: var(--color-gold);
+    color: var(--color-on-gold);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--color-gold-bright);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-gold-dim);
+    border-radius: 8px;
+    border: 2px solid var(--color-ink);
+  }
+}
+
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+@layer utilities {
+  /* eyebrow / overline label, used throughout (matches the memorandum) */
+  .eyebrow {
+    font-size: 0.6875rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-gold-text);
+    font-weight: 600;
+  }
+  .hairline {
+    border: 1px solid var(--color-hair);
+  }
+  .card-surface {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent),
+      var(--color-navy);
+    border: 1px solid var(--color-hair-soft);
+    border-radius: var(--radius);
+  }
+  .gold-rule {
+    height: 3px;
+    width: 2.5rem;
+    background: linear-gradient(90deg, var(--color-gold-bright), var(--color-gold-dim));
+    border-radius: 3px;
+  }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* Skip link — offscreen until focused, then pinned top-left over the shell.
+     WCAG 2.4.1 Bypass Blocks. Must stay visible on focus, so no `display: none`. */
+  .skip-link {
+    position: absolute;
+    left: 0.5rem;
+    top: -100%;
+    z-index: 100;
+    padding: 0.625rem 1rem;
+    border-radius: var(--radius);
+    background: var(--color-navy-2);
+    color: var(--color-cream);
+    border: 1px solid var(--color-gold);
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: top 0.15s ease-in-out;
+  }
+  .skip-link:focus-visible {
+    top: 0.5rem;
+  }
+
+  /* staggered page-load reveal */
+  .reveal { opacity: 0; transform: translateY(8px); animation: reveal 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) forwards; }
+  @keyframes reveal { to { opacity: 1; transform: none; } }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { animation: none; opacity: 1; transform: none; }
+}
+
+/* Native <select> on the dark theme: render the control + dropdown in dark mode so
+   the arrow and the option list are legible, and force option contrast for browsers
+   that honour it. Fixes app-wide "invisible dropdown" filters. */
+select {
+  color-scheme: dark;
+}
+select option {
+  background-color: #0f1d33; /* --color-navy-2 */
+  color: #f6f1e4; /* --color-cream */
+}

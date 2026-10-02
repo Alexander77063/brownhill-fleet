@@ -1,0 +1,25 @@
+[Unit]
+Description=Brownhill Next.js (hosted profile)
+After=postgrest.service
+Wants=postgrest.service
+
+[Service]
+Type=simple
+User=brownhill
+Group=brownhill
+WorkingDirectory=/var/lib/brownhill/app
+EnvironmentFile=/etc/brownhill/secrets/jwt.env
+Environment=DEPLOYMENT_PROFILE=hosted
+Environment=NODE_ENV=production
+Environment=PORT=55431
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

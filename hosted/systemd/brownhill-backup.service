@@ -1,0 +1,9 @@
+[Unit]
+Description=Brownhill nightly backup
+
+[Service]
+Type=oneshot
+User=postgres
+EnvironmentFile=/etc/brownhill/secrets/backup.env
+ExecStart=/usr/local/bin/brownhill-backup.sh
+TimeoutStartSec=1800

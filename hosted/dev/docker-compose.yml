@@ -1,0 +1,55 @@
+# hosted/dev/docker-compose.yml — local/CI stack for the hosted profile.
+# Brings up postgres:16, postgrest:12, the Next app under DEPLOYMENT_PROFILE=hosted,
+# and nginx with the self-signed cert under hosted/dev/certs/.
+# Production uses systemd on a Namecheap Pulsar VM; this is for the CI matrix and
+# for local smoke runs only.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    healthcheck:
+      test: ["CMD-SHELL", "psql -c 'SELECT 1' -U postgres"]
+      interval: 5s
+      retries: 30
+
+  postgrest:
+    image: postgrest/postgrest:v12.2.3
+    environment:
+      PGRST_DB_URI: postgresql://postgres@postgres:5432/postgres
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_PRE_REQUEST: auth.pre_request
+      PGRST_JWT_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  next:
+    build:
+      context: ../..
+      dockerfile: hosted/dev/Dockerfile.next
+    environment:
+      DEPLOYMENT_PROFILE: hosted
+      NODE_ENV: production
+      PORT: 55431
+      HOST: 0.0.0.0
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: postgres
+      PGDATABASE: postgres
+      JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-ci-bootstrap-token}
+      BROWNILL_FQDN: brownhill.localhost
+    depends_on:
+      postgres: { condition: service_healthy }
+      postgrest: { condition: service_started }
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["443:443"]
+    volumes:
+      - ../nginx/brownhill.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/server.crt:/etc/ssl/certs/server.crt:ro
+      - ./certs/server.key:/etc/ssl/private/server.key:ro
+    depends_on:
+      next: { condition: service_started }

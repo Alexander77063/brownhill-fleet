@@ -1,0 +1,22 @@
+# Normalize line endings — store LF in the repo, check out native on Windows.
+* text=auto eol=lf
+
+# Binary assets
+*.png binary
+*.pdf binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# SOPS-encrypted files are byte-exact. Line-ending conversion corrupts
+# the metadata and every decrypt then fails with a confusing
+# "parsing time ... extra text" error. Never let git touch them.
+*.sops -text
+env.sops -text
+
+# Files that go to a customer's Windows machine, or that cmd.exe executes, keep
+# CRLF on checkout. The repo-wide `eol=lf` above would otherwise hand the
+# customer a manual that older Windows editors render as one unbroken line, and
+# batch files whose final line can be mis-parsed without a trailing CRLF.
+standalone/delivery/**/*.txt text eol=crlf
+standalone/delivery/**/*.cmd text eol=crlf

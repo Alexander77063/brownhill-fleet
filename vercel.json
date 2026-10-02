@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/cron/complete-agreements", "schedule": "0 5 * * *" },
+    { "path": "/api/cron/generate-rent", "schedule": "0 6 * * 1" },
+    { "path": "/api/cron/sweep-obligations", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/send-reminders", "schedule": "30 7 * * *" },
+    { "path": "/api/cron/vat-snapshot", "schedule": "0 8 1 1,4,7,10 *" },
+    { "path": "/api/cron/subscription-lifecycle", "schedule": "0 9 * * *" },
+    { "path": "/api/cron/device-health", "schedule": "0 * * * *" },
+    { "path": "/api/cron/escalations", "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/owner-reports", "schedule": "0 6 1 * *" }
+  ]
+}

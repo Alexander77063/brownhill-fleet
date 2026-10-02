@@ -1,0 +1,27 @@
+[Unit]
+Description=Brownhill PostgreSQL 16.4 (single-tenant)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=postgres
+Group=postgres
+EnvironmentFile=/etc/brownhill/secrets/pg.env
+ExecStart=/opt/brownhill/pgsql/bin/postgres \
+  -D /var/lib/postgresql/16/main \
+  -h 127.0.0.1 -p 55432 \
+  -c unix_socket_directories=/var/run/postgresql \
+  --data-checksums
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

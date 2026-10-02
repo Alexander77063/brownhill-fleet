@@ -1,0 +1,67 @@
+{
+  "name": "elite-fleet-management",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Elite Fleet Management — operating system for a UK luxury PCO chauffeur-vehicle rental business",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "build:hosted": "pnpm build:icons && DEPLOYMENT_PROFILE=hosted next build",
+    "build:standalone": "pnpm build:icons && DEPLOYMENT_PROFILE=standalone next build",
+    "build:icons": "node hosted/scripts/build-icons.mjs",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "lint:a11y": "eslint \"src/**/*.tsx\"",
+    "a11y:forms": "node scripts/a11y-audit.mjs",
+    "test:a11y": "vitest run tests/unit/a11y-contrast.test.ts",
+    "a11y": "pnpm lint:a11y && pnpm a11y:forms && pnpm test:a11y",
+    "test:axe": "playwright test",
+    "test:rls": "vitest run tests/rls",
+    "test:integration": "vitest run tests/integration",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:types": "node scripts/gen-types.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1094.0",
+    "@aws-sdk/s3-request-presigner": "^3.1094.0",
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "maplibre-gl": "^6.0.0",
+    "next": "15.5.20",
+    "postgres": "^3.4.5",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.62.1",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/web-push": "^3.6.4",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "sharp": "^0.35.2",
+    "supabase": "^2.2.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "supabase",
+      "sharp"
+    ]
+  }
+}

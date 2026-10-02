@@ -1,0 +1,26 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Elite Fleet Management">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f1d33"/>
+      <stop offset="1" stop-color="#060b14"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="120" y1="96" x2="392" y2="416" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e6c558"/>
+      <stop offset="0.5" stop-color="#b8972a"/>
+      <stop offset="1" stop-color="#8c7320"/>
+    </linearGradient>
+  </defs>
+
+  <!-- medallion -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="186" fill="none" stroke="url(#gold)" stroke-width="6" opacity="0.85"/>
+  <circle cx="256" cy="256" r="172" fill="none" stroke="url(#gold)" stroke-width="2" opacity="0.5"/>
+
+  <!-- serif monogram B -->
+  <path fill="url(#gold)" d="M196 156h84c40 0 66 21 66 54 0 23-13 39-34 46 26 6 42 24 42 51 0 36-28 59-72 59h-86v-30h22V186h-22v-30Zm54 30v66h28c22 0 35-12 35-33s-13-33-35-33h-28Zm0 96v68h30c24 0 38-13 38-34s-14-34-38-34h-30Z"/>
+
+  <!-- chauffeur wing / road chevrons under the monogram -->
+  <g stroke="url(#gold)" stroke-width="9" stroke-linecap="round" opacity="0.9">
+    <path d="M150 372c40-16 70-16 106 0 36 16 66 16 106 0"/>
+  </g>
+</svg>

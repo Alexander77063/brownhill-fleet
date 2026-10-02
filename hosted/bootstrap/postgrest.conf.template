@@ -1,0 +1,25 @@
+# hosted/bootstrap/postgrest.conf.template
+# Rendered by hosted/bootstrap/install-postgrest-conf.sh into /etc/brownhill/postgrest.conf
+# (mode 0640, owned by postgrest:postgrest). Variables are shell-style $FOO / ${FOO}.
+# Values come from /etc/brownhill/secrets/jwt.env and the per-host Postgres config.
+
+db-uri = "postgresql://postgres:${PG_SUPERUSER_PASSWORD}@127.0.0.1:55432/postgres"
+db-schemas = "public,storage"
+db-anon-role = "anon"
+db-pre-request = "auth.pre_request"
+
+# JWT verification — same secret PostgREST and Next use. Loaded from
+# /etc/brownhill/secrets/jwt.env by install-postgrest-conf.sh.
+jwt-secret = "${JWT_SHARED_SECRET}"
+
+# Network
+server-host = "127.0.0.1"
+server-port = 55430
+
+# Anonymous + role-based access — anon for read-only public resources; the row-level
+# security policies in Supabase-style migrations are still enforced identically.
+# (PostgREST itself does not enforce RLS; that runs in Postgres via auth.pre_request's
+# calls to auth.uid() / app.user_id. We rely on Postgres here.)
+
+# Logging
+log-level = "info"

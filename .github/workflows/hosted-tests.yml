@@ -1,0 +1,54 @@
+name: hosted-tests
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'standalone/sql/**'
+      - 'hosted/**'
+      - 'src/**'
+      - 'package.json'
+      - '.github/workflows/hosted-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  hosted-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
+      BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: pnpm/action-setup@v4
+        with: { version: '10' }
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends systemd
+      - run: pnpm install --frozen-lockfile
+      - name: Spin up hosted stack
+        run: docker compose -f hosted/dev/docker-compose.yml up -d
+      - name: Wait for hosted Postgres to accept queries
+        run: |
+          for _ in $(seq 1 30); do
+            docker exec -u postgres $(docker compose -f hosted/dev/docker-compose.yml ps -q postgres) psql -c 'SELECT 1' && break
+            sleep 1
+          done
+      - name: Apply hosted schema + shim
+        run: |
+          PG=$(docker compose -f hosted/dev/docker-compose.yml ps -q postgres)
+          docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < standalone/sql/0000_supabase_shim.sql
+          for f in $(ls -1 supabase/migrations/*.sql | sort); do
+            docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < "$f"
+          done
+      - name: Run hosted integration tests (DEPLOYMENT_PROFILE=hosted)
+        run: DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test
+      - name: Hosted portability proof (assertions 0–14)
+        run: bash hosted/tests/verify-hosted-portability.sh
+      - name: Migrations-regression
+        run: bash hosted/tests/migrations-regression.sh
+      - name: Hosted smoke
+        run: bash hosted/tests/smoke/hosted-smoke.sh
+      - name: Tear down
+        if: always()
+        run: docker compose -f hosted/dev/docker-compose.yml down

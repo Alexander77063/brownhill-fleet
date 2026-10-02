@@ -1,0 +1,6 @@
+[Unit]
+Description=Forward Brownhill alerts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/brownhill-alert-forward.sh

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# hosted/scripts/runtime.sha256 — sourced by fetch-runtime.sh.
+# Format: key=value lines. Update when upgrading a pinned version.
+#
+# IMPORTANT — PostgreSQL installs from the apt.postgresql.org repo (signed).
+# The two env vars PG_TARBALL_URL + PG_TARBALL_SHA256 are only honoured when
+# an operator opts into the Linux binary tarball path (see fetch-runtime.sh)
+# instead of the apt default. Both fields are intentionally unset by default
+# so the apt path remains the safe fallback.
+
+PG_VERSION=16.4
+PG_APT_REPO=http://apt.postgresql.org/pub/repos/apt
+
+# PostgREST v12.2.3 (Linux x64 static).
+# URL: https://github.com/PostgREST/postgrest/releases/tag/v12.2.3
+#      asset `postgrest-v12.2.3-linux-static-x64.tar.xz`
+# SHA256: computed locally with `sha256sum` against the public GitHub
+#         release asset (PostgREST does not publish a SHA256SUMS file).
+#         Verified 2026-09-24 against github.com/.../releases/download/v12.2.3/.
+POSTGREST_VERSION=v12.2.3
+POSTGREST_URL=https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+POSTGREST_SHA256=9f71269e61ac3a940281e93ff415760f5957e430e475ba4c3889f3ede7d5527c
+
+# Node v22.11.0 (Linux x64).
+# URL: https://nodejs.org/dist/v22.11.0/
+# SHA256: from https://nodejs.org/dist/v22.11.0/SHASUMS256.txt
+#         (the line corresponding to node-v22.11.0-linux-x64.tar.xz).
+NODE_VERSION=v22.11.0
+NODE_URL=https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz
+NODE_SHA256=83bf07dd343002a26211cf1fcd46a9d9534219aad42ee02847816940bf610a72

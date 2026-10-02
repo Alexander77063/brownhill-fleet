@@ -1,0 +1,5 @@
+Date,Description,Withdrawals,Deposits,Balance,Channel
+2026-09-01,FPI Stripe Payouts Sep 1,,1234.56,1234.56,GTB-WEB
+2026-09-02,POS Amazon Lagos,-450.00,784.56,GTB-POS
+2026-09-03,NIBSS Instant Payment,-200.00,584.56,GTB-NIP
+2026-09-04,ATM Withdrawal Lekki,-100.00,484.56,GTB-ATM

@@ -1,0 +1,96 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+*.tsbuildinfo
+
+# debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env files (never commit secrets)
+.env
+.env*.local
+.env.local
+
+# supabase local stack
+/supabase/.temp
+/supabase/.branches
+
+# vercel
+.vercel
+
+# test
+/coverage
+
+.vercel
+
+# Playwright / axe runtime accessibility pass
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# Standalone (Brownhill) build artefacts — third-party binaries and Rust output.
+# The runtime is ~300 MB of upstream release archives fetched at package time by
+# standalone/scripts/fetch-runtime.ps1; committing it would bloat every clone.
+standalone/tauri/runtime/
+standalone/tauri/src-tauri/target/
+standalone/tauri/src-tauri/gen/
+standalone/tauri/node_modules/
+
+# The assembled customer bundle: a ~60 MB installer plus its zip, rebuilt by
+# standalone/scripts/make-delivery.ps1 whenever it is needed. Git is not where
+# release binaries belong, and `git add -A` picks them up by default.
+standalone/dist/
+
+# Local, machine-specific cargo tuning (job count for a constrained machine).
+standalone/tauri/src-tauri/.cargo/
+
+# Claude Code: ignore machine-local state, keep shared agents and skills tracked
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+
+# Vercel CLI pulls real secrets into this file; never commit it.
+# Narrow on purpose: a blanket .env* would also ignore .env.example
+# and the SOPS-encrypted .env*.sops files that are meant to be committed.
+.env.check
+
+# Agent scratch. .serena/ and .superpowers/ are wholly machine-local.
+# .claude/ is deliberately NOT blanket-ignored: shared agents and
+# skills stay tracked; only machine-local state is excluded.
+.serena/
+.superpowers/
+
+# SOPS-encrypted env files are SAFE to commit and MUST be, or the other
+# machine cannot run this project. The negation is explicit because the
+# .env* rules above would otherwise swallow them.
+!*.sops
+
+# Hosted runtime state — never committed
+/etc/brownhill/
+/var/backups/brownhill/
+/var/log/brownhill/
+
+# Hosted dev/test secrets
+hosted/dev/.secrets/
+hosted/dev/certs/local-*.pem
+hosted/dev/certs/local-*.key
+# Hosted static rasterisations are built artefacts (Task 15: pnpm build:icons).
+hosted/static/
+!hosted/static/.gitkeep

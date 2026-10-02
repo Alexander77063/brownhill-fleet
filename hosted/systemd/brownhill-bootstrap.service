@@ -1,0 +1,15 @@
+[Unit]
+Description=Brownhill Postgres bootstrap (apply shim + migrations)
+After=postgresql.service
+Requires=postgresql.service
+ConditionPathExists=/var/lib/postgresql/16/main/PG_VERSION
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=postgres
+ExecStart=/usr/local/bin/brownhill-bootstrap.sh
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

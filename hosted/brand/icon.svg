@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Brownhill Fleet">
+  <title>Brownhill Fleet</title>
+  <style>
+    svg {
+      --brownhill-charcoal: #2A2A2A;
+      --brownhill-gold: #C19A4A;
+      --brownhill-cream: #F4EFE6;
+    }
+    .mark-bg     { fill: var(--brownhill-charcoal); }
+    .mark-stroke { fill: none; stroke: var(--brownhill-gold); stroke-width: 1; }
+    .mark-fg     { fill: var(--brownhill-cream); font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 12px; letter-spacing: 0.4px; }
+  </style>
+  <circle class="mark-bg"     cx="16" cy="16" r="15"/>
+  <circle class="mark-stroke" cx="16" cy="16" r="12"/>
+  <text   class="mark-fg"     x="16" y="20.5" text-anchor="middle">BF</text>
+</svg>

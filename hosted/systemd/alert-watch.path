@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch for alert markers under /run/brownhill/alerts/
+
+[Path]
+PathExists=/run/brownhill/alerts/active
+
+[Install]
+WantedBy=multi-user.target
