@@ -9,7 +9,7 @@ import { issueAccessPair } from '@/lib/auth/access-tokens';
 import { verifyBootstrapSignature } from './_verify';
 import { getAppState, setAppState } from '@/lib/app-state';
 
-const HOSTED = process.env.DEPLOYMENT_PROFILE === 'hosted';
+const HOSTED = process.env.DEPLOYMENT_PROFILE === 'standalone';
 
 export async function POST(req: NextRequest) {
   if (!HOSTED) return new NextResponse('Not found', { status: 404 });
@@ -62,14 +62,14 @@ export async function POST(req: NextRequest) {
 
   await setAppState(sql, 'bootstrap_pending', '0');
   const { access, refresh } = await issueAccessPair({
-    sub: created.user,
+    sub: created.user.id,
     role: 'authenticated',
     tenant_id: created.tenantId,
     email: body.email,
   });
   return NextResponse.json({
     ok: true,
-    user: { id: created.user },
+    user: { id: created.user.id },
     tenantId: created.tenantId,
     access,
     refresh,

@@ -39,6 +39,8 @@ export interface IssueClaims {
 export interface AccessPair {
   access: string;
   refresh: string;
+  /** Unix seconds when the pair was issued. iat is also embedded in each JWT. */
+  iat: number;
 }
 
 export interface IssueOpts {
