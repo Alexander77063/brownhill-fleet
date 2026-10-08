@@ -28,25 +28,10 @@ export type SignInResult =
 const MAX_ATTEMPTS = 10;
 const LOCK_MINUTES = 30;
 
-type Sql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
-
-let cached: Sql | null = null;
-
-/**
- * The app's direct database connection. Exported for the modules that must
- * bypass PostgREST the way this one does — the login-code store — and nothing
- * else: everything in the public schema goes through the Supabase client.
- */
-export async function localDb(): Promise<Sql> {
-  if (cached) return cached;
-  const url = process.env.DATABASE_URL;
-  if (!url) throw new Error('DATABASE_URL is not set; local authentication cannot work.');
-
-  const { default: postgres } = await import('postgres');
-  // A desktop app with one user does not need a pool of ten.
-  cached = postgres(url, { max: 2, idle_timeout: 30 }) as unknown as Sql;
-  return cached;
-}
+// Imported here so the functions in this file can use it directly,
+// and re-exported so callers (admin routes etc.) keep working.
+import { localDb } from '@/lib/db/local';
+export { localDb };
 
 /**
  * Verify an email and password.
@@ -240,7 +225,7 @@ export async function setLocalPassword(userId: string, password: string): Promis
 /** True when no account exists yet, so the app can offer first-run setup. */
 export async function hasAnyUser(): Promise<boolean> {
   const db = await localDb();
-  const rows = (await db`select 1 from auth.users limit 1`) as unknown[];
+  const rows = (await db`select 1 from auth.users limit 1`) as unknown as unknown[];
   return rows.length > 0;
 }
 
@@ -347,4 +332,15 @@ export async function createFirstUserAndTenant(args: {
   `;
 
   return { user, tenantId };
+}
+
+
+/**
+ * Stub: returns the role of the current request for admin routes that gate on
+ * owner status. Real implementation should read the JWT from the session cookie
+ * and return its claims. For now, returns null so admin routes correctly refuse
+ * access until proper session handling is wired in.
+ */
+export async function getClaims(): Promise<{ role: string } | null> {
+  return null;
 }

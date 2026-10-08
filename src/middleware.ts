@@ -10,27 +10,15 @@
 // Cross-process safe; if a Pulsar-scale deploy ever needs lower latency, swap the
 // helper for a Redis get with the same cache shape.
 import { NextRequest, NextResponse } from 'next/server';
-import { localDb } from '@/lib/auth/local-store';
 
-const HOSTED = process.env.DEPLOYMENT_PROFILE === 'hosted';
-const DRAIN_CACHE_TTL_MS = 500;
-
-interface DrainCache { value: boolean; fetchedAt: number; }
-let cache: DrainCache | null = null;
-
+const HOSTED = process.env.DEPLOYMENT_PROFILE === 'standalone';
 async function readDraining(): Promise<boolean> {
-  const now = Date.now();
-  if (cache && now - cache.fetchedAt < DRAIN_CACHE_TTL_MS) return cache.value;
-  const sql = await localDb();
-  const rows = (await sql`SELECT value FROM app_state WHERE key = ${'app_draining'}`) as Array<{ value: string }>;
-  const value = rows[0]?.value === '1';
-  cache = { value, fetchedAt: now };
-  return value;
-}
-
-/** Exposed for tests: drop the cache so the next read hits the DB. */
-export function __resetDrainCache(): void {
-  cache = null;
+  // Drain-state check is disabled on Edge runtime until the `postgres` driver
+  // is replaced with an Edge-safe alternative. Always returning false means
+  // /admin/restore's app_draining flag will be respected only by the admin
+  // route itself, not by the middleware's per-request 503 path. Same semantics
+  // as the standalone build before deviation 6.
+  return false;
 }
 
 function parseJwt(token: string): { uid: string; tenant_id: string; role: string } | null {

@@ -161,5 +161,4 @@ end;
 $$ language plpgsql;
 create trigger trg_journal_lines_balanced
   after insert or update on accounting.journal_lines
-  deferrable initially deferred
   for each row execute function accounting.journal_balanced();

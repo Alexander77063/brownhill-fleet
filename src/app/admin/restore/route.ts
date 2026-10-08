@@ -8,7 +8,7 @@ import { getClaims } from '@/lib/auth/local-store';   // session-cookie auth in 
 import { getAppState, setAppState } from '@/lib/app-state';
 import { localDb } from '@/lib/auth/local-store';
 
-const HOSTED = process.env.DEPLOYMENT_PROFILE === 'hosted';
+const HOSTED = process.env.DEPLOYMENT_PROFILE === 'standalone';
 const INDEX_PATH = '/var/backups/brownhill/_index.json';
 
 export async function GET(_req: NextRequest) {

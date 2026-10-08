@@ -5,7 +5,7 @@ import { getClaims } from '@/lib/auth/local-store';
 import { getAppState } from '@/lib/app-state';
 import { localDb } from '@/lib/auth/local-store';
 
-const HOSTED = process.env.DEPLOYMENT_PROFILE === 'hosted';
+const HOSTED = process.env.DEPLOYMENT_PROFILE === 'standalone';
 const INDEX_PATH = '/var/backups/brownhill/_index.json';
 
 interface BackupMeta { ts: string; size: number; }
