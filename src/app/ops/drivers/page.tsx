@@ -4,8 +4,8 @@ import { Icon } from '@/components/icons';
 import { HelpHint } from '@/components/HelpHint';
 import { getDrivers } from '@/lib/queries';
 import { formatDate, daysUntil, titleCase, driverStatusTone } from '@/lib/display';
-import { inviteDriverAction } from '@/lib/actions/driver-invite';
 import { createInsuranceCertificate } from '@/lib/actions/ops';
+import { InviteDriverPanel } from './InviteDriverPanel';
 
 const inputCls =
   'rounded-md border border-hair bg-[var(--surface)] px-2.5 py-1.5 text-sm text-cream focus:border-gold-bright focus:outline-none';
@@ -34,29 +34,7 @@ export default async function DriversPage() {
       </section>
 
       <Card className="reveal mt-5">
-        <div className="flex items-center gap-2">
-          <CardTitle>Invite a driver</CardTitle>
-          <HelpHint id="drivers.invite" label="Invite a driver" />
-        </div>
-        <form action={inviteDriverAction} className="mt-4 flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1">
-            <span className="eyebrow text-parchment">Name</span>
-            <input type="text" name="full_name" className={inputCls} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="eyebrow text-parchment">Login email</span>
-            <input type="email" name="email" className={inputCls} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="eyebrow text-parchment">Phone</span>
-            <input type="text" name="phone" className={inputCls} />
-          </label>
-          <Button type="submit" variant="primary" size="sm">Invite driver</Button>
-        </form>
-        <p className="mt-3 text-xs text-muted">
-          Creates their driver login and links it to a new driver record. They&apos;ll get an email invite when email is
-          configured; otherwise they can sign in at /login with this email using the &lsquo;Email link&rsquo; option.
-        </p>
+        <InviteDriverPanel drivers={drivers} />
       </Card>
 
       <Card className="reveal mt-5">

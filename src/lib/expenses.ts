@@ -150,6 +150,39 @@ export async function setCategoryDriverSubmittable(
   await audit(sb, tenantId, 'expense.category_updated', categoryId, { driver_submittable: submittable }, actor);
 }
 
+/**
+ * Single expense — what's needed to pre-fill a fresh "record" form from an
+ * existing row (the Duplicate action on /ops/expenses). Returns null if the
+ * row doesn't exist or isn't in this tenant; that means ops clicked Duplicate
+ * on a stale row and there's nothing to copy.
+ */
+export async function getExpenseForDuplicate(
+  tenantId: string,
+  expenseId: string,
+): Promise<{
+  category_id: string | null;
+  vehicle_id: string | null;
+  amount_pence: number;
+  incurred_on: string;
+  description: string | null;
+} | null> {
+  const sb = createServiceClient();
+  const { data } = await sb
+    .from('expenses')
+    .select('category_id, vehicle_id, amount_pence, incurred_on, description')
+    .eq('id', expenseId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    category_id: (data as { category_id: string | null }).category_id,
+    vehicle_id: (data as { vehicle_id: string | null }).vehicle_id,
+    amount_pence: Number((data as { amount_pence: number }).amount_pence),
+    incurred_on: (data as { incurred_on: string }).incurred_on,
+    description: (data as { description: string | null }).description,
+  };
+}
+
 export async function setCategoryActive(tenantId: string, categoryId: string, active: boolean, actor: string): Promise<void> {
   const sb = createServiceClient();
   const { error } = await sb

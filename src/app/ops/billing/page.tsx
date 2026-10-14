@@ -7,6 +7,7 @@ import { formatDate, titleCase } from '@/lib/display';
 import { hasEntitlement } from '@/lib/entitlements';
 import { payFirst } from '@/lib/region';
 import { SubscriptionSection } from './SubscriptionSection';
+import { OverdueCheckCard } from './OverdueCheckCard';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +43,12 @@ export default async function BillingPage() {
       />
 
       {pay && <SubscriptionSection />}
+
+      {rental && (
+        <section className="mb-4">
+          <OverdueCheckCard />
+        </section>
+      )}
 
       {rental && (
       <>

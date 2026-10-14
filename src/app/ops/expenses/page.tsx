@@ -1,35 +1,59 @@
+// /ops/expenses page.tsx
+//
+// Server Component shell. Renders the existing record-a-new-expense form (now
+// in <ExpenseRecordForm>) plus the recent-expenses table; reads ?prefill=<id>
+// from the URL to pre-fill the form when ops clicked Duplicate on a row.
+
+import Link from 'next/link';
 import { PageHeader, Card, CardTitle, Stat, Badge, Button, Table, Th, Td, EmptyState, Money } from '@/components/ui';
 import { getAuthContext } from '@/lib/auth/context';
-import { expenseSummaryByCategory, listCategories, listExpenses, listVehicleOptions } from '@/lib/expenses';
+import {
+  expenseSummaryByCategory,
+  getExpenseForDuplicate,
+  listCategories,
+  listExpenses,
+  listVehicleOptions,
+} from '@/lib/expenses';
 import {
   createCategoryAction,
-  recordExpenseAction,
   setCategoryVatTreatmentAction,
   toggleCategoryDriverSubmittableAction,
 } from '@/lib/actions/expenses';
 import { VAT_TREATMENTS } from '@/lib/expenses';
 import { formatDate } from '@/lib/display';
+import { ExpenseRecordForm } from './ExpenseRecordForm';
 
 export const dynamic = 'force-dynamic';
 
 const inputCls =
-  'w-full rounded-md border border-hair bg-[var(--surface)] px-2.5 py-1.5 text-sm text-cream focus:border-gold-bright focus:outline-none';
+  'rounded-md border border-hair bg-[var(--surface)] px-2.5 py-1.5 text-sm text-cream focus:border-gold-bright focus:outline-none';
 
-export default async function ExpensesPage() {
+export default async function ExpensesPage(props: {
+  searchParams: Promise<{ prefill?: string }>;
+}) {
+  const params = await props.searchParams;
   const ctx = await getAuthContext();
   const tenantId = ctx?.tenantId ?? '';
-  const [categories, expenses, summary, vehicles] = await Promise.all([
+  const prefillId = typeof params.prefill === 'string' ? params.prefill : undefined;
+
+  const [categories, expenses, summary, vehicles, prefill] = await Promise.all([
     tenantId ? listCategories(tenantId, { includeInactive: true }) : Promise.resolve([]),
     tenantId ? listExpenses(tenantId) : Promise.resolve([]),
     tenantId ? expenseSummaryByCategory(tenantId) : Promise.resolve([]),
     tenantId ? listVehicleOptions(tenantId) : Promise.resolve([]),
+    tenantId && prefillId ? getExpenseForDuplicate(tenantId, prefillId) : Promise.resolve(null),
   ]);
+
   const expenseCats = categories.filter((c) => c.kind === 'expense' && c.is_active);
   const total = summary.reduce((s, c) => s + c.total_pence, 0);
 
   return (
     <>
-      <PageHeader eyebrow="Finance" title="Expenses & categories" subtitle="Categorised costs with generated references (EXP-…), receipts and driver-submittable categories." />
+      <PageHeader
+        eyebrow="Finance"
+        title="Expenses & categories"
+        subtitle="Categorised costs with generated references (EXP-…). Use Duplicate on any row to prefill a new entry with the same category, vehicle and amount."
+      />
 
       <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <Stat label="Total recorded" value={<Money pence={total} showPence={false} />} className="reveal" />
@@ -38,29 +62,16 @@ export default async function ExpensesPage() {
         <Stat label="Top category" value={summary[0]?.category ?? '—'} className="reveal" />
       </section>
 
+      {prefillId && prefill === null && (
+        <p role="alert" className="mt-3 rounded-md border border-[var(--color-loss)] bg-[rgba(225,98,98,0.10)] px-3 py-2 text-sm text-[var(--color-loss)]">
+          That duplicate link is for an expense that no longer exists. The form is empty below.
+        </p>
+      )}
+
       <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardTitle>Record an expense</CardTitle>
-          <form action={recordExpenseAction} className="mt-3 space-y-2">
-            <select name="category_id" aria-label="Expense category" className={inputCls} defaultValue="">
-              <option value="">Uncategorised</option>
-              {expenseCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <select name="vehicle_id" aria-label="Vehicle this expense relates to" className={inputCls} defaultValue="">
-              <option value="">No vehicle</option>
-              {vehicles.map((v) => <option key={v.id} value={v.id}>{v.registration}</option>)}
-            </select>
-            <div className="grid grid-cols-2 gap-2">
-              <input name="amount" required inputMode="decimal" placeholder="Amount (£)" aria-label="Amount in pounds" className={inputCls} />
-              <input name="incurred_on" type="date" aria-label="Date incurred" className={inputCls} />
-            </div>
-            <input name="description" placeholder="Description (optional)" aria-label="Description" className={inputCls} />
-            <label className="block">
-              <span className="mb-1 block text-xs text-parchment">Receipt photo (optional)</span>
-              <input name="receipt" type="file" accept="image/*,application/pdf" capture="environment" className={`${inputCls} file:mr-2 file:rounded file:border-0 file:bg-navy-2 file:px-2 file:py-1 file:text-xs file:text-cream`} />
-            </label>
-            <Button type="submit" variant="primary" size="sm">Record expense</Button>
-          </form>
+          <CardTitle>{prefill ? 'Duplicate an expense' : 'Record an expense'}</CardTitle>
+          <ExpenseRecordForm categories={expenseCats} vehicles={vehicles} prefill={prefill} />
         </Card>
 
         <Card>
@@ -128,7 +139,7 @@ export default async function ExpensesPage() {
         ) : (
           <Table caption="Recent expenses">
             <thead>
-              <tr><Th>Reference</Th><Th>Date</Th><Th>Category</Th><Th>Description</Th><Th>Receipt</Th><Th className="text-right">Amount</Th></tr>
+              <tr><Th>Reference</Th><Th>Date</Th><Th>Category</Th><Th>Description</Th><Th>Receipt</Th><Th className="text-right">Amount</Th><Th>{''}</Th></tr>
             </thead>
             <tbody>
               {expenses.map((e) => (
@@ -147,6 +158,15 @@ export default async function ExpensesPage() {
                     )}
                   </Td>
                   <Td className="text-right"><Money pence={e.amount_pence} /></Td>
+                  <Td>
+                    <Link
+                      href={`/ops/expenses?prefill=${e.id}`}
+                      className="text-xs text-gold-bright hover:underline"
+                      title="Pre-fill a new expense with this row's values"
+                    >
+                      Duplicate
+                    </Link>
+                  </Td>
                 </tr>
               ))}
             </tbody>

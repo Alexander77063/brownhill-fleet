@@ -108,6 +108,108 @@ export async function sendDriverMessage(
 }
 
 /**
+ * Send a notice to one vehicle owner. Looks up email/phone on
+ * `vehicle_owners` and runs the same email+SMS channels + notifications
+ * audit as `sendDriverMessage`. Audits under `comms.owner_message`.
+ */
+export async function sendOwnerMessage(
+  tenantId: string,
+  ownerId: string,
+  subject: string,
+  body: string,
+  actor?: string | null,
+): Promise<{ channels: number }> {
+  const sb = createServiceClient();
+  const { data: owner } = await sb
+    .from('vehicle_owners')
+    .select('email, phone')
+    .eq('id', ownerId)
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+  if (!owner) throw new Error('Owner not found in this organisation.');
+  let channels = 0;
+  if (owner?.email) {
+    const res = await sendTenantEmail(tenantId, owner.email, subject, `<p>${body}</p>`);
+    await logNotification(sb, {
+      tenantId,
+      driverId: null,
+      channel: 'email',
+      recipient: owner.email,
+      subject,
+      body,
+      ...statusOf(res),
+    });
+    channels++;
+  }
+  if (owner?.phone) {
+    const res = await sendTenantSms(tenantId, owner.phone, `${subject}: ${body}`);
+    await logNotification(sb, {
+      tenantId,
+      driverId: null,
+      channel: 'sms',
+      recipient: owner.phone,
+      subject,
+      body,
+      ...statusOf(res),
+    });
+    channels++;
+  }
+  await sb.rpc('log_audit', {
+    p_tenant: tenantId,
+    p_action: 'comms.owner_message',
+    p_entity_type: 'vehicle_owner',
+    p_entity_id: ownerId,
+    p_detail: { subject } as never,
+    p_actor: actor ?? undefined,
+  });
+  return { channels };
+}
+
+/**
+ * List drivers for a tenant — used by /ops/comms when ops picks "All
+ * drivers" as the recipient. Returned shape is small on purpose: only the
+ * bits the comms UI needs (id + name + email presence).
+ */
+export async function listDriversForComms(
+  tenantId: string,
+): Promise<{ id: string; full_name: string; has_email: boolean; has_phone: boolean }[]> {
+  const sb = createServiceClient();
+  const { data } = await sb
+    .from('drivers')
+    .select('id, full_name, email, phone')
+    .eq('tenant_id', tenantId)
+    .order('full_name');
+  return (data ?? []).map((d) => ({
+    id: (d as { id: string }).id,
+    full_name: (d as { full_name: string }).full_name,
+    has_email: Boolean((d as { email: string | null }).email),
+    has_phone: Boolean((d as { phone: string | null }).phone),
+  }));
+}
+
+export async function listOwnersForComms(
+  tenantId: string,
+): Promise<{ id: string; display_name: string; has_email: boolean; has_phone: boolean }[]> {
+  const sb = createServiceClient();
+  // The vehicle_owners table uses a `name` column (not full_name/company_name)
+  // — see supabase/migrations/0060_vehicle_owners.sql.
+  const { data } = await sb
+    .from('vehicle_owners')
+    .select('id, name, email, phone')
+    .eq('tenant_id', tenantId)
+    .order('name');
+  return (data ?? []).map((o) => {
+    const r = o as { id: string; name: string | null; email: string | null; phone: string | null };
+    return {
+      id: r.id,
+      display_name: (r.name ?? '').trim() || r.id,
+      has_email: Boolean(r.email),
+      has_phone: Boolean(r.phone),
+    };
+  });
+}
+
+/**
  * Notify the tenant's owner by email (dormant-safe) and log it. `driver_id` is
  * null — the recipient is the operator, not a driver. When a `dedupeKey` is given
  * the send fires at most once per key (used by the overdue-charge chase).

@@ -43,6 +43,8 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/ops/reports', label: 'Reports', icon: 'trending', feature: 'reports.director' },
     { href: '/ops/assistant', label: 'Assistant', icon: 'dashboard' },
     { href: '/ops/import', label: 'Bulk import', icon: 'upload' },
+    { href: '/ops/comms', label: 'Comms', icon: 'bell' },
+    { href: '/ops/profile', label: 'Profile & security', icon: 'shield' },
   ],
   driver: [
     { href: '/driver', label: 'Home', icon: 'wallet', primary: true },
@@ -52,6 +54,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/driver/submit', label: 'Submit receipt', icon: 'upload', primary: true },
     { href: '/driver/payments', label: 'Payments', icon: 'receipt', feature: 'rental.core' },
     { href: '/driver/documents', label: 'Documents', icon: 'doc' },
+    { href: '/driver/profile', label: 'Profile & security', icon: 'shield' },
   ],
   // A vehicle owner: their cars, their settings. Alerts, reports and help are
   // added by NG-4b. Copy is for a person about their car, never a "fleet".
@@ -62,6 +65,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/owner/help', label: 'Help', icon: 'shield', primary: true },
     { href: '/owner/billing', label: 'Billing', icon: 'wallet', primary: true },
     { href: '/owner/settings', label: 'Settings', icon: 'wrench' },
+    { href: '/owner/settings/security', label: 'Security', icon: 'shield' },
   ],
   // Investor is deprecated as a login role — investor updates are now generated
   // on demand from the tenant's Reports page. Kept empty to satisfy the Record type.
