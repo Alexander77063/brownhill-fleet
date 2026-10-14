@@ -14,7 +14,14 @@ import {
 import { isUploadedFile, uploadReceipt } from '@/lib/receipts';
 import { pounds } from '@/lib/money';
 
-export async function recordExpenseAction(formData: FormData): Promise<void> {
+export interface RecordExpenseResult {
+  ok: boolean;
+  /** Echoes the form's intent field so the client form can reset on
+   *  'add-another' but stay on the page on plain 'save'. */
+  intent: 'save' | 'add-another';
+}
+
+export async function recordExpenseAction(formData: FormData): Promise<RecordExpenseResult> {
   const ctx = await requirePermission('billing.write');
   const amount = Number(String(formData.get('amount') ?? '').replace(/[£,\s]/g, ''));
   if (!Number.isFinite(amount) || amount <= 0) throw new Error('Please enter a valid amount.');
@@ -40,6 +47,11 @@ export async function recordExpenseAction(formData: FormData): Promise<void> {
     ctx.userId,
   );
   revalidatePath('/ops/expenses');
+
+  // 'add-another' is the Save & add another button (name=intent). Plain
+  // 'save' (or absent) is the regular Record expense.
+  const intent = formData.get('intent') === 'add-another' ? 'add-another' : 'save';
+  return { ok: true, intent };
 }
 
 export async function createCategoryAction(formData: FormData): Promise<void> {

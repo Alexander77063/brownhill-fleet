@@ -5,10 +5,12 @@
 // (the Save & add another button) and so the prefilled Duplicate flow
 // produces controlled inputs the user can scrub before saving.
 
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import { useFormState, useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui';
-import { recordExpenseAction } from '@/lib/actions/expenses';
+import { recordExpenseAction, type RecordExpenseResult } from '@/lib/actions/expenses';
+
+const initial: RecordExpenseResult = { ok: false, intent: 'save' };
 
 type CategoryOpt = { id: string; name: string };
 type VehicleOpt  = { id: string; registration: string };
@@ -42,17 +44,17 @@ function SubmitButton({ label }: { label: string }) {
 
 export function ExpenseRecordForm({ categories, vehicles, prefill }: ExpenseRecordFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
-  // The form action. We don't read the result; we just reset the form when
-  // the action returns `added: true`.
-  const [, action] = useFormState(
-    async (_prev: { ok: boolean; added: boolean }, fd: FormData) => {
-      const result = await recordExpenseAction(fd);
-      // Save the user's intent; the action itself doesn't read this
-      // currently, but we record it for the next pass.
-      return { ok: true, added: true };
-    },
-    { ok: false, added: false },
+  const [state, action] = useFormState<RecordExpenseResult, FormData>(
+    async (_prev, fd) => recordExpenseAction(fd),
+    initial,
   );
+
+  // Save & add another: clear the form so the next entry is a fresh row.
+  useEffect(() => {
+    if (state.ok && state.intent === 'add-another') {
+      formRef.current?.reset();
+    }
+  }, [state]);
 
   return (
     <form

@@ -75,6 +75,13 @@ const nextConfig: NextConfig = {
     // app already promises the user.
     serverActions: { bodySizeLimit: '10mb' },
   },
+  // Don't bundle these into the server runtime — they're Node native bridges
+  // (web-push uses https-proxy-agent which itself uses node:https) and Next's
+  // standalone build can't statically resolve `node:https`. Letting them
+  // be external means Node's require() finds them at runtime.
+  // (Note: `src/instrumentation.ts` is auto-detected by Next 15 — no flag
+  // needed for the daily-rent-overdue run to register at boot.)
+  serverExternalPackages: ['web-push', 'https-proxy-agent'],
 };
 
 export default nextConfig;

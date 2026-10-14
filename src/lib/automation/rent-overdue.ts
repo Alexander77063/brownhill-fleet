@@ -14,9 +14,20 @@
 // operator gets cron-equivalent without systemd timers.
 
 import { formatDate } from '@/lib/display';
-import { todayISO } from '@/lib/collection/invoices';
 import { sendDriverMessage } from '@/lib/comms';
 import { createServiceClient } from '@/lib/supabase/server';
+
+/**
+ * Local YYYY-MM-DD formatter. Inlined rather than imported from
+ * `@/lib/collection/invoices` because that file's transitive imports
+ * pull in `gps.ts → push.ts → web-push`, which uses `https-proxy-agent`
+ * which requires `node:https` — Next's standalone build can't statically
+ * resolve that, so the whole import chain becomes a webpack error
+ * when Next tries to bundle the rent-overdue worker.
+ */
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 type Sb = ReturnType<typeof createServiceClient>;
 

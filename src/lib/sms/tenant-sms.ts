@@ -49,7 +49,7 @@ export async function saveTenantSmsConfig(
   const sb = createServiceClient();
   if (input.authToken && input.authToken.trim()) {
     if (!encryptionAvailable()) throw new Error('Encryption is not enabled on this server.');
-    const sealed = sealSecret(input.authToken.trim());
+    const sealed = await sealSecret(input.authToken.trim());
     if (!sealed) throw new Error('Could not encrypt the token.');
     const { error: sErr } = await sb.from('tenant_sms_secrets').upsert(
       { tenant_id: tenantId, kind: KIND, ciphertext: sealed.ciphertext, iv: sealed.iv, auth_tag: sealed.authTag, updated_at: new Date().toISOString() } as never,
@@ -94,7 +94,7 @@ export async function sendTenantSms(tenantId: string, to: string, message: strin
   if (!encryptionAvailable()) return { channel: 'sms', sent: false, skipped: true };
   const { data: secret } = await sb.from('tenant_sms_secrets').select('ciphertext, iv, auth_tag').eq('tenant_id', tenantId).eq('kind', KIND).maybeSingle();
   const s = secret as { ciphertext: string; iv: string; auth_tag: string } | null;
-  const token = s ? openSecret({ ciphertext: s.ciphertext, iv: s.iv, authTag: s.auth_tag }) : null;
+  const token = s ? await openSecret({ ciphertext: s.ciphertext, iv: s.iv, authTag: s.auth_tag }) : null;
   if (!token) return { channel: 'sms', sent: false, skipped: true };
 
   try {

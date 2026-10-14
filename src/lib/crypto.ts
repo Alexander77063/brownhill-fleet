@@ -6,8 +6,18 @@
  *  in this app — if the key is absent or malformed, encryption is unavailable and
  *  callers fail CLOSED (the AI feature reports "not configured"), never throwing
  *  a raw error at the user.
+ *
+ *  AES-256-GCM is implemented here with the Web Crypto API
+ *  (`globalThis.crypto.subtle`) — the same primitives the browser exposes, and
+ *  the same ones Node 19+ ships under the same global. Using Web Crypto
+ *  keeps this file free of `node:crypto` so the Next standalone build can
+ *  bundle it without the bundler trying to resolve the `node:` URI scheme.
+ *
+ *  Functions are async because the underlying SubtleCrypto API is
+ *  Promise-based. Callers already live in Server Actions or route handlers,
+ *  so awaiting is fine. The few existing call sites (4 files) have been
+ *  updated to await.
  */
-import crypto from "node:crypto";
 
 export interface SealedSecret {
   ciphertext: string; // base64
@@ -15,15 +25,31 @@ export interface SealedSecret {
   authTag: string; // base64
 }
 
-function masterKey(): Buffer | null {
+function masterKey(): Uint8Array | null {
   const raw = process.env.TENANT_AI_ENC_KEY;
   if (!raw) return null;
   try {
-    const key = Buffer.from(raw, "base64");
-    return key.length === 32 ? key : null;
+    const bin = atob(raw);
+    if (bin.length !== 32) return null;
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = bin.charCodeAt(i);
+    return out;
   } catch {
     return null;
   }
+}
+
+function bytesToB64(bytes: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
+  return btoa(s);
+}
+
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 /** True when a valid 32-byte master key is configured. */
@@ -31,32 +57,75 @@ export function encryptionAvailable(): boolean {
   return masterKey() !== null;
 }
 
-/** Seal a plaintext secret. Returns null (fail closed) when no master key. */
-export function sealSecret(plaintext: string): SealedSecret | null {
-  const key = masterKey();
-  if (!key) return null;
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  return {
-    ciphertext: ct.toString("base64"),
-    iv: iv.toString("base64"),
-    authTag: cipher.getAuthTag().toString("base64"),
-  };
-}
-
-/** Open a sealed secret. Returns null when no master key or on tamper/mismatch. */
-export function openSecret(sealed: SealedSecret): string | null {
+/** Seal a plaintext secret. Returns null (fail closed) when no master key
+ *  or when the platform's Web Crypto is unavailable. */
+export async function sealSecret(plaintext: string): Promise<SealedSecret | null> {
   const key = masterKey();
   if (!key) return null;
   try {
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(sealed.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(sealed.authTag, "base64"));
-    const pt = Buffer.concat([
-      decipher.update(Buffer.from(sealed.ciphertext, "base64")),
-      decipher.final(),
-    ]);
-    return pt.toString("utf8");
+    const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const cryptoKey = await globalThis.crypto.subtle.importKey(
+      'raw',
+      // TextEncoder's Uint8Array and our key bytes are typed
+      // `Uint8Array<ArrayBufferLike>`; SubtleCrypto's importKey wants
+      // `BufferSource` = `ArrayBufferView<ArrayBuffer> | ArrayBuffer`.
+      // The runtime values are byte-identical (no SharedArrayBuffer in
+      // play), but TS strict types refuse the implicit conversion. Cast
+      // through `unknown` so the call site stays readable.
+      key as unknown as ArrayBufferView<ArrayBuffer>,
+      'AES-GCM',
+      false,
+      ['encrypt'],
+    );
+    const ciphertext = new Uint8Array(
+      await globalThis.crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: iv as unknown as ArrayBufferView<ArrayBuffer> },
+        cryptoKey,
+        new TextEncoder().encode(plaintext) as unknown as ArrayBufferView<ArrayBuffer>,
+      ),
+    );
+    // Web Crypto appends the 16-byte auth tag to the ciphertext; split it
+    // out so the on-disk shape matches the Node `createCipheriv` form
+    // and so older stored values round-trip cleanly.
+    const authTag = ciphertext.subarray(ciphertext.length - 16);
+    const ctNoTag = ciphertext.subarray(0, ciphertext.length - 16);
+    return {
+      ciphertext: bytesToB64(ctNoTag),
+      iv: bytesToB64(iv),
+      authTag: bytesToB64(authTag),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Open a sealed secret. Returns null when no master key, when tampering
+ *  is detected (auth tag mismatch), or when the platform's Web Crypto
+ *  is unavailable. */
+export async function openSecret(sealed: SealedSecret): Promise<string | null> {
+  const key = masterKey();
+  if (!key) return null;
+  try {
+    const iv = b64ToBytes(sealed.iv);
+    const authTag = b64ToBytes(sealed.authTag);
+    const ctBytes = b64ToBytes(sealed.ciphertext);
+    const ciphertext = new Uint8Array(ctBytes.length + authTag.length);
+    ciphertext.set(ctBytes, 0);
+    ciphertext.set(authTag, ctBytes.length);
+
+    const cryptoKey = await globalThis.crypto.subtle.importKey(
+      'raw',
+      key as unknown as ArrayBufferView<ArrayBuffer>,
+      'AES-GCM',
+      false,
+      ['decrypt'],
+    );
+    const plaintext = await globalThis.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as unknown as ArrayBufferView<ArrayBuffer> },
+      cryptoKey,
+      ciphertext as unknown as ArrayBufferView<ArrayBuffer>,
+    );
+    return new TextDecoder().decode(plaintext);
   } catch {
     return null;
   }

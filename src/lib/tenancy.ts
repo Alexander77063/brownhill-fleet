@@ -348,3 +348,17 @@ export async function updateMember(
     actor,
   );
 }
+
+/**
+ * List every tenant in the system. Used by the daily automation run to
+ * walk all tenants and run the rent-overdue worker against each one.
+ * Returns the basic identity so the run log can show the tenant name.
+ */
+export async function listTenantIds(): Promise<{ id: string; name: string }[]> {
+  const sb = createServiceClient();
+  const { data } = await sb
+    .from('tenants')
+    .select('id, name')
+    .order('created_at');
+  return (data ?? []) as { id: string; name: string }[];
+}

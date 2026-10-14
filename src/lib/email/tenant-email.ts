@@ -56,7 +56,7 @@ export async function saveTenantEmailConfig(
   // Save the key only when a new one is provided (blank = keep existing).
   if (input.resendKey && input.resendKey.trim()) {
     if (!encryptionAvailable()) throw new Error('Email encryption is not enabled on this server.');
-    const sealed = sealSecret(input.resendKey.trim());
+    const sealed = await sealSecret(input.resendKey.trim());
     if (!sealed) throw new Error('Could not encrypt the key.');
     const { error: sErr } = await sb.from('tenant_email_secrets').upsert(
       { tenant_id: tenantId, kind: KIND, ciphertext: sealed.ciphertext, iv: sealed.iv, auth_tag: sealed.authTag, updated_at: new Date().toISOString() } as never,
@@ -90,7 +90,7 @@ async function resolveKey(sb: ReturnType<typeof createServiceClient>, tenantId: 
   if (!encryptionAvailable()) return null;
   const { data } = await sb.from('tenant_email_secrets').select('ciphertext, iv, auth_tag').eq('tenant_id', tenantId).eq('kind', KIND).maybeSingle();
   const s = data as { ciphertext: string; iv: string; auth_tag: string } | null;
-  return s ? openSecret({ ciphertext: s.ciphertext, iv: s.iv, authTag: s.auth_tag }) : null;
+  return s ? await openSecret({ ciphertext: s.ciphertext, iv: s.iv, authTag: s.auth_tag }) : null;
 }
 
 /**

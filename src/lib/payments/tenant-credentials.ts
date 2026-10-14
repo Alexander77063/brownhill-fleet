@@ -59,12 +59,12 @@ export async function resolveTenantSecret(
     .eq("kind", kind)
     .maybeSingle();
   if (!data) return null;
-  return openSecret({ ciphertext: data.ciphertext, iv: data.iv, authTag: data.auth_tag });
+  return await openSecret({ ciphertext: data.ciphertext, iv: data.iv, authTag: data.auth_tag });
 }
 
 /** Store a tenant secret (seal + upsert). Auth is enforced by the calling action. */
 export async function saveTenantSecret(tenantId: string, kind: SecretKind, plaintext: string): Promise<void> {
-  const sealed = sealSecret(plaintext.trim());
+  const sealed = await sealSecret(plaintext.trim());
   if (!sealed) {
     throw new Error(
       "Payment encryption isn't configured on this server (TENANT_AI_ENC_KEY). Your key was NOT saved — contact your platform operator.",

@@ -119,7 +119,7 @@ export async function saveTenantAiConfig(
   );
 
   if (apiKey) {
-    const sealed = sealSecret(apiKey);
+    const sealed = await sealSecret(apiKey);
     if (!sealed) {
       throw new Error(
         "AI encryption isn't configured on this server (TENANT_AI_ENC_KEY). Your key was NOT saved — contact your platform operator.",
@@ -250,7 +250,7 @@ export async function runTenantAi(
       sb.from("tenant_ai_secrets").select("ciphertext, iv, auth_tag").eq("tenant_id", tenantId).maybeSingle(),
     ]);
     if (config?.enabled && secret) {
-      const apiKey = openSecret({ ciphertext: secret.ciphertext, iv: secret.iv, authTag: secret.auth_tag });
+      const apiKey = await openSecret({ ciphertext: secret.ciphertext, iv: secret.iv, authTag: secret.auth_tag });
       if (apiKey) {
         const provider = (isAiProvider(config.provider) ? config.provider : "anthropic") as AiProvider;
         const model = config.model || defaultModelFor(provider);
