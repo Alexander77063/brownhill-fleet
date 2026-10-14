@@ -37,12 +37,17 @@ function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
 }
 
 async function pbkdf2(password: string, salt: Uint8Array<ArrayBuffer>, iterations: number, keylenBytes: number): Promise<Uint8Array<ArrayBuffer>> {
-  const pwBuf = new ArrayBuffer(password.length * 4);
-  const pwBytes = new Uint8Array(pwBuf);
-  for (let i = 0; i < password.length; i++) pwBytes[i] = password.charCodeAt(i);
+  // Encode the password as UTF-8 — same default Node's `crypto.pbkdf2Sync`
+  // applies when given a string. The previous version allocated
+  // `password.length * 4` bytes and only zero-filled them out to UTF-16 LE
+  // low-byte; the trailing zeros were silently included as key material,
+  // so a hash produced by the in-browser implementation could never
+  // verify against a hash produced by Node's implementation and the
+  // customer's pre-deploy password hashes were effectively unreadable.
+  const pwBytes = new TextEncoder().encode(password);
   const km = await crypto.subtle.importKey(
     'raw',
-    pwBytes,
+    pwBytes as BufferSource,
     'PBKDF2',
     false,
     ['deriveBits']

@@ -1,0 +1,365 @@
+{
+  "snapshot_file": "Heap.20261014.132300.969147.0.001.heapsnapshot",
+  "results": [
+    {
+      "name": "(instruction stream for requirePage)",
+      "type": "code",
+      "self": 1088,
+      "subtree_3hop_bytes": 1088
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__.d)",
+      "type": "code",
+      "self": 896,
+      "subtree_3hop_bytes": 896
+    },
+    {
+      "name": "(instruction stream for tryLoadClientReferenceManifest)",
+      "type": "code",
+      "self": 832,
+      "subtree_3hop_bytes": 832
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 768,
+      "subtree_3hop_bytes": 768
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 768,
+      "subtree_3hop_bytes": 768
+    },
+    {
+      "name": "(instruction stream for requireBuiltin)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__)",
+      "type": "code",
+      "self": 704,
+      "subtree_3hop_bytes": 704
+    },
+    {
+      "name": "(instruction stream for module.exports)",
+      "type": "code",
+      "self": 640,
+      "subtree_3hop_bytes": 640
+    },
+    {
+      "name": "(instruction stream for mod.require)",
+      "type": "code",
+      "self": 640,
+      "subtree_3hop_bytes": 640
+    },
+    {
+      "name": "(instruction stream for requireWithFallbackInDeps)",
+      "type": "code",
+      "self": 576,
+      "subtree_3hop_bytes": 576
+    },
+    {
+      "name": "(instruction stream for c.f.require)",
+      "type": "code",
+      "self": 448,
+      "subtree_3hop_bytes": 448
+    },
+    {
+      "name": "(instruction stream for __require)",
+      "type": "code",
+      "self": 448,
+      "subtree_3hop_bytes": 448
+    },
+    {
+      "name": "(instruction stream for requiresJSONParse)",
+      "type": "code",
+      "self": 256,
+      "subtree_3hop_bytes": 256
+    },
+    {
+      "name": "(instruction stream for __nccwpck_require__.o)",
+      "type": "code",
+      "self": 256,
+      "subtree_3hop_bytes": 256
+    },
+    {
+      "name": "(instruction stream for _interop_require_default)",
+      "type": "code",
+      "self": 256,
+      "subtree_3hop_bytes": 256
+    },
+    {
+      "name": "(instruction stream for require)",
+      "type": "code",
+      "self": 192,
+      "subtree_3hop_bytes": 192
+    },
+    {
+      "name": "EventLoopHandlesRequestsMetric",
+      "type": "object",
+      "self": 152,
+      "subtree_3hop_bytes": 152
+    },
+    {
+      "name": "/var/lib/brownhill/app/.next/server/app/api/ops/report/route.js",
+      "type": "code",
+      "self": 144,
+      "subtree_3hop_bytes": 144
+    },
+    {
+      "name": "/var/lib/brownhill/app/.next/server/app/api/sign/[token]/approve/route.js",
+      "type": "code",
+      "self": 144,
+      "subtree_3hop_bytes": 144
+    },
+    {
+      "name": "/var/lib/brownhill/app/.next/server/app/auth/confirm/route.js",
+      "type": "code",
+      "self": 144,
+      "subtree_3hop_bytes": 144
+    },
+    {
+      "name": "/var/lib/brownhill/app/node_modules/.pnpm/next@15.4.0_@playwright+test@1.62.1_react-dom@19.0.0_react@19.0.0__react@19.0.0/node_modules/next/dist/server/route-matcher-providers/manifest-route-matcher-p",
+      "type": "code",
+      "self": 144,
+      "subtree_3hop_bytes": 144
+    },
+    {
+      "name": "/var/lib/brownhill/app/node_modules/.pnpm/next@15.4.0_@playwright+test@1.62.1_react-dom@19.0.0_react@19.0.0__react@19.0.0/node_modules/next/dist/server/route-matcher-providers/app-route-route-matcher-",
+      "type": "code",
+      "self": 144,
+      "subtree_3hop_bytes": 144
+    },
+    {
+      "name": "requireBuiltin",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "onSessionHeaders",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "__nccwpck_require__",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "Request",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "tryUpgradeRequestToAPotentiallyTrustworthyURL",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "determineRequestsReferrer",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "appendRequestOriginHeader",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "setRequestReferrerPolicyOnRedirect",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "_Headers",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "_HeadersList",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "makeResponse",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "filterResponse",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "_Response",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "cloneResponse",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "fromInnerResponse",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "_Request",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "makeRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "fromInnerRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "cloneRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "finalizeResponse",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "writableStreamMarkFirstWriteRequestInFlight",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "writableStreamMarkCloseRequestInFlight",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "writableStreamAddWriteRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamGetNumReadRequests",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamGetNumReadIntoRequests",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamFulfillReadRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamFulfillReadIntoRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamAddReadRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableStreamAddReadIntoRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    },
+    {
+      "name": "readableByteStreamControllerInvalidateBYOBRequest",
+      "type": "closure",
+      "self": 64,
+      "subtree_3hop_bytes": 64
+    }
+  ]
+}

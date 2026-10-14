@@ -1,0 +1,401 @@
+{
+  "snapshot_file": "Heap.20261014.132300.969147.0.001.heapsnapshot",
+  "node_count": 638308,
+  "total_self_bytes": 64323953,
+  "top_self_by_node": [
+    {
+      "self_kb": 2647,
+      "type": "string",
+      "name": "(()=>{var e={5565:e=>{function webpackEmptyAsyncContext(e){return Promise.resolve().then((()=>{var t=new Error(\"Cannot find module '\"+e+\"'\");t.code=\"MODULE_NOT_FOUND\";throw t}))}webpackEmptyAsyncContext.keys=()=>[];webpackEmptyAsyncContext.resolve=webpackEmptyAsyncContext;webpackEmptyAsyncContext.id=5565;e.exports=webpackEmptyAsyncContext},3914:function(e,t,r){(function(t,n){true?e.exports=n(r(8536),r(2987)):0})(this,(function(e,t){\"use strict\";const r=SegmentObject(\"\",-1,-1,\"\",null);const n=[];function SegmentObject(e,t,r,n,s){return{source:e,line:t,column:r,name:n,content:s}}function Source(e,t,r,n){return{map:e,sources:t,source:r,content:n}}function MapSource(e,t){return Source(e,t,\"\",null)}function OriginalSource(e,t){return Source(null,n,e,t)}function traceMappings(n){const s=new t.GenMapping({file:n.map.file});const{sources:i,map:a}=n;const o=a.names;const l=e.decodedMappings(a);for(let e=0;e<l.length;e++){const n=l[e];for(let a=0;a<n.length;a++){const l=n[a];const c=l[0];let p=r;if(l.length!==1){const "
+    },
+    {
+      "self_kb": 969,
+      "type": "string",
+      "name": "(()=>{var e={\"./dist/build/webpack/alias/react-dom-server-edge.js\":function(e,t,r){\"use strict\";var n;function i(){throw Object.defineProperty(Error(\"Internal Error: do not use legacy react-dom/server APIs. If you encountered this error, please open an issue on the Next.js repo.\"),\"__NEXT_ERROR_CODE\",{value:\"E394\",enumerable:!1,configurable:!0})}t.version=(n=r(\"./dist/compiled/react-dom/cjs/react-dom-server.edge.production.js\")).version,t.renderToReadableStream=n.renderToReadableStream,t.renderToString=i,t.renderToStaticMarkup=i,n.resume&&(t.resume=n.resume)},\"./dist/compiled/@edge-runtime/cookies/index.js\":function(e){\"use strict\";var t=Object.defineProperty,r=Object.getOwnPropertyDescriptor,n=Object.getOwnPropertyNames,i=Object.prototype.hasOwnProperty,a={},o={RequestCookies:()=>p,ResponseCookies:()=>h,parseCookie:()=>u,parseSetCookie:()=>c,stringifyCookie:()=>l};for(var s in o)t(a,s,{get:o[s],enumerable:!0});function l(e){var t;let r=[\"path\"in e&&e.path&&`Path=${e.path}`,\"expires\"in e&&(e.expires||0===e.ex"
+    },
+    {
+      "self_kb": 784,
+      "type": "string",
+      "name": "exports.id=9151,exports.ids=[9151],exports.modules={439:(a,b,c)=>{\"use strict\";Object.defineProperty(b,\"e\",{enumerable:!0,get:function(){return k}});let d=c(43960),e=c(35216),f=c(29294),g=c(63033),h=c(44554),i=0;async function j(a,b,c,e,f,g,i){await b.set(c,{kind:h.CachedRouteKind.FETCH,data:{headers:{},body:JSON.stringify(a),status:200,url:\"\"},revalidate:\"number\"!=typeof f?d.CACHE_ONE_YEAR:f},{fetchCache:!0,tags:e,fetchIdx:g,fetchUrl:i})}function k(a,b,c={}){if(0===c.revalidate)throw Object.defineProperty(Error(`Invariant revalidate: 0 can not be passed to unstable_cache(), must be \"false\" or \"> 0\" ${a.toString()}`),\"__NEXT_ERROR_CODE\",{value:\"E57\",enumerable:!1,configurable:!0});let d=c.tags?(0,e.validateTags)(c.tags,`unstable_cache ${a.toString()}`):[];(0,e.validateRevalidate)(c.revalidate,`unstable_cache ${a.name||a.toString()}`);let l=`${a.toString()}-${Array.isArray(b)&&b.join(\",\")}`;return async(...b)=>{let e=f.workAsyncStorage.getStore(),k=g.workUnitAsyncStorage.getStore(),m=(null==e?void 0:e.incremen"
+    },
+    {
+      "self_kb": 473,
+      "type": "string",
+      "name": "\"use strict\";exports.id=3878,exports.ids=[3878],exports.modules={12157:(a,b,c)=>{Object.defineProperty(b,\"U\",{enumerable:!0,get:function(){return n}});let d=c(21109),e=c(86422),f=c(29294),g=c(63033),h=c(99563),i=c(64215),j=c(39460),k=c(87422),l=(c(16299),c(50095)),m=c(34817);function n(){let a=\"cookies\",b=f.workAsyncStorage.getStore(),c=g.workUnitAsyncStorage.getStore();if(b){if(c&&\"after\"===c.phase&&!(0,l.isRequestAPICallableInsideAfter)())throw Object.defineProperty(Error(`Route ${b.route} used \"cookies\" inside \"after(...)\". This is not supported. If you need this data inside an \"after\" callback, use \"cookies\" outside of the callback. See more info here: https://nextjs.org/docs/canary/app/api-reference/functions/after`),\"__NEXT_ERROR_CODE\",{value:\"E88\",enumerable:!1,configurable:!0});if(b.forceStatic)return p(d.RequestCookiesAdapter.seal(new e.RequestCookies(new Headers({}))));if(c){if(\"cache\"===c.type)throw Object.defineProperty(Error(`Route ${b.route} used \"cookies\" inside \"use cache\". Accessing Dynamic d"
+    },
+    {
+      "self_kb": 463,
+      "type": "string",
+      "name": "(()=>{var a={};a.id=4520,a.ids=[4520],a.modules={1469:(a,b,c)=>{\"use strict\";c.r(b),c.d(b,{GlobalError:()=>g.a,__next_app__:()=>l,pages:()=>k,routeModule:()=>m,tree:()=>j});var d=c(65239),e=c(45912),f=c(84537),g=c.n(f),h=c(85837),i={};for(let a in h)0>[\"default\",\"tree\",\"pages\",\"GlobalError\",\"__next_app__\",\"routeModule\"].indexOf(a)&&(i[a]=()=>h[a]);c.d(b,i);let j={children:[\"\",{children:[\"login\",{children:[\"__PAGE__\",{},{page:[()=>Promise.resolve().then(c.bind(c,85102)),\"/opt/brownhill/repo/src/app/login/page.tsx\"]}]},{}]},{layout:[()=>Promise.resolve().then(c.bind(c,40279)),\"/opt/brownhill/repo/src/app/layout.tsx\"],\"not-found\":[()=>Promise.resolve().then(c.t.bind(c,35702,23)),\"next/dist/client/components/not-found-error\"],forbidden:[()=>Promise.resolve().then(c.t.bind(c,43247,23)),\"next/dist/client/components/forbidden-error\"],unauthorized:[()=>Promise.resolve().then(c.t.bind(c,76324,23)),\"next/dist/client/components/unauthorized-error\"]}]}.children,k=[\"/opt/brownhill/repo/src/app/login/page.tsx\"],l={require:"
+    },
+    {
+      "self_kb": 347,
+      "type": "string",
+      "name": "exports.id=8728,exports.ids=[8728],exports.modules={107:(a,b,c)=>{\"use strict\";a.exports=c(65239).vendored[\"react-rsc\"].ReactServerDOMWebpackServerEdge},787:(a,b,c)=>{\"use strict\";Object.defineProperty(b,\"__esModule\",{value:!0}),Object.defineProperty(b,\"default\",{enumerable:!0,get:function(){return C}});let d=c(79189),e=c(76168),f=c(19807),g=c(79618),h=e._(c(84058)),i=d._(c(64991)),j=c(41486),k=c(89104),l=c(73826),m=c(96920),n=c(79245),o=c(76175),p=c(90238),q=c(6995),r=c(2803),s=c(1606),t=c(41161),u=c(96445);i.default.__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;let v=[\"bottom\",\"height\",\"left\",\"right\",\"top\",\"width\",\"x\",\"y\"];function w(a,b){let c=a.getBoundingClientRect();return c.top>=0&&c.top<=b}class x extends h.default.Component{componentDidMount(){this.handlePotentialScroll()}componentDidUpdate(){this.props.focusAndScrollRef.apply&&this.handlePotentialScroll()}render(){return this.props.children}constructor(...a){super(...a),this.handlePotentialScroll=()=>{let{focusAndScrollRef:a,segmentPa"
+    },
+    {
+      "self_kb": 314,
+      "type": "string",
+      "name": "(()=>{var a={};a.id=5980,a.ids=[5980],a.modules={3295:a=>{\"use strict\";a.exports=require(\"next/dist/server/app-render/after-task-async-storage.external.js\")},5270:(a,b,c)=>{\"use strict\";c.d(b,{Vi:()=>k,tB:()=>i,kB:()=>j});var d=c(51059);let e={\"invoice.issuer\":{legalName:\"\",address:\"\",tin:\"\",vatNumber:\"\",email:\"\",phone:\"\"},\"invoice.bank\":{bankName:\"\",accountName:\"\",accountNumber:\"\"},\"collection.due_days_business\":14,\"collection.renewal_issue_days\":30,\"collection.reminder_days_before\":[30,14,7],\"collection.reminder_days_after\":[3,7,12],\"collection.grace_days\":14,\"collection.cancel_days\":60,\"collection.additions_batch_day\":1,\"collection.preferred_gateway\":null,\"hardware.warranty_months\":12,\"hardware.install_sla_days\":7,\"hardware.immobilise_max_speed_kph\":10,\"hardware.position_max_age_minutes\":10,\"hardware.first_ping_hours\":24,\"hardware.checklist\":[\"Unit powered and LED steady\",\"Wiring concealed and fused\",\"Relay tested (Platinum)\",\"Vehicle starts and drives\",\"Customer shown the app\",\"Photos taken\"]},f=new Set(["
+    },
+    {
+      "self_kb": 309,
+      "type": "string",
+      "name": "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", {\n    value: true\n});\n0 && (module.exports = {\n    NoFallbackError: null,\n    WrappedBuildError: null,\n    default: null\n});\nfunction _export(target, all) {\n    for(var name in all)Object.defineProperty(target, name, {\n        enumerable: true,\n        get: all[name]\n    });\n}\n_export(exports, {\n    NoFallbackError: function() {\n        return NoFallbackError;\n    },\n    WrappedBuildError: function() {\n        return WrappedBuildError;\n    },\n    default: function() {\n        return Server;\n    }\n});\nconst _fallbackparams = require(\"./request/fallback-params\");\nconst _responsecache = require(\"./response-cache\");\nconst _utils = require(\"../shared/lib/utils\");\nconst _url = require(\"url\");\nconst _formathostname = require(\"./lib/format-hostname\");\nconst _redirectstatus = require(\"../lib/redirect-status\");\nconst _isedgeruntime = require(\"../lib/is-edge-runtime\");\nconst _constants = require(\"../shared/lib/constants\");\nconst _utils1 = require(\"../shared/lib/"
+    },
+    {
+      "self_kb": 301,
+      "type": "string",
+      "name": "(()=>{var a={909:(a,e,i)=>{\"use strict\";\n/*!\n * accepts\n * Copyright(c) 2014 Jonathan Ong\n * Copyright(c) 2015 Douglas Christopher Wilson\n * MIT Licensed\n */var n=i(995);var s=i(759);a.exports=Accepts;function Accepts(a){if(!(this instanceof Accepts)){return new Accepts(a)}this.headers=a.headers;this.negotiator=new n(a)}Accepts.prototype.type=Accepts.prototype.types=function(a){var e=a;if(e&&!Array.isArray(e)){e=new Array(arguments.length);for(var i=0;i<e.length;i++){e[i]=arguments[i]}}if(!e||e.length===0){return this.negotiator.mediaTypes()}if(!this.headers.accept){return e[0]}var n=e.map(extToMime);var s=this.negotiator.mediaTypes(n.filter(validMime));var o=s[0];return o?e[n.indexOf(o)]:false};Accepts.prototype.encoding=Accepts.prototype.encodings=function(a){var e=a;if(e&&!Array.isArray(e)){e=new Array(arguments.length);for(var i=0;i<e.length;i++){e[i]=arguments[i]}}if(!e||e.length===0){return this.negotiator.encodings()}return this.negotiator.encodings(e)[0]||false};Accepts.prototype.charset=Accepts.proto"
+    },
+    {
+      "self_kb": 259,
+      "type": "string",
+      "name": "const { getFlexibleChecksumsPlugin, NODE_RESPONSE_CHECKSUM_VALIDATION_CONFIG_OPTIONS, NODE_REQUEST_CHECKSUM_CALCULATION_CONFIG_OPTIONS, resolveFlexibleChecksumsConfig } = require(\"@aws-sdk/checksums/flexible-checksums\");\nconst { awsEndpointFunctions, emitWarningIfUnsupportedVersion: emitWarningIfUnsupportedVersion$1, createDefaultUserAgentProvider, NODE_APP_ID_CONFIG_OPTIONS, getAwsRegionExtensionConfiguration, resolveAwsRegionExtensionConfiguration, resolveUserAgentConfig, resolveHostHeaderConfig, getUserAgentPlugin, getHostHeaderPlugin, getLoggerPlugin, getRecursionDetectionPlugin } = require(\"@aws-sdk/core/client\");\nconst { getThrow200ExceptionsPlugin, getSsecPlugin, getLocationConstraintPlugin, getS3ExpiresMiddlewarePlugin, getCheckContentLengthHeaderPlugin, S3RestXmlProtocol, NODE_USE_ARN_REGION_CONFIG_OPTIONS, NODE_DISABLE_S3_EXPRESS_SESSION_AUTH_OPTIONS, resolveS3Config, getValidateBucketNamePlugin, getAddExpectContinuePlugin, getRegionRedirectMiddlewarePlugin, getS3ExpressPlugin, getS3ExpressHttpSigni"
+    },
+    {
+      "self_kb": 256,
+      "type": "array",
+      "name": ""
+    },
+    {
+      "self_kb": 246,
+      "type": "string",
+      "name": "(()=>{var e={\"./dist/compiled/@edge-runtime/cookies/index.js\":function(e){\"use strict\";var t=Object.defineProperty,r=Object.getOwnPropertyDescriptor,n=Object.getOwnPropertyNames,i=Object.prototype.hasOwnProperty,a={},s={RequestCookies:()=>h,ResponseCookies:()=>p,parseCookie:()=>u,parseSetCookie:()=>c,stringifyCookie:()=>l};for(var o in s)t(a,o,{get:s[o],enumerable:!0});function l(e){var t;let r=[\"path\"in e&&e.path&&`Path=${e.path}`,\"expires\"in e&&(e.expires||0===e.expires)&&`Expires=${(\"number\"==typeof e.expires?new Date(e.expires):e.expires).toUTCString()}`,\"maxAge\"in e&&\"number\"==typeof e.maxAge&&`Max-Age=${e.maxAge}`,\"domain\"in e&&e.domain&&`Domain=${e.domain}`,\"secure\"in e&&e.secure&&\"Secure\",\"httpOnly\"in e&&e.httpOnly&&\"HttpOnly\",\"sameSite\"in e&&e.sameSite&&`SameSite=${e.sameSite}`,\"partitioned\"in e&&e.partitioned&&\"Partitioned\",\"priority\"in e&&e.priority&&`Priority=${e.priority}`].filter(Boolean),n=`${e.name}=${encodeURIComponent(null!=(t=e.value)?t:\"\")}`;return 0===r.length?n:`${n}; ${r.join(\"; \")}`}fu"
+    },
+    {
+      "self_kb": 221,
+      "type": "string",
+      "name": "/**\n * @license React\n * react-dom-server.edge.production.js\n *\n * Copyright (c) Meta Platforms, Inc. and affiliates.\n *\n * This source code is licensed under the MIT license found in the\n * LICENSE file in the root directory of this source tree.\n */\n\n/*\n\n\n JS Implementation of MurmurHash3 (r136) (as of May 20, 2011)\n\n Copyright (c) 2011 Gary Court\n Permission is hereby granted, free of charge, to any person obtaining a copy\n of this software and associated documentation files (the \"Software\"), to deal\n in the Software without restriction, including without limitation the rights\n to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n copies of the Software, and to permit persons to whom the Software is\n furnished to do so, subject to the following conditions:\n\n The above copyright notice and this permission notice shall be included in\n all copies or substantial portions of the Software.\n\n THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n IMPLIED, INCLUDING BUT NOT"
+    },
+    {
+      "self_kb": 197,
+      "type": "string",
+      "name": "/**\n * @license React\n * react-dom-server-legacy.browser.production.js\n *\n * Copyright (c) Meta Platforms, Inc. and affiliates.\n *\n * This source code is licensed under the MIT license found in the\n * LICENSE file in the root directory of this source tree.\n */\n\n/*\n\n\n JS Implementation of MurmurHash3 (r136) (as of May 20, 2011)\n\n Copyright (c) 2011 Gary Court\n Permission is hereby granted, free of charge, to any person obtaining a copy\n of this software and associated documentation files (the \"Software\"), to deal\n in the Software without restriction, including without limitation the rights\n to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n copies of the Software, and to permit persons to whom the Software is\n furnished to do so, subject to the following conditions:\n\n The above copyright notice and this permission notice shall be included in\n all copies or substantial portions of the Software.\n\n THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n IMPLIED, INCLUDI"
+    },
+    {
+      "self_kb": 197,
+      "type": "string",
+      "name": "(()=>{var e={\"./dist/compiled/@edge-runtime/cookies/index.js\":function(e){\"use strict\";var t=Object.defineProperty,r=Object.getOwnPropertyDescriptor,n=Object.getOwnPropertyNames,i=Object.prototype.hasOwnProperty,a={},o={RequestCookies:()=>f,ResponseCookies:()=>h,parseCookie:()=>u,parseSetCookie:()=>c,stringifyCookie:()=>l};for(var s in o)t(a,s,{get:o[s],enumerable:!0});function l(e){var t;let r=[\"path\"in e&&e.path&&`Path=${e.path}`,\"expires\"in e&&(e.expires||0===e.expires)&&`Expires=${(\"number\"==typeof e.expires?new Date(e.expires):e.expires).toUTCString()}`,\"maxAge\"in e&&\"number\"==typeof e.maxAge&&`Max-Age=${e.maxAge}`,\"domain\"in e&&e.domain&&`Domain=${e.domain}`,\"secure\"in e&&e.secure&&\"Secure\",\"httpOnly\"in e&&e.httpOnly&&\"HttpOnly\",\"sameSite\"in e&&e.sameSite&&`SameSite=${e.sameSite}`,\"partitioned\"in e&&e.partitioned&&\"Partitioned\",\"priority\"in e&&e.priority&&`Priority=${e.priority}`].filter(Boolean),n=`${e.name}=${encodeURIComponent(null!=(t=e.value)?t:\"\")}`;return 0===r.length?n:`${n}; ${r.join(\"; \")}`}fu"
+    },
+    {
+      "self_kb": 143,
+      "type": "string",
+      "name": "{\"application/1d-interleaved-parityfec\":{\"source\":\"iana\"},\"application/3gpdash-qoe-report+xml\":{\"source\":\"iana\",\"charset\":\"UTF-8\",\"compressible\":true},\"application/3gpp-ims+xml\":{\"source\":\"iana\",\"compressible\":true},\"application/3gpphal+json\":{\"source\":\"iana\",\"compressible\":true},\"application/3gpphalforms+json\":{\"source\":\"iana\",\"compressible\":true},\"application/a2l\":{\"source\":\"iana\"},\"application/ace+cbor\":{\"source\":\"iana\"},\"application/activemessage\":{\"source\":\"iana\"},\"application/activity+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-costmap+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-costmapfilter+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-directory+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointcost+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointcostparams+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointprop+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointpropparam"
+    },
+    {
+      "self_kb": 139,
+      "type": "string",
+      "name": "{\"application/1d-interleaved-parityfec\":{\"source\":\"iana\"},\"application/3gpdash-qoe-report+xml\":{\"source\":\"iana\",\"charset\":\"UTF-8\",\"compressible\":true},\"application/3gpp-ims+xml\":{\"source\":\"iana\",\"compressible\":true},\"application/a2l\":{\"source\":\"iana\"},\"application/activemessage\":{\"source\":\"iana\"},\"application/activity+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-costmap+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-costmapfilter+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-directory+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointcost+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointcostparams+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointprop+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-endpointpropparams+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-error+json\":{\"source\":\"iana\",\"compressible\":true},\"application/alto-networkmap+json\":{\"source\":\"iana\",\"compressi"
+    },
+    {
+      "self_kb": 135,
+      "type": "string",
+      "name": "exports.id=4736,exports.ids=[4736],exports.modules={557:(a,b)=>{\"use strict\";Object.defineProperty(b,\"__esModule\",{value:!0}),!function(a,b){for(var c in b)Object.defineProperty(a,c,{enumerable:!0,get:b[c]})}(b,{ESCAPE_REGEX:function(){return d},htmlEscapeJsonString:function(){return e}});let c={\"&\":\"\\\\u0026\",\">\":\"\\\\u003e\",\"<\":\"\\\\u003c\",\"\\u2028\":\"\\\\u2028\",\"\\u2029\":\"\\\\u2029\"},d=/[&><\\u2028\\u2029]/g;function e(a){return a.replace(d,a=>c[a])}},5297:(a,b)=>{\"use strict\";Object.defineProperty(b,\"__esModule\",{value:!0}),!function(a,b){for(var c in b)Object.defineProperty(a,c,{enumerable:!0,get:b[c]})}(b,{getSortedRouteObjects:function(){return e},getSortedRoutes:function(){return d}});class c{insert(a){this._insert(a.split(\"/\").filter(Boolean),[],!1)}smoosh(){return this._smoosh()}_smoosh(a){void 0===a&&(a=\"/\");let b=[...this.children.keys()].sort();null!==this.slugName&&b.splice(b.indexOf(\"[]\"),1),null!==this.restSlugName&&b.splice(b.indexOf(\"[...]\"),1),null!==this.optionalRestSlugName&&b.splice(b.indexOf(\"[[...]]"
+    },
+    {
+      "self_kb": 133,
+      "type": "string",
+      "name": "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", {\n    value: true\n});\nObject.defineProperty(exports, \"default\", {\n    enumerable: true,\n    get: function() {\n        return NextNodeServer;\n    }\n});\n0 && __export(require(\"./base-server\"));\nrequire(\"./node-environment\");\nrequire(\"./require-hook\");\nrequire(\"./node-polyfill-crypto\");\nconst _utils = require(\"../shared/lib/utils\");\nconst _fs = /*#__PURE__*/ _interop_require_default(require(\"fs\"));\nconst _path = require(\"path\");\nconst _routematcher = require(\"../shared/lib/router/utils/route-matcher\");\nconst _requestmeta = require(\"./request-meta\");\nconst _constants = require(\"../shared/lib/constants\");\nconst _findpagesdir = require(\"../lib/find-pages-dir\");\nconst _node = require(\"./base-http/node\");\nconst _sendpayload = require(\"./send-payload\");\nconst _parseurl = require(\"../shared/lib/router/utils/parse-url\");\nconst _log = /*#__PURE__*/ _interop_require_wildcard(require(\"../build/output/log\"));\nconst _baseserver = /*#__PURE__*/ _interop_require_wildca"
+    },
+    {
+      "self_kb": 132,
+      "type": "string",
+      "name": "(()=>{var e={186:(e,t,a)=>{\n/*!\n * depd\n * Copyright(c) 2014-2018 Douglas Christopher Wilson\n * MIT Licensed\n */\nvar i=a(17).relative;e.exports=depd;var n=process.cwd();function containsNamespace(e,t){var a=e.split(/[ ,]+/);var i=String(t).toLowerCase();for(var n=0;n<a.length;n++){var r=a[n];if(r&&(r===\"*\"||r.toLowerCase()===i)){return true}}return false}function convertDataDescriptorToAccessor(e,t,a){var i=Object.getOwnPropertyDescriptor(e,t);var n=i.value;i.get=function getter(){return n};if(i.writable){i.set=function setter(e){return n=e}}delete i.value;delete i.writable;Object.defineProperty(e,t,i);return i}function createArgumentsString(e){var t=\"\";for(var a=0;a<e;a++){t+=\", arg\"+a}return t.substr(2)}function createStackString(e){var t=this.name+\": \"+this.namespace;if(this.message){t+=\" deprecated \"+this.message}for(var a=0;a<e.length;a++){t+=\"\\n    at \"+e[a].toString()}return t}function depd(e){if(!e){throw new TypeError(\"argument namespace is required\")}var t=getStack();var a=callSiteLocation(t[1]);var"
+    },
+    {
+      "self_kb": 128,
+      "type": "native",
+      "name": "system / JSArrayBufferData"
+    },
+    {
+      "self_kb": 112,
+      "type": "string",
+      "name": "exports.id=9779,exports.ids=[9779],exports.modules={458:(a,b,c)=>{let d=c(83997),e=c(28354);b.init=function(a){a.inspectOpts={};let c=Object.keys(b.inspectOpts);for(let d=0;d<c.length;d++)a.inspectOpts[c[d]]=b.inspectOpts[c[d]]},b.log=function(...a){return process.stderr.write(e.formatWithOptions(b.inspectOpts,...a)+\"\\n\")},b.formatArgs=function(c){let{namespace:d,useColors:e}=this;if(e){let b=this.color,e=\"\\x1b[3\"+(b<8?b:\"8;5;\"+b),f=`  ${e};1m${d} \\u001B[0m`;c[0]=f+c[0].split(\"\\n\").join(\"\\n\"+f),c.push(e+\"m+\"+a.exports.humanize(this.diff)+\"\\x1b[0m\")}else c[0]=(b.inspectOpts.hideDate?\"\":new Date().toISOString()+\" \")+d+\" \"+c[0]},b.save=function(a){a?process.env.DEBUG=a:delete process.env.DEBUG},b.load=function(){return process.env.DEBUG},b.useColors=function(){return\"colors\"in b.inspectOpts?!!b.inspectOpts.colors:d.isatty(process.stderr.fd)},b.destroy=e.deprecate(()=>{},\"Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.\"),b.color"
+    },
+    {
+      "self_kb": 105,
+      "type": "code",
+      "name": "(script line ends)"
+    },
+    {
+      "self_kb": 103,
+      "type": "string",
+      "name": "exports.id=9551,exports.ids=[9551],exports.modules={2114:(a,b,c)=>{\"use strict\";Object.defineProperty(b,\"__esModule\",{value:!0}),Object.defineProperty(b,\"default\",{enumerable:!0,get:function(){return f}});let d=c(71807),e=c(69479);class f{static fromStatic(a){return new f(a,{metadata:{}})}constructor(a,{contentType:b,waitUntil:c,metadata:d}){this.response=a,this.contentType=b,this.metadata=d,this.waitUntil=c}assignMetadata(a){Object.assign(this.metadata,a)}get isNull(){return null===this.response}get isDynamic(){return\"string\"!=typeof this.response}toUnchunkedBuffer(a=!1){if(null===this.response)throw Object.defineProperty(Error(\"Invariant: null responses cannot be unchunked\"),\"__NEXT_ERROR_CODE\",{value:\"E274\",enumerable:!1,configurable:!0});if(\"string\"!=typeof this.response){if(!a)throw Object.defineProperty(Error(\"Invariant: dynamic responses cannot be unchunked. This is a bug in Next.js\"),\"__NEXT_ERROR_CODE\",{value:\"E81\",enumerable:!1,configurable:!0});return(0,d.streamToBuffer)(this.readable)}return Buffe"
+    },
+    {
+      "self_kb": 99,
+      "type": "array",
+      "name": ""
+    },
+    {
+      "self_kb": 96,
+      "type": "array",
+      "name": "(object properties)"
+    },
+    {
+      "self_kb": 96,
+      "type": "array",
+      "name": "(object properties)"
+    },
+    {
+      "self_kb": 92,
+      "type": "string",
+      "name": "/******/ (() => { // webpackBootstrap\n/******/ \tvar __webpack_modules__ = ({\n\n/***/ 963:\n/***/ ((__unused_webpack_module, exports) => {\n\n/* -*- Mode: js; js-indent-level: 2; -*- */\n/*\n * Copyright 2011 Mozilla Foundation and contributors\n * Licensed under the New BSD license. See LICENSE or:\n * http://opensource.org/licenses/BSD-3-Clause\n */\n\n/**\n * A data structure which is a combination of an array and a set. Adding a new\n * member is O(1), testing for membership is O(1), and finding the index of an\n * element is O(1). Removing elements from the set is not supported. Only\n * strings are supported for membership.\n */\nclass ArraySet {\n  constructor() {\n    this._array = [];\n    this._set = new Map();\n  }\n\n  /**\n   * Static method for creating ArraySet instances from an existing array.\n   */\n  static fromArray(aArray, aAllowDuplicates) {\n    const set = new ArraySet();\n    for (let i = 0, len = aArray.length; i < len; i++) {\n      set.add(aArray[i], aAllowDuplicates);\n    }\n    return set;\n  }\n\n  /**\n   * Retu"
+    },
+    {
+      "self_kb": 87,
+      "type": "string",
+      "name": "(()=>{var a={};a.id=4143,a.ids=[4143],a.modules={2278:(a,b,c)=>{Promise.resolve().then(c.t.bind(c,77766,23)),Promise.resolve().then(c.bind(c,92991)),Promise.resolve().then(c.bind(c,53722))},3295:a=>{\"use strict\";a.exports=require(\"next/dist/server/app-render/after-task-async-storage.external.js\")},10108:(a,b,c)=>{\"use strict\";c.d(b,{Bf:()=>u,Eh:()=>n,Qb:()=>p,z5:()=>o});var d=c(77598),e=c.n(d),f=c(51059),g=c(91060);function h(){return e().randomBytes(24).toString(\"base64url\")}let i=/^[A-Za-z0-9_-]{32}$/;function j(a){return\"string\"==typeof a&&i.test(a)}let k=\"id, tenant_id, agreement_id, reference, status, weekly_gross_pence, deposit_pence, vehicle_value_pence, per_mile_pence, start_mileage, partner_name, partner_approved_at, driver_name, driver_signed_at, created_at, updated_at\";async function l(a,b,c){let{data:d,error:e}=await a.rpc(\"next_ref\",{p_tenant:b,p_kind:c});if(e||!d)throw Error(`could not allocate ${c} reference: ${e?.message??\"none\"}`);return d}async function m(a,b,c,d,e,f){await a.rpc(\"log_audit\""
+    },
+    {
+      "self_kb": 84,
+      "type": "string",
+      "name": "\"use strict\";(()=>{var a={};a.id=3958,a.ids=[3958],a.modules={3295:a=>{a.exports=require(\"next/dist/server/app-render/after-task-async-storage.external.js\")},4988:(a,b,c)=>{c.d(b,{E2:()=>x,Hb:()=>t,Wu:()=>s,b_:()=>y,kT:()=>w,zg:()=>u});var d=c(8946);c(47482);var e=c(39151),f=c(84577),g=c(26421),h=c(46345),i=c(40810),j=c(36070);let k=\"/platform/catalogue\",l=\"/platform/tenants\",m=[\"month\",\"half_year\",\"year\"],n=[\"all\",\"business\",\"individual\"],o=[\"immediate\",\"monthly_batch\"];function p(a){let b=String(a.get(\"region\")??\"\");return\"uk\"===b||\"ng\"===b?b:void 0}function q(a,b,c){let d=String(a.get(b)??\"\");return c.includes(d)?d:void 0}function r(a){let b=[];for(let[c,d]of a.entries())c.startsWith(\"oneoff_\")&&\"on\"===d&&b.push(c.slice(7));return b}async function s(a){await (0,f.A8)();let b=await (0,i.qT)({key:String(a.get(\"key\")??\"\"),name:String(a.get(\"name\")??\"\"),basePricePence:Number(a.get(\"base_price_pence\")??0),interval:q(a,\"interval\",m)??\"month\",region:p(a),perVehicle:\"on\"===a.get(\"per_vehicle\"),audience:q(a,\"audien"
+    }
+  ],
+  "top_aggregated_by_type_name": [
+    {
+      "key": "object shape:system / DescriptorArray",
+      "self": 5822880,
+      "count": 33871,
+      "sample_name": "system / DescriptorArray"
+    },
+    {
+      "key": "object shape:system / Map",
+      "self": 4930488,
+      "count": 68479,
+      "sample_name": "system / Map"
+    },
+    {
+      "key": "array:",
+      "self": 3032048,
+      "count": 2859,
+      "sample_name": ""
+    },
+    {
+      "key": "string:(()=>{var e={5565:e=>{function webpackEmptyAsyncContext(e){r…",
+      "self": 2710760,
+      "count": 1,
+      "sample_name": "(()=>{var e={5565:e=>{function webpackEmptyAsyncContext(e){return Promise.resolve().then((()=>{var t=new Error(\"Cannot find module '\"+e+\"'\");t.code=\"MODULE_NOT_FOUND\";throw t}))}webpackEmptyAsyncContext.keys=()=>[];webpackEmptyAsyncContext.resolve=webpackEmptyAsyncContext;webpackEmptyAsyncContext.id=5565;e.exports=webpackEmptyAsyncContext},3914:function(e,t,r){(function(t,n){true?e.exports=n(r(8536),r(2987)):0})(this,(function(e,t){\"use strict\";const r=SegmentObject(\"\",-1,-1,\"\",null);const n=[];function SegmentObject(e,t,r,n,s){return{source:e,line:t,column:r,name:n,content:s}}function Source(e,t,r,n){return{map:e,sources:t,source:r,content:n}}function MapSource(e,t){return Source(e,t,\"\",null)}function OriginalSource(e,t){return Source(null,n,e,t)}function traceMappings(n){const s=new t.GenMapping({file:n.map.file});const{sources:i,map:a}=n;const o=a.names;const l=e.decodedMappings(a);for(let e=0;e<l.length;e++){const n=l[e];for(let a=0;a<n.length;a++){const l=n[a];const c=l[0];let p=r;if(l.length!==1){const "
+    },
+    {
+      "key": "object:Object",
+      "self": 2085496,
+      "count": 43648,
+      "sample_name": "Object"
+    },
+    {
+      "key": "array:(object properties)",
+      "self": 2023448,
+      "count": 3346,
+      "sample_name": "(object properties)"
+    },
+    {
+      "key": "array:(object elements)",
+      "self": 1853872,
+      "count": 10877,
+      "sample_name": "(object elements)"
+    },
+    {
+      "key": "code:(script line ends)",
+      "self": 1509712,
+      "count": 781,
+      "sample_name": "(script line ends)"
+    },
+    {
+      "key": "string:\"use strict\";\nObject.defineProperty(exports, \"__esModule\", {…",
+      "self": 1429864,
+      "count": 251,
+      "sample_name": "\"use strict\";\nObject.defineProperty(exports, \"__esModule\", {\n    value: true\n});\nObject.defineProperty(exports, \"getSourceMapFromFile\", {\n    enumerable: true,\n    get: function() {\n        return getSourceMapFromFile;\n    }\n});\nconst _interop_require_default = require(\"@swc/helpers/_/_interop_require_default\");\nconst _promises = /*#__PURE__*/ _interop_require_default._(require(\"fs/promises\"));\nconst _path = /*#__PURE__*/ _interop_require_default._(require(\"path\"));\nconst _url = /*#__PURE__*/ _interop_require_default._(require(\"url\"));\nconst _datauritobuffer = /*#__PURE__*/ _interop_require_default._(require(\"next/dist/compiled/data-uri-to-buffer\"));\nconst _getsourcemapurl = require(\"./get-source-map-url\");\nasync function getSourceMapFromFile(filename) {\n    filename = filename.startsWith('file://') ? _url.default.fileURLToPath(filename) : filename;\n    let fileContents;\n    try {\n        fileContents = await _promises.default.readFile(filename, 'utf-8');\n    } catch (error) {\n        throw Object.definePrope"
+    },
+    {
+      "key": "code:system / BytecodeArray",
+      "self": 1174064,
+      "count": 6198,
+      "sample_name": "system / BytecodeArray"
+    },
+    {
+      "key": "hidden:system / PropertyArray",
+      "self": 1132648,
+      "count": 16749,
+      "sample_name": "system / PropertyArray"
+    },
+    {
+      "key": "string:(()=>{var e={\"./dist/build/webpack/alias/react-dom-server-ed…",
+      "self": 992200,
+      "count": 1,
+      "sample_name": "(()=>{var e={\"./dist/build/webpack/alias/react-dom-server-edge.js\":function(e,t,r){\"use strict\";var n;function i(){throw Object.defineProperty(Error(\"Internal Error: do not use legacy react-dom/server APIs. If you encountered this error, please open an issue on the Next.js repo.\"),\"__NEXT_ERROR_CODE\",{value:\"E394\",enumerable:!1,configurable:!0})}t.version=(n=r(\"./dist/compiled/react-dom/cjs/react-dom-server.edge.production.js\")).version,t.renderToReadableStream=n.renderToReadableStream,t.renderToString=i,t.renderToStaticMarkup=i,n.resume&&(t.resume=n.resume)},\"./dist/compiled/@edge-runtime/cookies/index.js\":function(e){\"use strict\";var t=Object.defineProperty,r=Object.getOwnPropertyDescriptor,n=Object.getOwnPropertyNames,i=Object.prototype.hasOwnProperty,a={},o={RequestCookies:()=>p,ResponseCookies:()=>h,parseCookie:()=>u,parseSetCookie:()=>c,stringifyCookie:()=>l};for(var s in o)t(a,s,{get:o[s],enumerable:!0});function l(e){var t;let r=[\"path\"in e&&e.path&&`Path=${e.path}`,\"expires\"in e&&(e.expires||0===e.ex"
+    },
+    {
+      "key": "code:system / ScopeInfo",
+      "self": 960376,
+      "count": 8058,
+      "sample_name": "system / ScopeInfo"
+    },
+    {
+      "key": "object:Array",
+      "self": 811168,
+      "count": 25346,
+      "sample_name": "Array"
+    },
+    {
+      "key": "string:exports.id=9151,exports.ids=[9151],exports.modules={439:(a,b…",
+      "self": 802328,
+      "count": 1,
+      "sample_name": "exports.id=9151,exports.ids=[9151],exports.modules={439:(a,b,c)=>{\"use strict\";Object.defineProperty(b,\"e\",{enumerable:!0,get:function(){return k}});let d=c(43960),e=c(35216),f=c(29294),g=c(63033),h=c(44554),i=0;async function j(a,b,c,e,f,g,i){await b.set(c,{kind:h.CachedRouteKind.FETCH,data:{headers:{},body:JSON.stringify(a),status:200,url:\"\"},revalidate:\"number\"!=typeof f?d.CACHE_ONE_YEAR:f},{fetchCache:!0,tags:e,fetchIdx:g,fetchUrl:i})}function k(a,b,c={}){if(0===c.revalidate)throw Object.defineProperty(Error(`Invariant revalidate: 0 can not be passed to unstable_cache(), must be \"false\" or \"> 0\" ${a.toString()}`),\"__NEXT_ERROR_CODE\",{value:\"E57\",enumerable:!1,configurable:!0});let d=c.tags?(0,e.validateTags)(c.tags,`unstable_cache ${a.toString()}`):[];(0,e.validateRevalidate)(c.revalidate,`unstable_cache ${a.name||a.toString()}`);let l=`${a.toString()}-${Array.isArray(b)&&b.join(\",\")}`;return async(...b)=>{let e=f.workAsyncStorage.getStore(),k=g.workUnitAsyncStorage.getStore(),m=(null==e?void 0:e.incremen"
+    },
+    {
+      "key": "concatenated string:(concatenated string)",
+      "self": 788640,
+      "count": 24645,
+      "sample_name": "(concatenated string)"
+    },
+    {
+      "key": "code:system / FeedbackCell",
+      "self": 642744,
+      "count": 26781,
+      "sample_name": "system / FeedbackCell"
+    },
+    {
+      "key": "code:(constant pool)",
+      "self": 596368,
+      "count": 5638,
+      "sample_name": "(constant pool)"
+    },
+    {
+      "key": "object:system / Context",
+      "self": 530032,
+      "count": 8401,
+      "sample_name": "system / Context"
+    },
+    {
+      "key": "hidden:system / AccessorPair",
+      "self": 525528,
+      "count": 21897,
+      "sample_name": "system / AccessorPair"
+    }
+  ],
+  "top_containers": [
+    {
+      "self_kb": 256,
+      "type": "array",
+      "name": "",
+      "edges": 0
+    },
+    {
+      "self_kb": 99,
+      "type": "array",
+      "name": "",
+      "edges": 1
+    },
+    {
+      "self_kb": 96,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 4559
+    },
+    {
+      "self_kb": 96,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 4457
+    },
+    {
+      "self_kb": 56,
+      "type": "array",
+      "name": "",
+      "edges": 2273
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1931
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 2359
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 2045
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1675
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 2141
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1689
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1514
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object elements)",
+      "edges": 1101
+    },
+    {
+      "self_kb": 48,
+      "type": "array",
+      "name": "(object elements)",
+      "edges": 1101
+    },
+    {
+      "self_kb": 24,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1213
+    },
+    {
+      "self_kb": 24,
+      "type": "array",
+      "name": "(object properties)",
+      "edges": 1215
+    },
+    {
+      "self_kb": 23,
+      "type": "array",
+      "name": "(object elements)",
+      "edges": 0
+    },
+    {
+      "self_kb": 17,
+      "type": "object shape",
+      "name": "system / DescriptorArray",
+      "edges": 927
+    },
+    {
+      "self_kb": 16,
+      "type": "array",
+      "name": "(object elements)",
+      "edges": 0
+    },
+    {
+      "self_kb": 16,
+      "type": "array",
+      "name": "(object elements)",
+      "edges": 0
+    }
+  ]
+}
