@@ -12,6 +12,7 @@ EnvironmentFile=/etc/brownhill/secrets/jwt.env
 Environment=DEPLOYMENT_PROFILE=hosted
 Environment=NODE_ENV=production
 Environment=PORT=55431
+Environment=HOSTNAME=127.0.0.1
 Environment=HOST=127.0.0.1
 ExecStart=/usr/bin/node server.js
 Restart=on-failure
