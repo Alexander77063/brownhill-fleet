@@ -234,6 +234,33 @@ export async function listMembers(tenantId: string): Promise<Member[]> {
   }));
 }
 
+/** One member of the current tenant, or null if not a member. */
+export async function getMember(tenantId: string, userId: string): Promise<Member | null> {
+  const sb = createServiceClient();
+  const { data: row } = await sb
+    .from("tenant_memberships")
+    .select("user_id, role, permissions, status")
+    .eq("tenant_id", tenantId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!row) return null;
+  const r = row as { user_id: string; role: string; permissions: string[]; status: string };
+  const { data: profile } = await sb
+    .from("profiles")
+    .select("full_name, email")
+    .eq("id", userId)
+    .maybeSingle();
+  const p = profile as { full_name: string | null; email: string | null } | null;
+  return {
+    user_id: r.user_id,
+    role: r.role,
+    permissions: r.permissions ?? [],
+    status: r.status,
+    full_name: p?.full_name ?? null,
+    email: p?.email ?? null,
+  };
+}
+
 /** Add an existing user (by email) to the tenant with a role. Invite-by-email for
  * users who haven't signed up yet is a later enhancement. */
 export async function addMemberByEmail(
@@ -241,6 +268,7 @@ export async function addMemberByEmail(
   email: string,
   role: string,
   actor: string,
+  extraPermissions: readonly string[] = [],
 ): Promise<{ created: boolean; emailed: boolean }> {
   const sb = createServiceClient();
   const cleanEmail = email.trim().toLowerCase();
@@ -271,7 +299,12 @@ export async function addMemberByEmail(
     const { data: authData, error: createErr } = await sb.auth.admin.createUser({
       email: cleanEmail,
       email_confirm: true,
-      user_metadata: { role: "ops", full_name: cleanEmail.split("@")[0] },
+      // The handle_new_user trigger reads raw_user_meta_data->>'role' to
+      // decide which portal the new account lands on. A freshly-created
+      // member's role must match the role they're being added under so
+      // they're routed to /accounts (not /ops) when their row is later
+      // updated with the same role on tenant_memberships.
+      user_metadata: { role, full_name: cleanEmail.split("@")[0] },
     });
     if (createErr || !authData?.user)
       throw new Error(
@@ -284,7 +317,15 @@ export async function addMemberByEmail(
   const { error } = await sb
     .from("tenant_memberships")
     .upsert(
-      { tenant_id: tenantId, user_id: userId, role, status: "active" },
+      {
+        tenant_id: tenantId,
+        user_id: userId,
+        role,
+        status: "active",
+        // Empty array on re-add so a previously-disabled member with stale perms
+        // doesn't get a free permission re-grant from a re-invite.
+        permissions: extraPermissions as never,
+      },
       { onConflict: "tenant_id,user_id" },
     );
   if (error) throw new Error(`Could not add member: ${error.message}`);

@@ -55,7 +55,17 @@ export async function addMemberAction(formData: FormData): Promise<void> {
   const ctx = await requirePermission('members.manage');
   const role = String(formData.get('role') ?? 'ops');
   assertAssignableRole(role, ctx.role); // validate + block owner/admin escalation
-  await addMemberByEmail(ctx.tenantId, String(formData.get('email') ?? ''), role, ctx.userId);
+  // Extra permissions a member gets on top of their role defaults — what lets a
+  // single-operator org hand-pick exactly what the accountant can see and do
+  // without inventing a new role.
+  const extra = formData.getAll('permission').map(String).filter(Boolean);
+  await addMemberByEmail(
+    ctx.tenantId,
+    String(formData.get('email') ?? ''),
+    role,
+    ctx.userId,
+    extra,
+  );
   revalidatePath('/admin');
 }
 
@@ -65,12 +75,21 @@ export async function updateMemberAction(formData: FormData): Promise<void> {
   const statusRaw = String(formData.get('status') ?? '');
   if (roleRaw) assertAssignableRole(roleRaw, ctx.role);
   if (statusRaw && !isAssignableStatus(statusRaw)) throw new Error(`Invalid status: ${statusRaw}`);
+  // Permissions: a single hidden "permissions_dirty" sentinel tells us the form
+  // submitted an explicit set (even if empty) so we don't accidentally overwrite
+  // stored permissions with `undefined`. Without it, omitting the field would
+  // be ambiguous between "unchanged" and "cleared".
+  const permissionsTouched = formData.get('permissions_dirty') === '1';
+  const permissions = permissionsTouched
+    ? formData.getAll('permission').map(String).filter((p) => p !== '')
+    : undefined;
   await updateMember(
     ctx.tenantId,
     String(formData.get('user_id') ?? ''),
     {
       role: roleRaw || undefined,
       status: statusRaw ? (statusRaw as 'active' | 'disabled') : undefined,
+      permissions,
     },
     ctx.userId,
   );

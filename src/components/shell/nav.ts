@@ -19,6 +19,7 @@ export interface NavItem {
 /** Where each portal role lands after sign-in, and is bounced to when it strays. */
 export const ROLE_HOME: Record<UserRole, string> = {
   ops: '/ops',
+  accounts: '/accounts',
   driver: '/driver',
   investor: '/investor',
   owner: '/owner',
@@ -45,6 +46,17 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/ops/import', label: 'Bulk import', icon: 'upload' },
     { href: '/ops/comms', label: 'Comms', icon: 'bell' },
     { href: '/ops/profile', label: 'Profile & security', icon: 'shield' },
+  ],
+  // Accountant portal — a finance-only view of the same data. Same permissions
+  // back the page-level checks; the layout is what gives them a landing place.
+  accounts: [
+    { href: '/accounts', label: 'Dashboard', icon: 'dashboard', primary: true },
+    { href: '/accounts/billing', label: 'Billing', icon: 'receipt', primary: true },
+    { href: '/accounts/expenses', label: 'Expenses', icon: 'wallet', primary: true },
+    { href: '/accounts/fuel', label: 'Fuel', icon: 'wallet', primary: true },
+    { href: '/accounts/finance', label: 'Finance & VAT', icon: 'pound', primary: true },
+    { href: '/accounts/reports', label: 'Reports', icon: 'trending' },
+    { href: '/accounts/profile', label: 'Profile & security', icon: 'shield' },
   ],
   driver: [
     { href: '/driver', label: 'Home', icon: 'wallet', primary: true },
@@ -79,6 +91,7 @@ export function navFor(role: UserRole, features: ReadonlySet<string>): NavItem[]
 
 export const ROLE_LABEL: Record<UserRole, string> = {
   ops: 'Operations',
+  accounts: 'Accounts',
   driver: 'Driver',
   investor: 'Investor',
   owner: 'Vehicle owner',

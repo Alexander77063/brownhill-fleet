@@ -29,9 +29,11 @@ export interface RecipientOption {
 export function SendNoticeForm({
   drivers,
   owners,
+  staff,
 }: {
   drivers: RecipientOption[];
   owners: RecipientOption[];
+  staff: RecipientOption[];
 }) {
   const [state, formAction, pending] = useActionState(
     async (_prev: SendNoticeResult, fd: FormData) => sendNoticeAction(fd),
@@ -58,6 +60,14 @@ export function SendNoticeForm({
           <label className="flex items-center gap-2">
             <input type="radio" name="kind" value="owner_all" />
             <span className="text-sm text-cream">All vehicle owners</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="kind" value="staff_single" />
+            <span className="text-sm text-cream">One staff member</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" name="kind" value="staff_all" />
+            <span className="text-sm text-cream">All staff</span>
           </label>
         </div>
       </fieldset>
@@ -144,6 +154,11 @@ export function SendNoticeForm({
           {owners.map((o) => (
             <li key={o.id}>
               owner · {o.label} {!o.has_email && !o.has_phone && <span className="text-amber-300">(no channels)</span>}
+            </li>
+          ))}
+          {staff.map((s) => (
+            <li key={s.id}>
+              staff · {s.label} {!s.has_email && !s.has_phone && <span className="text-amber-300">(no channels)</span>}
             </li>
           ))}
         </ul>

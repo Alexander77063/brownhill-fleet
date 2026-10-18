@@ -6,7 +6,7 @@
 
 import { PageHeader, Card, CardTitle } from '@/components/ui';
 import { getAuthContext } from '@/lib/auth/context';
-import { listDriversForComms, listOwnersForComms } from '@/lib/comms';
+import { listDriversForComms, listOwnersForComms, listStaffForComms } from '@/lib/comms';
 import { SendNoticeForm } from './SendNoticeForm';
 
 export const dynamic = 'force-dynamic';
@@ -15,16 +15,20 @@ export default async function CommsPage() {
   const ctx = await getAuthContext();
   const tenantId = ctx?.tenantId ?? '';
 
-  const [drivers, owners] = tenantId
-    ? await Promise.all([listDriversForComms(tenantId), listOwnersForComms(tenantId)])
-    : [[], []];
+  const [drivers, owners, staff] = tenantId
+    ? await Promise.all([
+        listDriversForComms(tenantId),
+        listOwnersForComms(tenantId),
+        listStaffForComms(tenantId),
+      ])
+    : [[], [], []];
 
   return (
     <>
       <PageHeader
         eyebrow="Comms"
         title="Send a notice"
-        subtitle="A one-shot email + SMS to one person, a whole role, or both. Recipients without an email or phone on file are skipped (and listed below)."
+        subtitle="A one-shot email + SMS to one person, a whole role, or the whole team. Recipients without an email or phone on file are skipped (and listed below)."
       />
 
       <Card className="reveal mt-5 max-w-2xl">
@@ -45,6 +49,12 @@ export default async function CommsPage() {
               label: o.display_name,
               has_email: o.has_email,
               has_phone: o.has_phone,
+            }))}
+            staff={staff.map((s) => ({
+              id: s.id,
+              label: s.full_name || s.id,
+              has_email: s.has_email,
+              has_phone: s.has_phone,
             }))}
           />
         </div>

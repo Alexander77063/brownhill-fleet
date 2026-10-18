@@ -10,6 +10,7 @@ import {
   updateMemberAction,
   updateSettingsAction,
 } from '@/lib/actions/admin';
+import { groupPermissions } from '@/app/admin/permissions-catalog';
 
 export const dynamic = 'force-dynamic';
 
@@ -134,6 +135,28 @@ export default async function AdminPage() {
                   {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
               </Field>
+              <Field
+                label="Extra permissions"
+                hint="On top of what the role grants — pick exactly what they need (e.g. an accountant gets billing.write + payments.record + reads)."
+              >
+                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-hair-soft bg-[var(--surface-soft)] p-3">
+                  {groupPermissions().map((g) => (
+                    <fieldset key={g.group} className="rounded-md border border-hair-soft p-2">
+                      <legend className="px-1 text-[10px] font-semibold uppercase tracking-wider text-parchment">
+                        {g.group}
+                      </legend>
+                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                        {g.items.map((p) => (
+                          <label key={p.key} className="flex items-center gap-2 text-xs text-cream">
+                            <input type="checkbox" name="permission" value={p.key} className="accent-[var(--color-gold)]" />
+                            <span>{p.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                  ))}
+                </div>
+              </Field>
               <Button type="submit" variant="outline" size="sm">Add member</Button>
             </form>
           </Card>
@@ -185,7 +208,14 @@ export default async function AdminPage() {
           <h2 className="mb-3 font-display text-xl text-cream">Members</h2>
           <Table caption="Members">
             <thead>
-              <tr><Th>Name</Th><Th>Email</Th><Th>Role</Th><Th>Status</Th><Th> </Th></tr>
+              <tr>
+                <Th>Name</Th>
+                <Th>Email</Th>
+                <Th>Role</Th>
+                <Th>Status</Th>
+                <Th>Extras</Th>
+                <Th className="text-right">Actions</Th>
+              </tr>
             </thead>
             <tbody>
               {members.map((m) => (
@@ -207,7 +237,18 @@ export default async function AdminPage() {
                     </form>
                   </Td>
                   <Td><Badge tone={m.status === 'active' ? 'profit' : 'neutral'}>{m.status}</Badge></Td>
-                  <Td> </Td>
+                  <Td>
+                    <Badge tone={(m.permissions ?? []).length > 0 ? 'profit' : 'neutral'}>
+                      {(m.permissions ?? []).length > 0
+                        ? `${(m.permissions ?? []).length} extra${(m.permissions ?? []).length === 1 ? '' : 's'}`
+                        : 'role defaults'}
+                    </Badge>
+                  </Td>
+                  <Td className="text-right">
+                    <Button href={`/admin/members/${m.user_id}`} variant="outline" size="sm">
+                      Edit
+                    </Button>
+                  </Td>
                 </tr>
               ))}
             </tbody>
