@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 // SaaS code wires the bridge).
 import {
   REOPEN_WINDOW_DAYS,
+  assertPeriodOpenForPosting,
 } from '@/lib/accounting/periods';
 
 describe('period reopen-window constants', () => {
@@ -26,6 +27,6 @@ describe('assertPeriodOpenForPosting (rules)', () => {
   // bridge's transaction wrapper. The integration test is in TBD when the SaaS
   // app code wires commitJournalForInvoice.
   it('exists and is async', () => {
-    expect(typeof import('@/lib/accounting/periods').assertPeriodOpenForPosting).toBe('function');
+    expect(typeof assertPeriodOpenForPosting).toBe('function');
   });
 });

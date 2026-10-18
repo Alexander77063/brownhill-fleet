@@ -10,6 +10,9 @@ import { localDb } from '@/lib/auth/local-store';
 type Sql = Awaited<ReturnType<typeof localDb>>;
 
 const REOPEN_WINDOW_DAYS = 7;
+// Exported so tests / callers can compare against the canonical value without
+// duplicating it. Same value used by the close-then-reopen rule below.
+export { REOPEN_WINDOW_DAYS };
 
 export interface Period {
   id: string;
