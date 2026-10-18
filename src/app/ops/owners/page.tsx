@@ -35,6 +35,7 @@ export default async function OwnersPage() {
                 <Th>Email</Th>
                 <Th className="text-right">Vehicles</Th>
                 <Th>Account</Th>
+                <Th className="text-right">Actions</Th>
               </tr>
             </thead>
             <tbody>
@@ -49,6 +50,16 @@ export default async function OwnersPage() {
                   <Td>{o.email ?? '—'}</Td>
                   <Td className="text-right tnum">{o.vehicles}</Td>
                   <Td>{o.user_id ? <Badge tone="profit">signed in</Badge> : <span className="text-muted">not yet</span>}</Td>
+                  <Td className="text-right">
+                    <Button
+                      href={`/ops/owners/${o.id}`}
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Edit ${o.name}`}
+                    >
+                      Edit
+                    </Button>
+                  </Td>
                 </tr>
               ))}
             </tbody>

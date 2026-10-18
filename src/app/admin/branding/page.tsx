@@ -17,11 +17,25 @@ const inputCls =
 export default async function BrandingPage() {
   const ctx = await getAuthContext();
   if (!ctx || !contextCan(ctx, 'tenant.settings')) {
+    // "tenant.settings" is the permission that gates Branding. It is granted to
+    // the owner role on first-run setup and to anyone later granted it by an
+    // owner. Tell the user exactly that, instead of a bare "no permission",
+    // so they know who to ask or which role to grant themselves.
     return (
       <Wrap>
         <PageHeader eyebrow="Settings" title="Branding & customization" />
         <Card>
-          <p className="text-sm text-muted">You don&apos;t have permission to manage branding for this organisation.</p>
+          <p className="text-sm text-cream">
+            You don&apos;t have permission to manage branding for this organisation.
+          </p>
+          <p className="mt-3 text-sm text-muted">
+            Branding is gated by the <span className="font-mono text-cream">tenant.settings</span> permission,
+            which is held by the <span className="font-mono text-cream">owner</span> role. Ask the account
+            owner to grant you this permission, or sign in as the owner to make changes yourself.
+          </p>
+          <div className="mt-4">
+            <Button href="/ops" variant="ghost" size="sm">Back to dashboard</Button>
+          </div>
         </Card>
       </Wrap>
     );

@@ -96,7 +96,7 @@ export default async function DriversPage() {
                 <Th>PCO licence</Th>
                 <Th>PCO expiry</Th>
                 <Th>DVLA checked</Th>
-                <Th>{''}</Th>
+                <Th className="text-right">Actions</Th>
               </tr>
             </thead>
             <tbody>
@@ -124,15 +124,14 @@ export default async function DriversPage() {
                     </Td>
                     <Td>{formatDate(d.dvla_checked_on)}</Td>
                     <Td className="text-right">
-                      {/* Decorative — the name cell already links here with a real name. */}
-                      <Link
+                      <Button
                         href={`/ops/drivers/${d.id}`}
-                        aria-hidden="true"
-                        tabIndex={-1}
-                        className="text-gold-bright opacity-0 transition-opacity group-hover:opacity-100"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Edit ${d.full_name}`}
                       >
-                        <Icon name="chevron" className="h-4 w-4" />
-                      </Link>
+                        Edit
+                      </Button>
                     </Td>
                   </tr>
                 );

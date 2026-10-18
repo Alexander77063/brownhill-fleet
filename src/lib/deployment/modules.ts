@@ -36,6 +36,23 @@ export const PROFILE_MODULES: Record<ProfileId, readonly FeatureKey[]> = {
     'booking.b2b',
   ],
 
+  // Brownhill hosted: the same feature set as standalone — single tenant, UK,
+  // installed by hand. Just on a Linux box instead of a Windows one, so the
+  // entitlement grant source is identical.
+  hosted: [
+    'fleet.core',
+    'rental.core',
+    'compliance',
+    'documents',
+    'contracts',
+    'charges.reconciliation',
+    'reports.director',
+    'notifications.email',
+    'notifications.sms',
+    'gps.phone',
+    'booking.b2b',
+  ],
+
   // Nigeria (a fleet or an insurer on its own instance). Nothing by profile:
   // the tenant bought Standard, Gold or Platinum, and the catalogue — editable
   // in the platform console — is the only thing that says what that includes.

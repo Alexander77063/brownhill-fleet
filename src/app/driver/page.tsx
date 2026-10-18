@@ -4,6 +4,7 @@ import { getSessionProfile } from '@/lib/auth';
 import { getMyActiveAgreement, getInvoicesForAgreement, getEquityForAgreement } from '@/lib/queries';
 import { formatDate } from '@/lib/display';
 import { operatorName } from '@/lib/branding';
+import { getAuthContext } from '@/lib/auth/context';
 import { PlanNotice } from '@/components/PlanNotice';
 
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,14 @@ export default async function DriverHome({
   const p = await getSessionProfile();
   // A driver hires from the operator, not from whoever wrote the software.
   const operator = await operatorName();
+
+  // Surface a "back to admin" link for users who ALSO hold an ops/admin
+  // membership in any tenant — typically the same person testing the driver
+  // experience from their own operator account, or a super-admin peeking at
+  // a tenant driver view. Without this they're stuck: sign-out lives in the
+  // shell, and switching the active membership happens at the auth layer.
+  const ctx = await getAuthContext();
+  const hasOpsAccess = (ctx?.memberships ?? []).some((m) => m.role === 'ops' || m.role === 'owner');
 
   if (!p?.driverId) {
     return (
@@ -71,6 +80,21 @@ export default async function DriverHome({
 
   return (
     <>
+      {hasOpsAccess && (
+        // Visible only to users who also hold an ops/owner role. Shows on every
+        // state — empty or populated — because the value is letting the user
+        // return to the admin surface they came from, not anything about their
+        // driver data.
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-[var(--radius)] border border-hair-soft bg-[var(--surface-soft)] px-4 py-2 text-sm">
+          <span className="text-muted">
+            <Icon name="shield" className="mr-2 inline h-4 w-4 text-gold" />
+            You also have an operator account.
+          </span>
+          <Button href="/ops" variant="outline" size="sm">
+            Switch to admin
+          </Button>
+        </div>
+      )}
       <PageHeader
         eyebrow="Your account"
         title={`Hello${p.fullName ? `, ${p.fullName.split(' ')[0]}` : ''}`}
