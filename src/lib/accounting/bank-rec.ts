@@ -28,13 +28,26 @@ export interface ParsedStatement {
 
 export function detectFormat(headerLine: string): BankFormat {
   const h = headerLine.toLowerCase();
-  if (h.includes('barclays') || h.includes('date') && h.includes('type') && h.includes('amount')) {
-    // Barclays' standard export starts with "Date,Type,Description,Value,Balance,Account Name"
+  // Barclays' standard export: "Date,Type,Description,Value,Balance,Account Name,Account Number"
+  // — the amount column is named "Value" (not "Amount") and the unique markers
+  // are the "Account Name" + "Account Number" pair.
+  if (h.includes('barclays') || (h.includes('value') && h.includes('account name') && h.includes('account number'))) {
     return 'barclays';
   }
-  if (h.includes('hsbc')) return 'hsbc';
-  if (h.includes('starling')) return 'starling';
-  if (h.includes('lloyds') || h.includes('transaction date') && h.includes('type') && h.includes('amount')) return 'lloyds';
+  // HSBC: 4-column "Date,Description,Amount,Balance,Account" — Date, Description,
+  // Amount, Balance all present in that order is the unique signature.
+  if (h.includes('hsbc') || (h.startsWith('date,description,amount') && h.includes('balance') && h.includes('account'))) {
+    return 'hsbc';
+  }
+  // Starling: 7-column with "Counterparty" and "Reference" columns (no other UK
+  // bank exports carry Counterparty).
+  if (h.includes('starling') || (h.includes('counterparty') && h.includes('reference') && h.includes('amount'))) {
+    return 'starling';
+  }
+  // Lloyds: starts with "Transaction Date" (distinctive — others just say "Date").
+  if (h.includes('lloyds') || (h.includes('transaction date') && h.includes('type') && h.includes('amount'))) {
+    return 'lloyds';
+  }
   return 'unknown';
 }
 
@@ -147,6 +160,10 @@ function parseRow(format: BankFormat, cells: string[]): ParsedTransaction {
         counterparty: cells[2] ?? null,
       };
   }
+  // Unreachable: detectFormat() guarantees `format` is never 'unknown' by the
+  // time we reach here. The throw is a runtime safety net if that invariant
+  // ever breaks (e.g. someone calls parseRow directly with a sentinel).
+  throw new Error(`parseRow: unhandled format ${format}`);
 }
 
 // ── Auto-matcher ────────────────────────────────────────────────────────────
