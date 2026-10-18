@@ -1,8 +1,13 @@
-import { PageHeader, Card, CardTitle, Money, Table, Th, Td, EmptyState } from '@/components/ui';
+import { PageHeader, Card, CardTitle, Money, Table, Th, Td, EmptyState, Button } from '@/components/ui';
 import { formatDate } from '@/lib/display';
 import { getVatByQuarter, getFinanceAgreements } from '@/lib/queries-ops';
+import { getVehicles } from '@/lib/queries';
+import { createFinanceAgreement } from '@/lib/actions/ops';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
 import { listRecentQuarters, getVatReturn, vatReturnBoxes } from '@/lib/ops/vat-return';
+
+const inputCls =
+  'rounded-md border border-hair bg-[var(--surface)] px-2.5 py-1.5 text-sm text-cream focus:border-gold-bright focus:outline-none';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,9 +27,10 @@ export default async function AccountsFinancePage() {
       </>
     );
   }
-  const [byQuarter, finance] = await Promise.all([
+  const [byQuarter, finance, vehicles] = await Promise.all([
     getVatByQuarter(),
     getFinanceAgreements(),
+    canBilling ? getVehicles() : Promise.resolve([] as Awaited<ReturnType<typeof getVehicles>>),
   ]);
 
   // Latest two VAT-return boxes — accountants want to see what the box figures
@@ -139,6 +145,74 @@ export default async function AccountsFinancePage() {
           Recording and editing lives at <a className="text-gold-bright hover:underline" href="/ops/finance">/ops/finance</a>.
         </p>
       </section>
+
+      {canBilling && (
+        <Card className="mt-4">
+          <CardTitle>Record a finance agreement</CardTitle>
+          {vehicles.length === 0 ? (
+            <EmptyState title="No vehicles yet" hint="Add a vehicle at /ops/fleet first." />
+          ) : (
+            <form action={createFinanceAgreement} className="mt-4 flex flex-wrap gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Vehicle</span>
+                <select name="vehicle_id" required className={inputCls}>
+                  <option value="">Select vehicle…</option>
+                  {vehicles.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.registration}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Funder</span>
+                <input name="funder" placeholder="Lender" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Reference</span>
+                <input name="reference" placeholder="Agreement ref" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Initial rental (£)</span>
+                <input name="initial_rental" type="number" step="0.01" min="0" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Monthly payment (£)</span>
+                <input name="monthly_payment" type="number" step="0.01" min="0" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">APR (%)</span>
+                <input name="apr" type="number" step="0.01" min="0" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Term (months)</span>
+                <input name="term_months" type="number" required min="1" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Start</span>
+                <input name="start_on" type="date" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">Amount financed (£)</span>
+                <input name="amount_financed" type="number" step="0.01" min="0" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">GFV / balloon (£)</span>
+                <input name="gfv_amount" type="number" step="0.01" min="0" className={inputCls} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="eyebrow text-parchment">GFV due</span>
+                <input name="gfv_due_on" type="date" className={inputCls} />
+              </label>
+              <div className="flex items-end">
+                <Button type="submit" variant="primary">
+                  Save finance agreement
+                </Button>
+              </div>
+            </form>
+          )}
+        </Card>
+      )}
     </>
   );
 }

@@ -1,13 +1,22 @@
-import { PageHeader, Card, CardTitle, Money, Table, Th, Td, EmptyState } from '@/components/ui';
+import { PageHeader, Card, CardTitle, Money, Table, Th, Td, EmptyState, Button } from '@/components/ui';
 import { formatDate } from '@/lib/display';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
-import { expenseSummaryByCategory, listExpenses } from '@/lib/expenses';
+import { expenseSummaryByCategory, listExpenses, listCategories, listVehicleOptions } from '@/lib/expenses';
+import { recordExpenseAction } from '@/lib/actions/expenses';
+
+// <form action={...}> requires void. recordExpenseAction returns a structured
+// result for useFormState; the wrapper throws away the result so the form's
+// action prop is well-typed.
+async function submitExpense(fd: FormData): Promise<void> {
+  await recordExpenseAction(fd);
+}
 
 export const dynamic = 'force-dynamic';
 
 export default async function AccountsExpensesPage() {
   const ctx = await requireTenantContext();
   const canRead = contextCan(ctx, 'billing.read');
+  const canWrite = contextCan(ctx, 'billing.write');
   if (!canRead) {
     return (
       <>
@@ -21,17 +30,22 @@ export default async function AccountsExpensesPage() {
       </>
     );
   }
-  const [summary, recent] = await Promise.all([
+
+  const [summary, recent, categories, vehicles] = await Promise.all([
     expenseSummaryByCategory(ctx.tenantId),
-    listExpenses(ctx.tenantId, 50),
+    listExpenses(ctx.tenantId),
+    canWrite ? listCategories(ctx.tenantId) : Promise.resolve([] as Awaited<ReturnType<typeof listCategories>>),
+    canWrite ? listVehicleOptions(ctx.tenantId) : Promise.resolve([] as Awaited<ReturnType<typeof listVehicleOptions>>),
   ]);
+
   const total = summary.reduce((s, c) => s + c.total_pence, 0);
+
   return (
     <>
       <PageHeader
         eyebrow="Accounts · Expenses"
         title="Expenses"
-        subtitle="Per-category totals + the 50 most recent expense rows. Recording & editing live at /ops/expenses."
+        subtitle="Per-category totals + the 50 most recent expense rows. Recording & editing available below if granted."
       />
       <Card>
         <CardTitle>By category</CardTitle>
@@ -57,6 +71,69 @@ export default async function AccountsExpensesPage() {
           </Table>
         )}
       </Card>
+
+      {canWrite && (
+        <Card className="mt-4 max-w-2xl">
+          <CardTitle>Record expense</CardTitle>
+          {categories.length === 0 ? (
+            <EmptyState title="No categories yet" hint="Create one at /ops/expenses first." />
+          ) : (
+            <form action={submitExpense} className="mt-4 space-y-3">
+              <label className="block">
+                <span className="eyebrow text-parchment">Category</span>
+                <select name="category_id" required className="mt-1 w-full rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream">
+                  <option value="">Select category…</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="eyebrow text-parchment">Amount (£)</span>
+                <input
+                  name="amount"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  placeholder="125.00"
+                  className="mt-1 w-full tnum rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream"
+                />
+              </label>
+              <label className="block">
+                <span className="eyebrow text-parchment">Incurred on</span>
+                <input
+                  name="incurred_on"
+                  type="date"
+                  required
+                  className="mt-1 w-full rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream"
+                />
+              </label>
+              <label className="block">
+                <span className="eyebrow text-parchment">Description</span>
+                <input
+                  name="description"
+                  placeholder="Diesel — vehicle ABC"
+                  className="mt-1 w-full rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream"
+                />
+              </label>
+              {vehicles.length > 0 && (
+                <label className="block">
+                  <span className="eyebrow text-parchment">Vehicle (optional)</span>
+                  <select name="vehicle_id" className="mt-1 w-full rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream">
+                    <option value="">—</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>{v.registration}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <Button type="submit" className="w-full">Record expense</Button>
+            </form>
+          )}
+        </Card>
+      )}
+
       <section className="mt-4">
         <h2 className="mb-3 font-display text-xl text-cream">Recent</h2>
         {recent.length === 0 ? (
