@@ -113,6 +113,32 @@ export async function lockPeriod(year: number, month: number, userId: string): P
   `;
 }
 
+/** All known periods, newest first. Used by the /accounts/accounting/periods page. */
+export async function listPeriods(): Promise<Period[]> {
+  const sql = await localDb();
+  const rows = (await sql`
+    select id, year, month, closed_at, closed_by_user_id, locked_at
+      from accounting.periods
+     order by year desc, month desc
+  `) as Array<{
+    id: string; year: number; month: number;
+    closed_at: string | null; closed_by_user_id: string | null; locked_at: string | null;
+  }>;
+  return rows.map((r) => ({
+    id: r.id, year: r.year, month: r.month,
+    closedAt: r.closed_at ? new Date(r.closed_at) : null,
+    closedByUserId: r.closed_by_user_id,
+    lockedAt: r.locked_at ? new Date(r.locked_at) : null,
+  }));
+}
+
+/** Ensure the period for (year, month) exists. Idempotent — used by the page
+ *  on first visit so the operator can close/reopen it without racing the
+ *  journal-bridge's lazy open. */
+export async function ensurePeriod(year: number, month: number): Promise<Period> {
+  return openPeriod(year, month);
+}
+
 /**
  * Internal guard: throws if the period is closed or locked. Called from
  * journal-bridge BEFORE the journal insert.

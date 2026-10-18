@@ -28,12 +28,17 @@ export async function aggregateVatReturn(year: number, month: number): Promise<V
   // Pull net + VAT totals per vat_code for invoices issued in the period.
   // (Box 1 = T1 net; Box 2 = T0 net; Box 3 = T9 net; Box 4 base = all net;
   // Box 5 base + Box 6 base = 0 in v1; Box 5/6 don't apply since no supplier bills.)
+  // Review I2 fix: UK accrual-basis VAT is due on the tax point (invoice issue),
+  // not the payment date. Previously `where i.status = 'open'` excluded
+  // `paid` / `part_paid` / `overdue` invoices, so a quarter with mostly-paid
+  // invoices submitted a near-zero box 1. The spec (and the report's name)
+  // mean "issued in the period"; we now include every non-void invoice.
   const rows = (await sql`
     select vc.code, sum(coalesce(i.net_pence, 0))::bigint as net_pence,
                   sum(coalesce(i.vat_pence, 0))::bigint as vat_pence
       from public.invoices i
       left join accounting.vat_codes vc on vc.id = i.vat_code_id
-     where i.status = 'open'
+     where i.status <> 'void'
        and date_trunc('month', i.issued_at) = date_trunc('month', make_date(${year}::int, ${month}::int, 1))
      group by vc.code
   `) as Array<{ code: string | null; net_pence: string; vat_pence: string }>;

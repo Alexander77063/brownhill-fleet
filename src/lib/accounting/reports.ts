@@ -228,6 +228,12 @@ export async function renderArAging(asOfDate: Date): Promise<ArAgingResult> {
   // The "customer" is whatever column the SaaS app's invoice has; we read it
   // from invoices.contact_id and assume there's a name lookup. The SaaS team
   // wires the actual customer name.
+  // Review I2 fix: the report name is "AR aging" — the *outstanding* balance
+  // per age bucket. The previous `where i.status = 'open'` excluded any
+  // invoice that's been touched by a payment (part_paid / paid) or marked
+  // overdue, so `part_paid` rows — the very ones an aging report is meant
+  // to surface — silently disappeared. Now we keep every non-void invoice
+  // that has any positive outstanding balance on or before the as-of date.
   const sql = await localDb();
   const rows = (await sql`
     select i.id as invoice_id, i.contact_id as customer_id,
@@ -235,7 +241,8 @@ export async function renderArAging(asOfDate: Date): Promise<ArAgingResult> {
            i.issued_at,
            extract(epoch from (${asOfDate.toISOString()}::timestamptz - i.issued_at)) / 86400.0 as age_days
       from public.invoices i
-     where i.status = 'open'
+     where i.status <> 'void'
+       and i.gross_pence - coalesce((select sum(amount_pence) from public.payments p where p.invoice_id = i.id and p.status = 'confirmed'), 0) > 0
        and i.issued_at <= ${asOfDate.toISOString()}::timestamptz
   `) as Array<{ invoice_id: string; customer_id: string; outstanding_pence: string; issued_at: string; age_days: string }>;
   const arRows: ArRow[] = rows.map(r => {

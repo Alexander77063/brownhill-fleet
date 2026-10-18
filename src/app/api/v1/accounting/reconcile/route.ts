@@ -1,16 +1,25 @@
 // src/app/api/v1/accounting/reconcile/route.ts
-// Owner-only POST handler for the reconciliation queue. Form-encoded body:
+// POST handler for the reconciliation queue. Form-encoded body:
 //   bankTxId=<uuid>&action=match|vat|fee|ignore
 // Each action either calls the appropriate journal-bridge function and
 // flips bank_transactions.status, or marks it ignored.
+//
+// Permission-gated to billing.write — only an operator or accountant with
+// billing.write may mutate reconciliation state. (Review C1.)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
+import { requirePermission } from '@/lib/auth/context';
 import { postVatPaymentJournal, postBankFeeJournal, type Pounds } from '@/lib/accounting/journal';
 
 const ALLOWED = new Set(['match', 'vat', 'fee', 'ignore']);
 
 export async function POST(req: NextRequest) {
+  // C1: gate. C2: read the real session — the userId/tenantId written by
+  // commitJournalForPayment must reference real auth.users rows; FK violations
+  // would otherwise roll back every reconcile and every MTD submit.
+  const ctx = await requirePermission('billing.write');
+
   const form = await req.formData();
   const bankTxId = String(form.get('bankTxId') ?? '');
   const action = String(form.get('action') ?? '');
@@ -33,6 +42,7 @@ export async function POST(req: NextRequest) {
   // Per action: post the matching journal entry, then flip bank_transactions.status.
   // For "match" and "ignore" there is no GL entry (match reuses the payment's
   // existing GL entry; ignore is a no-post).
+  // I1: redirects land back on the /accounts/accounting/* tree the operator came from.
 
   if (action === 'vat') {
     // Operator marked as VAT payment to HMRC. Per spec §2 rule #6.
@@ -44,8 +54,8 @@ export async function POST(req: NextRequest) {
     const result = postVatPaymentJournal({
       bankTxId, amount: amountPence, vatPayableAccountId: vatPayableId, bankGlAccountId: bankGlId,
     });
-    await persistFromForm(sql, bankTxId, 'manually_matched', result);
-    return NextResponse.redirect(new URL('/admin/accounting/reconcile', req.url), 303);
+    await persistFromForm(ctx, sql, bankTxId, 'manually_matched', result);
+    return NextResponse.redirect(new URL('/accounts/accounting/reconcile', req.url), 303);
   }
 
   if (action === 'fee') {
@@ -65,8 +75,8 @@ export async function POST(req: NextRequest) {
       bankChargesAccountId: chargesRows[0].id,
       arAccountId: arRows[0].id,
     });
-    await persistFromForm(sql, bankTxId, 'manually_matched', result);
-    return NextResponse.redirect(new URL('/admin/accounting/reconcile', req.url), 303);
+    await persistFromForm(ctx, sql, bankTxId, 'manually_matched', result);
+    return NextResponse.redirect(new URL('/accounts/accounting/reconcile', req.url), 303);
   }
 
   if (action === 'ignore') {
@@ -75,7 +85,7 @@ export async function POST(req: NextRequest) {
       set status = 'ignored'::accounting.bank_tx_status
       where id = ${bankTxId}::uuid
     `;
-    return NextResponse.redirect(new URL('/admin/accounting/reconcile', req.url), 303);
+    return NextResponse.redirect(new URL('/accounts/accounting/reconcile', req.url), 303);
   }
 
   // action === 'match': operator picks a payment; in v1 we surface the
@@ -86,21 +96,20 @@ export async function POST(req: NextRequest) {
     set status = 'manually_matched'::accounting.bank_tx_status
     where id = ${bankTxId}::uuid
   `;
-  return NextResponse.redirect(new URL('/admin/accounting/reconcile', req.url), 303);
+  return NextResponse.redirect(new URL('/accounts/accounting/reconcile', req.url), 303);
 }
 
 // Helper: persist the action's journal entry + audit log + bank_tx update.
-async function persistFromForm(sql: Awaited<ReturnType<typeof localDb>>, bankTxId: string, status: 'manually_matched' | 'auto_matched', result: import('@/lib/accounting/journal').PostResult): Promise<void> {
+async function persistFromForm(
+  ctx: { userId: string; tenantId: string },
+  sql: Awaited<ReturnType<typeof localDb>>,
+  bankTxId: string,
+  status: 'manually_matched' | 'auto_matched',
+  result: import('@/lib/accounting/journal').PostResult,
+): Promise<void> {
   const { commitJournalForPayment } = await import('@/lib/accounting/journal-bridge');
-  // For form actions the user context is missing (we don't have a session helper
-  // here); in practice the SaaS team's wrapper reads the session and passes it
-  // through. For now we emit a placeholder user id; the real integration comes
-  // when the SaaS code wires the form action handler.
-  await commitJournalForPayment(
-    { userId: '00000000-0000-0000-0000-000000000000', tenantId: '00000000-0000-0000-0000-000000000000' },
-    result,
-    result.sourceId,
-  );
+  // C2 fix: real session user/tenant, not literal zeros.
+  await commitJournalForPayment(ctx, result, result.sourceId);
   await sql`
     update accounting.bank_transactions
     set status = ${status}::accounting.bank_tx_status,
