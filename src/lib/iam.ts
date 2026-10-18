@@ -88,7 +88,21 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'audit.read',
   ],
   // Finance function.
-  accounts: [...READS, 'billing.write', 'payments.record', 'reports.operational'],
+  // Finance function. The plan / spec said "view billing, expenses, VAT,
+  // income, anything the accountant needs" — the per-member grant UI
+  // (commit f3ed771) lets the ops admin pick exactly what each accountant
+  // sees. The role defaults give a working baseline for a single-operator
+  // deployment where the accountant is the trusted finance lead.
+  // `tenant.settings` is required by the HMRC MTD settings page; `audit.read`
+  // is required by the per-page action guards in src/lib/accounting/*.
+  accounts: [
+    ...READS,
+    'billing.write',
+    'payments.record',
+    'reports.operational',
+    'tenant.settings',
+    'audit.read',
+  ],
   // Scoped portals — their own data only (enforced by RLS); no back-office perms.
   driver: [],
   investor: ['reports.investor'],
