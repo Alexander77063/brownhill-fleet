@@ -2,20 +2,18 @@
  * Which product this build IS. One env var, read once, resolved into explicit
  * capabilities rather than scattered `process.env` checks.
  *
- * The same codebase ships as three products:
+ * The same codebase ships as four products:
  *   saas           — the self-serve multi-tenant SaaS (today's deployment, the default)
- *   standalone     — Brownhill: one tenant, on their own Windows machine, no cloud
+ *   standalone     — Brownhill desktop: one tenant, on their own Windows machine, no cloud
+ *   hosted         — Brownhill hosted: one tenant, on their own Linux server (Pulsar)
  *   managed        — Nigeria: one fleet or insurer per instance, hosted and operated by us
  *   managed-shared — Nigeria: the one shared instance for individual vehicle owners
  *
  * Capabilities are booleans rather than `profile.id === 'saas'` comparisons at
- * each call site, so adding a fourth profile later changes this file and nothing
- * else. A call site that asks "can this build sell a subscription?" keeps working;
- * one that asks "is this the SaaS?" silently means something different the moment
- * a new profile appears.
+ * each call site, so adding a profile later changes this file and nothing else.
  */
 
-export type ProfileId = 'saas' | 'standalone' | 'managed' | 'managed-shared';
+export type ProfileId = 'saas' | 'standalone' | 'hosted' | 'managed' | 'managed-shared';
 export type RegionId = 'uk' | 'ng';
 
 export interface DeploymentProfile {
@@ -57,6 +55,22 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     supabaseAuth: false,
     ownerPortal: false,
   },
+  // Brownhill hosted: a single tenant's deployment on their own Linux server.
+  // Behaviourally the same as standalone (no Supabase Auth, single tenant,
+  // UK region, no platform console, no owners portal) — a previous version of
+  // this file did not list it, which made any `deploymentProfile()` call throw
+  // `Unknown DEPLOYMENT_PROFILE "hosted"` on the live box and surfaced as the
+  // generic Next.js application-error digest in the browser.
+  hosted: {
+    id: 'hosted',
+    selfServeSignup: false,
+    subscriptionBilling: false,
+    platformConsole: false,
+    singleTenant: true,
+    region: 'uk',
+    supabaseAuth: false,
+    ownerPortal: false,
+  },
   // A fleet operator or an insurer. We provision the tenant by hand, and they
   // pay us a per-vehicle subscription — the product IS the subscription, so
   // billing is on. `singleTenant` because the instance is theirs alone.
@@ -86,7 +100,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
 };
 
 function isProfileId(v: string): v is ProfileId {
-  return v === 'saas' || v === 'standalone' || v === 'managed' || v === 'managed-shared';
+  return v === 'saas' || v === 'standalone' || v === 'hosted' || v === 'managed' || v === 'managed-shared';
 }
 
 function isRegionId(v: string): v is RegionId {

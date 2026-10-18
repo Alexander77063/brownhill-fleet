@@ -5598,7 +5598,7 @@ export type Database = {
         | "cancelled"
       tenant_plan: "trial" | "starter" | "growth" | "scale"
       tenant_status: "active" | "suspended" | "cancelled"
-      user_role: "ops" | "driver" | "investor" | "owner"
+      user_role: "ops" | "driver" | "investor" | "owner" | "accounts"
       vehicle_status: "available" | "on_hire" | "off_road" | "sold"
     }
     CompositeTypes: {
@@ -5831,7 +5831,7 @@ export const Constants = {
       ],
       tenant_plan: ["trial", "starter", "growth", "scale"],
       tenant_status: ["active", "suspended", "cancelled"],
-      user_role: ["ops", "driver", "investor", "owner"],
+      user_role: ["ops", "driver", "investor", "owner", "accounts"],
       vehicle_status: ["available", "on_hire", "off_road", "sold"],
     },
   },

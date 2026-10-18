@@ -187,6 +187,81 @@ export async function listDriversForComms(
   }));
 }
 
+/**
+ * List the tenant's staff — anyone with an active membership who is NOT a
+ * driver and NOT a vehicle owner. Drivers sign up via the driver invite flow
+ * (different `driver_id` linkage) and vehicle owners via the owner portal;
+ * comms staff = office team. Used by /ops/comms when ops picks "All staff".
+ */
+export async function listStaffForComms(
+  tenantId: string,
+): Promise<{ id: string; full_name: string; has_email: boolean; has_phone: boolean }[]> {
+  const sb = createServiceClient();
+  const { data: memberships } = await sb
+    .from('tenant_memberships')
+    .select('user_id')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'active');
+  const userIds = ((memberships ?? []) as { user_id: string }[]).map((m) => m.user_id);
+  if (userIds.length === 0) return [];
+
+  const { data: profiles } = await sb
+    .from('profiles')
+    .select('id, full_name, email, driver_id, vehicle_owner_id')
+    .in('id', userIds);
+  return ((profiles ?? []) as { id: string; full_name: string | null; email: string | null; driver_id: string | null; vehicle_owner_id: string | null }[])
+    .filter((p) => !p.driver_id && !p.vehicle_owner_id)
+    .map((p) => ({
+      id: p.id,
+      full_name: p.full_name ?? '',
+      has_email: Boolean(p.email),
+      has_phone: false, // staff profile doesn't carry a phone today
+    }));
+}
+
+/**
+ * Send a one-off email to a staff member via the tenant's email channel
+ * (dormant-safe), and log the send to `notifications`. Audited under
+ * `comms.staff_message`. Mirrors `sendDriverMessage` / `sendOwnerMessage`,
+ * but staff don't have a phone column on `profiles`, so email-only.
+ */
+export async function sendStaffMessage(
+  tenantId: string,
+  userId: string,
+  subject: string,
+  body: string,
+  actor?: string | null,
+): Promise<{ channels: number }> {
+  const sb = createServiceClient();
+  const { data: profile } = await sb
+    .from('profiles')
+    .select('email, full_name')
+    .eq('id', userId)
+    .maybeSingle();
+  if (!profile) throw new Error('Staff member not found.');
+  const p = profile as { email: string | null; full_name: string | null };
+  if (!p.email) throw new Error('Staff member has no email on file.');
+  const res = await sendTenantEmail(tenantId, p.email, subject, `<p>${body}</p>`);
+  await logNotification(sb, {
+    tenantId,
+    driverId: null,
+    channel: 'email',
+    recipient: p.email,
+    subject,
+    body,
+    ...statusOf(res),
+  });
+  await sb.rpc('log_audit', {
+    p_tenant: tenantId,
+    p_action: 'comms.staff_message',
+    p_entity_type: 'staff',
+    p_entity_id: userId,
+    p_detail: { subject } as never,
+    p_actor: actor ?? undefined,
+  });
+  return { channels: 1 };
+}
+
 export async function listOwnersForComms(
   tenantId: string,
 ): Promise<{ id: string; display_name: string; has_email: boolean; has_phone: boolean }[]> {

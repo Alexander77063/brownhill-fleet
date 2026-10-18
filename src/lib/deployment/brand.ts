@@ -16,12 +16,12 @@
  * a code change.
  */
 
-type Profile = 'saas' | 'standalone' | 'managed' | 'managed-shared';
+type Profile = 'saas' | 'standalone' | 'hosted' | 'managed' | 'managed-shared';
 
 function profile(): Profile {
   const raw =
     process.env.NEXT_PUBLIC_DEPLOYMENT_PROFILE ?? process.env.DEPLOYMENT_PROFILE ?? 'saas';
-  return raw === 'standalone' || raw === 'managed' || raw === 'managed-shared' ? raw : 'saas';
+  return raw === 'standalone' || raw === 'hosted' || raw === 'managed' || raw === 'managed-shared' ? raw : 'saas';
 }
 
 export interface DeploymentBrand {
@@ -91,6 +91,10 @@ const MANAGED_SHARED: DeploymentBrand = {
 const BRANDS: Record<Profile, DeploymentBrand> = {
   saas: SAAS,
   standalone: STANDALONE,
+  // Brownhill hosted: same branding copy as standalone (a single tenant's own
+  // box, just on Linux). The data-residency footnote is even more apt against
+  // a server the customer owns than against the desktop install.
+  hosted: STANDALONE,
   managed: MANAGED,
   'managed-shared': MANAGED_SHARED,
 };

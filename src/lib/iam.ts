@@ -63,7 +63,11 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   // Non-executive director: governance oversight only — read + board packs + audit,
   // no write anywhere.
   director_nonexec: [...READS, 'reports.operational', 'reports.board', 'audit.read'],
-  // Day-to-day operations.
+  // Day-to-day operations. Every write permission + the settings/member/admin
+  // surfaces: a single-operator deployment has no separate admin role, so the
+  // ops user IS the admin and must be able to edit everything in /ops —
+  // branding, billing, members, subscription, audit. (Reports still gated to
+  // the board-level roles since those are investor-facing.)
   ops: [
     ...READS,
     'fleet.write',
@@ -71,14 +75,34 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'agreements.write',
     'agreements.send',
     'payments.record',
+    'billing.write',
     'compliance.write',
     'pcn.transfer',
     'bookings.read',
     'bookings.write',
     'reports.operational',
+    'reports.board',
+    'tenant.settings',
+    'members.manage',
+    'subscription.manage',
+    'audit.read',
   ],
   // Finance function.
-  accounts: [...READS, 'billing.write', 'payments.record', 'reports.operational'],
+  // Finance function. The plan / spec said "view billing, expenses, VAT,
+  // income, anything the accountant needs" — the per-member grant UI
+  // (commit f3ed771) lets the ops admin pick exactly what each accountant
+  // sees. The role defaults give a working baseline for a single-operator
+  // deployment where the accountant is the trusted finance lead.
+  // `tenant.settings` is required by the HMRC MTD settings page; `audit.read`
+  // is required by the per-page action guards in src/lib/accounting/*.
+  accounts: [
+    ...READS,
+    'billing.write',
+    'payments.record',
+    'reports.operational',
+    'tenant.settings',
+    'audit.read',
+  ],
   // Scoped portals — their own data only (enforced by RLS); no back-office perms.
   driver: [],
   investor: ['reports.investor'],

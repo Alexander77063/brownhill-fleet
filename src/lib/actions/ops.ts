@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { createClient } from '@/lib/supabase/server';
 import { requireRole } from '@/lib/auth';
-import { getAuthContext } from '@/lib/auth/context';
+import { getAuthContext, requirePermission } from '@/lib/auth/context';
 import { syncBilledVehicles } from '@/lib/catalogue/quantity';
 import { requireEntitlement } from '@/lib/entitlements';
 import { pounds, formatGBP } from '@/lib/money';
@@ -44,7 +44,10 @@ function randomKey(prefix: string): string {
 
 /* ── Record a payment & allocate to oldest open invoices ─────────────────── */
 export async function recordPayment(formData: FormData): Promise<void> {
-  await requireRole(['ops']);
+  // Permission-based (not role-based): both ops and accounts users with
+  // payments.record can record payments; the /accounts portal routes the
+  // accountant here when they're granted the perm.
+  await requirePermission('payments.record');
   const sb = await createClient();
 
   const agreementId = reqStr(formData, 'agreement_id');
@@ -100,6 +103,7 @@ export async function recordPayment(formData: FormData): Promise<void> {
   }
 
   revalidatePath('/ops/billing');
+  revalidatePath('/accounts/billing');
   revalidatePath(`/ops/agreements/${agreementId}`);
 }
 
@@ -284,7 +288,7 @@ export async function createAgreement(formData: FormData): Promise<void> {
 
 /* ── Record the company's funder finance agreement for a vehicle ──────────── */
 export async function createFinanceAgreement(formData: FormData): Promise<void> {
-  await requireRole(['ops']);
+  await requirePermission('billing.write');
   await requireEntitlement('rental.core');
   const tenantId = await currentTenantId();
   const sb = await createClient();

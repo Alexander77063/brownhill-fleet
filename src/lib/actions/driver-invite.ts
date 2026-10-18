@@ -37,9 +37,8 @@ export async function inviteDriverAction(
     return { ok: false, error: "missing_email", message: "Login email is required so the driver can sign in." };
   }
 
-  let created;
   try {
-    created = await inviteDriver({
+    await inviteDriver({
       tenantId: ctx.tenantId,
       email,
       driverId: driverId || undefined,
@@ -54,15 +53,13 @@ export async function inviteDriverAction(
 
   // Build the URL the operator should share with the driver. The driver
   // portal has its own signin page (see /driver/login) so the driver
-  // doesn't see the operator signin form by accident.
+  // doesn't see the operator signin form by accident. Forwarded headers
+  // when behind nginx (see auth/signout/route.ts for the same pattern).
   const hdrs = await headers();
   const proto = hdrs.get("x-forwarded-proto") ?? "https";
   const host = hdrs.get("x-forwarded-host") ?? hdrs.get("host") ?? "localhost";
   const base = `${proto}://${host}`;
+  const loginUrl = `${base}/driver/login`;
 
-  return {
-    ok: true,
-    loginUrl: `${base}/driver/login`,
-    email,
-  };
+  return { ok: true, email, loginUrl };
 }

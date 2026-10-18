@@ -12,8 +12,10 @@ import { requirePermission } from '@/lib/auth/context';
 import {
   listDriversForComms,
   listOwnersForComms,
+  listStaffForComms,
   sendDriverMessage,
   sendOwnerMessage,
+  sendStaffMessage,
 } from '@/lib/comms';
 
 export interface SendNoticeResult {
@@ -29,8 +31,14 @@ export interface SendNoticeResult {
   message?: string;
 }
 
-type RecipKind = 'driver' | 'owner';
-type ScopeKind = 'driver_single' | 'driver_all' | 'owner_single' | 'owner_all';
+type RecipKind = 'driver' | 'owner' | 'staff';
+type ScopeKind =
+  | 'driver_single'
+  | 'driver_all'
+  | 'owner_single'
+  | 'owner_all'
+  | 'staff_single'
+  | 'staff_all';
 
 interface PlannedRecip {
   kind: RecipKind;
@@ -54,6 +62,7 @@ export async function sendNoticeAction(formData: FormData): Promise<SendNoticeRe
 
   const drivers = await listDriversForComms(ctx.tenantId);
   const owners  = await listOwnersForComms(ctx.tenantId);
+  const staff   = await listStaffForComms(ctx.tenantId);
 
   let planned: PlannedRecip[] = [];
   switch (kind) {
@@ -83,6 +92,19 @@ export async function sendNoticeAction(formData: FormData): Promise<SendNoticeRe
       }));
       break;
     }
+    case 'staff_single': {
+      if (!singleId) return { ok: false, error: 'invalid_id', message: 'Pick a staff member.' };
+      const s = staff.find((x) => x.id === singleId);
+      if (!s) return { ok: false, error: 'invalid_id', message: 'Staff member not found.' };
+      planned = [{ kind: 'staff', id: s.id, label: s.full_name, hasEmail: s.has_email, hasPhone: false }];
+      break;
+    }
+    case 'staff_all': {
+      planned = staff.map((s) => ({
+        kind: 'staff', id: s.id, label: s.full_name, hasEmail: s.has_email, hasPhone: false,
+      }));
+      break;
+    }
     default:
       return { ok: false, error: 'invalid_kind', message: 'Pick a recipient kind.' };
   }
@@ -97,8 +119,10 @@ export async function sendNoticeAction(formData: FormData): Promise<SendNoticeRe
     try {
       if (r.kind === 'driver') {
         await sendDriverMessage(ctx.tenantId, r.id, subject, body, ctx.userId);
-      } else {
+      } else if (r.kind === 'owner') {
         await sendOwnerMessage(ctx.tenantId, r.id, subject, body, ctx.userId);
+      } else {
+        await sendStaffMessage(ctx.tenantId, r.id, subject, body, ctx.userId);
       }
       sent++;
     } catch {

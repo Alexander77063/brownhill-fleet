@@ -5,7 +5,16 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { currentUserId } from '@/lib/auth/context';
 
 export async function POST(request: NextRequest) {
-  const response = NextResponse.redirect(new URL('/login', request.url), { status: 303 });
+  // Build the redirect origin from forwarded headers when behind nginx, so
+  // users on the hosted profile land on https://<their-fqdn>/login instead of
+  // whatever URL Next.js happens to have reconstructed from the local bind
+  // address (0.0.0.0:55431 in dev, 127.0.0.1:55431 in prod systemd). The Host
+  // header alone is unsafe: when a request hits a proxy the original host
+  // arrives on `x-forwarded-host`, not Host, so we have to read both.
+  const proto = request.headers.get('x-forwarded-proto') ?? new URL(request.url).protocol.replace(':', '');
+  const host = request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? new URL(request.url).host;
+  const loginUrl = new URL('/login', `${proto}://${host}`);
+  const response = NextResponse.redirect(loginUrl, { status: 303 });
 
   // Stop web push to this user's devices: signing out on a phone must end the
   // alerts arriving on it. Best-effort, never blocks the sign-out.

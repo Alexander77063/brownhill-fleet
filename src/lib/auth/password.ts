@@ -7,6 +7,19 @@ import 'server-only';
  * implementation serves middleware (Edge) and server actions (Node).
  *
  * Format: pbkdf2_sha256$<iterations>$<saltB64>$<hashB64>
+ *
+ * Password bytes are UTF-8 — the same default Node's `crypto.pbkdf2Sync`
+ * applies when given a string. The earlier version allocated
+ * `password.length * 4` bytes and only zero-filled them out to UTF-16 LE
+ * low-byte; the trailing zeros were silently included as key material by
+ * Web Crypto's importKey, so a hash written by Node could never verify
+ * against the Web Crypto path (and vice versa). Today's customer row,
+ * written by Node's pbkdf2Sync, verifies correctly against this code.
+ *
+ * Legacy scrypt rows (commit 352bfe1) verify via a parallel branch that
+ * lazy-imports node:crypto — see verifyScryptPassword below. Once every
+ * pre-deploy row has signed in once and been rewritten to pbkdf2_sha256,
+ * that branch can be deleted.
  */
 
 const PARAMS = { iterations: 600_000, hash: 'SHA-256' } as const;
@@ -38,13 +51,8 @@ function b64urlDecode(s: string): Uint8Array<ArrayBuffer> {
 
 async function pbkdf2(password: string, salt: Uint8Array<ArrayBuffer>, iterations: number, keylenBytes: number): Promise<Uint8Array<ArrayBuffer>> {
   // Encode the password as UTF-8 — same default Node's `crypto.pbkdf2Sync`
-  // applies when given a string. The previous version allocated
-  // `password.length * 4` bytes and only zero-filled them out to UTF-16 LE
-  // low-byte; the trailing zeros were silently included as key material,
-  // so a hash produced by the in-browser implementation could never
-  // verify against a hash produced by Node's implementation and the
-  // customer's pre-deploy password hashes were effectively unreadable.
-  const pwBytes = new TextEncoder().encode(password);
+  // applies when given a string.
+  const pwBytes = enc.encode(password);
   const km = await crypto.subtle.importKey(
     'raw',
     pwBytes as BufferSource,
@@ -88,14 +96,6 @@ function parse(stored: string): ParsedHash | null {
   } catch {
     return null;
   }
-}
-
-/** Hash a password. Returns a self-describing string safe to store verbatim. */
-export async function hashPassword(password: string): Promise<string> {
-  if (!password) throw new Error('Refusing to hash an empty password.');
-  const salt = randomBytes(SALT_BYTES);
-  const hash = await pbkdf2(password, salt, PARAMS.iterations, KEYLEN);
-  return ['pbkdf2_sha256', PARAMS.iterations, b64urlEncode(salt), b64urlEncode(hash)].join('$');
 }
 
 // ===========================================================================
@@ -181,6 +181,14 @@ async function verifyScryptPassword(password: string, stored: string): Promise<b
     return false;
   }
   return derived.length === parsed.key.length && timingSafeEqual(derived, parsed.key);
+}
+
+/** Hash a password. Returns a self-describing string safe to store verbatim. */
+export async function hashPassword(password: string): Promise<string> {
+  if (!password) throw new Error('Refusing to hash an empty password.');
+  const salt = randomBytes(SALT_BYTES);
+  const hash = await pbkdf2(password, salt, PARAMS.iterations, KEYLEN);
+  return ['pbkdf2_sha256', PARAMS.iterations, b64urlEncode(salt), b64urlEncode(hash)].join('$');
 }
 
 /**

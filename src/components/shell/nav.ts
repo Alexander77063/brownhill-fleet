@@ -19,6 +19,7 @@ export interface NavItem {
 /** Where each portal role lands after sign-in, and is bounced to when it strays. */
 export const ROLE_HOME: Record<UserRole, string> = {
   ops: '/ops',
+  accounts: '/accounts',
   driver: '/driver',
   investor: '/investor',
   owner: '/owner',
@@ -45,6 +46,30 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/ops/import', label: 'Bulk import', icon: 'upload' },
     { href: '/ops/comms', label: 'Comms', icon: 'bell' },
     { href: '/ops/profile', label: 'Profile & security', icon: 'shield' },
+  ],
+  // Accountant portal — a finance-only view of the same data. Same permissions
+  // back the page-level checks; the layout is what gives them a landing place.
+  // The accounting/* group covers the in-app chart of accounts / journals /
+  // bank reconciliation / reports / HMRC MTD surfaces (PRs #85–#94 brought
+  // these in from upstream). Each sub-page re-gates on its own permission,
+  // so a member with only `billing.read` still sees only the operational tiles.
+  accounts: [
+    { href: '/accounts', label: 'Dashboard', icon: 'dashboard', primary: true },
+    { href: '/accounts/billing', label: 'Billing', icon: 'receipt', primary: true },
+    { href: '/accounts/expenses', label: 'Expenses', icon: 'wallet', primary: true },
+    { href: '/accounts/fuel', label: 'Fuel', icon: 'wallet', primary: true },
+    { href: '/accounts/finance', label: 'Finance & VAT', icon: 'pound', primary: true },
+    { href: '/accounts/accounting', label: 'Accounting', icon: 'pound' },
+    { href: '/accounts/accounting/banks', label: '  Banks', icon: 'wallet' },
+    { href: '/accounts/accounting/reconcile', label: '  Reconcile', icon: 'check' },
+    { href: '/accounts/accounting/reports/pnl', label: '  P&L', icon: 'trending' },
+    { href: '/accounts/accounting/reports/balance-sheet', label: '  Balance sheet', icon: 'doc' },
+    { href: '/accounts/accounting/reports/cashflow', label: '  Cashflow', icon: 'trending' },
+    { href: '/accounts/accounting/reports/ar-aging', label: '  AR aging', icon: 'clock' },
+    { href: '/accounts/accounting/reports/vat-return', label: '  VAT return', icon: 'receipt' },
+    { href: '/accounts/accounting/mtd', label: '  HMRC MTD', icon: 'shield' },
+    { href: '/accounts/reports', label: 'Operational reports', icon: 'trending' },
+    { href: '/accounts/profile', label: 'Profile & security', icon: 'shield' },
   ],
   driver: [
     { href: '/driver', label: 'Home', icon: 'wallet', primary: true },
@@ -79,6 +104,7 @@ export function navFor(role: UserRole, features: ReadonlySet<string>): NavItem[]
 
 export const ROLE_LABEL: Record<UserRole, string> = {
   ops: 'Operations',
+  accounts: 'Accounts',
   driver: 'Driver',
   investor: 'Investor',
   owner: 'Vehicle owner',

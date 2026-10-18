@@ -65,4 +65,5 @@ export async function recordFuelAction(formData: FormData): Promise<void> {
   );
 
   revalidatePath('/ops/fuel');
+  revalidatePath('/accounts/fuel');
 }

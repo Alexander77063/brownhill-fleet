@@ -1,0 +1,12 @@
+-- 0072 — the `accounts` portal role.
+--
+-- The accounts role exists in iam.ts (Role union) and is the landing portal for
+-- an accountant user: a back-office person who should see billing, expenses,
+-- VAT and finance but NOT ops-only surfaces (drivers, fleet, agreements,
+-- dispatch). They get there by signing in as the `accounts` user_role and
+-- landing on /accounts.
+--
+-- Like 0059, this file holds only the enum change: a value added to an enum
+-- cannot be used in the same transaction that adds it, and the CLI wraps each
+-- file in one.
+alter type user_role add value if not exists 'accounts';
