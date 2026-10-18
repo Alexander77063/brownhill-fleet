@@ -63,7 +63,11 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   // Non-executive director: governance oversight only — read + board packs + audit,
   // no write anywhere.
   director_nonexec: [...READS, 'reports.operational', 'reports.board', 'audit.read'],
-  // Day-to-day operations.
+  // Day-to-day operations. Every write permission + the settings/member/admin
+  // surfaces: a single-operator deployment has no separate admin role, so the
+  // ops user IS the admin and must be able to edit everything in /ops —
+  // branding, billing, members, subscription, audit. (Reports still gated to
+  // the board-level roles since those are investor-facing.)
   ops: [
     ...READS,
     'fleet.write',
@@ -71,11 +75,16 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'agreements.write',
     'agreements.send',
     'payments.record',
+    'billing.write',
     'compliance.write',
     'pcn.transfer',
     'bookings.read',
     'bookings.write',
     'reports.operational',
+    'tenant.settings',
+    'members.manage',
+    'subscription.manage',
+    'audit.read',
   ],
   // Finance function.
   accounts: [...READS, 'billing.write', 'payments.record', 'reports.operational'],
