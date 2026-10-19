@@ -3,7 +3,12 @@
 // The icon is the only source of truth — Task 1 ships it, Task 15 (this) renders it.
 
 import sharp from 'sharp';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync } from 'node:fs';
+
+// hosted/static/ is in .gitignore (build output). Make sure it exists before
+// sharp tries to write — failing with a "No such file or directory" here breaks
+// `pnpm build:hosted` on a fresh checkout.
+mkdirSync('hosted/static', { recursive: true });
 
 const svg = readFileSync('hosted/brand/icon.svg');
 
