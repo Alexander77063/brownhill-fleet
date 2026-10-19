@@ -1,0 +1,41 @@
+# .github/workflows/unit-tests.yml
+#
+# Fast, runnable-on-anything CI: install deps, typecheck, run vitest.
+# Always green if the repo typechecks and the unit suite passes.
+# The hosted Pulsar / docker-compose smoke is in hosted-smoke.yml and
+# only runs on a self-hosted runner labelled `pulsar`.
+
+name: unit-tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel duplicates on the same PR / branch — a fast re-push shouldn't
+# queue two 90-second unit runs behind each other.
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
+      BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      # pnpm version comes from packageManager in package.json — don't pass
+      # `version:` here or pnpm complains about "Multiple versions of pnpm
+      # specified" (ERR_PNPM_BAD_PM_VERSION) and exits before the test step.
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
