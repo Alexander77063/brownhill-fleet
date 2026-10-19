@@ -2,6 +2,7 @@ import { PageHeader, Stat, Card, CardTitle, Badge, Money, Button, Table, Th, Td,
 import { Icon } from '@/components/icons';
 import { getFleetEconomics, getObligations, getArrears } from '@/lib/queries';
 import { countOpenIncidents, listOpenIncidents } from '@/lib/queries-ops-incidents';
+import { countActiveSeries, listSeries, upcomingOccurrences } from '@/lib/queries-booking-series';
 import { getTenantChecklist } from '@/lib/onboarding-checklist';
 import { OnboardingChecklist } from '@/components/OnboardingChecklist';
 import { BrandingNotice } from '@/components/BrandingNotice';
@@ -17,13 +18,15 @@ export default async function OpsDashboard({
   searchParams: Promise<{ notice?: string }>;
 }) {
   const { notice } = await searchParams;
-  const [econ, obligations, arrears, checklist, openIncidentCount, openIncidents] = await Promise.all([
+  const [econ, obligations, arrears, checklist, openIncidentCount, openIncidents, activeSeriesCount, series] = await Promise.all([
     getFleetEconomics(),
     getObligations(),
     getArrears(),
     getTenantChecklist(),
     countOpenIncidents(),
     listOpenIncidents(),
+    countActiveSeries(),
+    listSeries({ status: 'active' }),
   ]);
 
   const fleetCount = econ.length;
@@ -87,6 +90,30 @@ export default async function OpsDashboard({
             </ul>
           )}
         </Card>
+
+        {activeSeriesCount > 0 && (
+          <Card>
+            <div className="mb-3 flex items-center justify-between">
+              <CardTitle>
+                Recurring bookings
+                <Badge tone="profit" className="ml-2">{activeSeriesCount} active</Badge>
+              </CardTitle>
+              <Button href="/ops/series" variant="ghost" size="sm">Manage series <Icon name="chevron" className="h-4 w-4" /></Button>
+            </div>
+            <ul className="space-y-2">
+              {series.slice(0, 4).map((s) => {
+                const next = upcomingOccurrences(s)[0];
+                return (
+                  <li key={s.id} className="flex items-center gap-3 rounded-[var(--radius)] border border-hair-soft px-3 py-2.5">
+                    <span className="text-cream">{s.pickup} → {s.dropoff}</span>
+                    <span className="text-xs text-muted">{s.startTime}{s.driverName && ` · ${s.driverName}`}</span>
+                    {next && <span className="ml-auto text-xs text-muted">next {formatDate(next)}</span>}
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        )}
       </section>
 
       <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
