@@ -26,7 +26,13 @@ jobs:
       # `version:` here or pnpm complains about "Multiple versions of pnpm
       # specified" (ERR_PNPM_BAD_PM_VERSION) and exits before the test step.
       - uses: pnpm/action-setup@v4
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends systemd
+      # Dropped: `apt-get update && apt-get install -y --no-install-recommends systemd`.
+      # The standard `ubuntu-latest` GH Actions runner is sandboxed -- apt-get
+      # fails with "Could not open lock file /var/lib/apt/lists/lock -- open
+      # (13: Permission denied)" -- and the rest of the workflow doesn't
+      # actually depend on systemd (docker compose manages the Postgres /
+      # PostgREST services). If a future step genuinely needs systemd, add
+      # it back via `sudo` or a self-hosted runner.
       - run: pnpm install --frozen-lockfile
       - name: Spin up hosted stack
         run: docker compose -f hosted/dev/docker-compose.yml up -d
