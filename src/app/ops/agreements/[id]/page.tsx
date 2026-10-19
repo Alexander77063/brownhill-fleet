@@ -7,6 +7,8 @@ import { resolveInsuranceModel } from '@/lib/contracts';
 import { formatDate, titleCase, agreementStatusTone, invoiceStatusTone } from '@/lib/display';
 import { listSigningSessions, sendForSignature } from '@/lib/actions/signing';
 import { completeAgreementAction } from '@/lib/actions/agreements';
+import { listHandoverPhotos } from '@/lib/queries-handover-photos';
+import { HANDOVER_PHOTO_LABELS, isValidHandoverPhotoKind, MIN_HANDOVER_PHOTOS } from '@/lib/sign/handover-photo';
 import { SigningPanel } from './SigningPanel';
 
 export const dynamic = 'force-dynamic';
@@ -25,13 +27,14 @@ export default async function AgreementDetailPage({ params }: { params: Promise<
   const agreement = await getAgreement(id);
   if (!agreement) notFound();
 
-  const [vehicle, driver, invoices, equity, certs, signingSessions] = await Promise.all([
+  const [vehicle, driver, invoices, equity, certs, signingSessions, handoverPhotos] = await Promise.all([
     getVehicle(agreement.vehicle_id),
     getDriver(agreement.driver_id),
     getInvoicesForAgreement(id),
     agreement.type === 'rtb' ? getEquityForAgreement(id) : Promise.resolve([]),
     getCertificatesForDriver(agreement.driver_id),
     listSigningSessions(id),
+    listHandoverPhotos(id),
   ]);
 
   // Which contract edition "Generate contract" will produce — derived from the
@@ -164,6 +167,46 @@ export default async function AgreementDetailPage({ params }: { params: Promise<
       {/* Signing */}
       <section className="mt-4">
         <SigningPanel agreementId={agreement.id} sessions={signingSessions} onSend={sendForSignature} />
+      </section>
+
+      {/* Handover photos — baseline for future damage reports */}
+      <section className="mt-4">
+        <Card>
+          <CardTitle>Handover photos</CardTitle>
+          {handoverPhotos.length === 0 ? (
+            <p className="mt-3 text-sm text-muted">
+              No handover photos yet. The driver can upload them at the end of the signing flow.
+            </p>
+          ) : (
+            <>
+              <p className="mt-2 text-xs text-muted">
+                {handoverPhotos.length} recorded — baseline for damage-report comparison.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {handoverPhotos.map((p) => (
+                  <figure key={p.id} className="overflow-hidden rounded-md border border-hair-soft bg-[var(--surface-soft)]">
+                    <div className="aspect-video bg-[var(--surface-strong)]">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`/api/storage/local/${encodeURIComponent(p.storagePath)}`}
+                        alt={`Handover photo: ${HANDOVER_PHOTO_LABELS[isValidHandoverPhotoKind(p.kind) ? p.kind : 'other'] ?? 'Other'}`}
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                    <figcaption className="px-2 py-1 text-xs text-muted">
+                      {HANDOVER_PHOTO_LABELS[isValidHandoverPhotoKind(p.kind) ? p.kind : 'other'] ?? 'Other'}
+                      {' · '}
+                      {new Date(p.uploadedAt).toISOString().slice(0, 10)}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-muted">
+                Minimum for a complete walkaround: {MIN_HANDOVER_PHOTOS} distinct sides.
+              </p>
+            </>
+          )}
+        </Card>
       </section>
 
       {/* Invoices */}

@@ -3,6 +3,7 @@ import { PageHeader, Card, CardTitle, Stat, Badge, Money, Button, Table, Th, Td,
 import { getArrears, getLookups, getAgreements } from '@/lib/queries';
 import { getRecentPayments } from '@/lib/queries-ops';
 import { recordPayment } from '@/lib/actions/ops';
+import { sendPaymentLink } from '@/lib/actions/billing';
 import { formatDate, titleCase } from '@/lib/display';
 import { hasEntitlement } from '@/lib/entitlements';
 import { payFirst } from '@/lib/region';
@@ -81,7 +82,16 @@ export default async function BillingPage() {
                     <Td className="text-right"><Money pence={a.billed_pence} /></Td>
                     <Td className="text-right"><Money pence={a.collected_pence} /></Td>
                     <Td className="text-right"><Money pence={a.outstanding_pence} className="text-[var(--color-loss)]" /></Td>
-                    <Td className="text-right"><Button href={`/ops/agreements/${a.agreement_id}`} variant="ghost" size="sm">View</Button></Td>
+                    <Td className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <form action={sendPaymentLink}>
+                          <input type="hidden" name="agreement_id" value={a.agreement_id} />
+                          <input type="hidden" name="driver_id" value={a.driver_id} />
+                          <Button type="submit" variant="outline" size="sm">Send payment link</Button>
+                        </form>
+                        <Button href={`/ops/agreements/${a.agreement_id}`} variant="ghost" size="sm">View</Button>
+                      </div>
+                    </Td>
                   </tr>
                 ))}
               </tbody>

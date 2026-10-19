@@ -7,7 +7,12 @@ import { formatDate, titleCase, invoiceStatusTone } from '@/lib/display';
 
 export const dynamic = 'force-dynamic';
 
-export default async function DriverPayments() {
+export default async function DriverPayments({
+  searchParams,
+}: {
+  searchParams: Promise<{ agreement?: string; highlight?: string }>;
+}) {
+  const { highlight } = await searchParams;
   const p = await getSessionProfile();
   if (!p?.driverId) {
     return (
@@ -33,6 +38,18 @@ export default async function DriverPayments() {
 
   return (
     <>
+      {highlight === '1' && ag && (
+        <div
+          role="status"
+          className="mb-4 flex items-start gap-3 rounded-md border border-[var(--color-gold)] bg-[rgba(184,151,42,0.08)] px-4 py-3 text-sm"
+        >
+          <Icon name="bell" className="mt-0.5 h-4 w-4 text-gold-bright" />
+          <p className="text-cream">
+            <strong>You were sent a payment prompt for this agreement.</strong>{' '}
+            Review the invoices below and pay by bank transfer using the operator&apos;s details.
+          </p>
+        </div>
+      )}
       <PageHeader
         eyebrow="Billing"
         title="Payments"

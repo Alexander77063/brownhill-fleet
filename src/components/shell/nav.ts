@@ -77,6 +77,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/driver/insurance', label: 'Insurance', icon: 'shield', primary: true },
     { href: '/driver/charges', label: 'Charges', icon: 'alert', primary: true, feature: 'charges.reconciliation' },
     { href: '/driver/submit', label: 'Submit receipt', icon: 'upload', primary: true },
+    { href: '/driver/report', label: 'Report damage', icon: 'alert' },
     { href: '/driver/payments', label: 'Payments', icon: 'receipt', feature: 'rental.core' },
     { href: '/driver/documents', label: 'Documents', icon: 'doc' },
     { href: '/driver/profile', label: 'Profile & security', icon: 'shield' },

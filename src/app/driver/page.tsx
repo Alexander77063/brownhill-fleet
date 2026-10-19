@@ -184,6 +184,7 @@ export default async function DriverHome({
           { href: '/driver/charges', label: 'Charges', icon: 'alert' as const },
           { href: '/driver/payments', label: 'Payments', icon: 'receipt' as const },
           { href: '/driver/documents', label: 'Documents', icon: 'doc' as const },
+          { href: '/driver/report', label: 'Report damage', icon: 'alert' as const },
         ].map((q) => (
           <Button key={q.href} href={q.href} variant="ghost" className="reveal justify-start border border-hair-soft">
             <Icon name={q.icon} className="h-4 w-4 text-gold" /> {q.label}

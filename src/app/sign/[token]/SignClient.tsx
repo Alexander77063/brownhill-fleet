@@ -254,6 +254,16 @@ function DriverFlow({
       <section className="body">
         <div className="badge ok">Signed</div>
         <p className="lead">Thank you, {name}. Your agreement is signed and a copy has been sent to {operator}.</p>
+        <p style={{ marginTop: 16, color: '#9fb0c4' }}>
+          Before you drive off, please photograph each side of it. The pictures protect both of us if a damage report comes in later.
+        </p>
+        <a
+          href={`/sign/${token}/handover`}
+          className="btn primary"
+          style={{ display: 'inline-block', marginTop: 16, padding: '10px 16px', borderRadius: 6, background: '#e9c96a', color: '#0f1a2e', textDecoration: 'none', fontWeight: 600 }}
+        >
+          Photograph the car →
+        </a>
       </section>
     );
   }

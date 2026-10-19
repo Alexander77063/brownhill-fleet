@@ -62,7 +62,7 @@ export default async function BanksPage() {
               <td className="p-2">{r.iban ?? '—'}</td>
               <td className="p-2">{r.gl_account_code}</td>
               <td className="p-2">
-                <Link href={`/admin/accounting/banks/${r.id}/import`} className="text-blue-600 underline">Import CSV</Link>
+                <Link href={`/accounts/accounting/banks/${r.id}/import`} className="text-blue-600 underline">Import CSV</Link>
               </td>
             </tr>
           ))}

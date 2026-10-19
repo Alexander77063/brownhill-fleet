@@ -34,7 +34,13 @@ export default async function BookingsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Bookings" help="page.bookings" title="Dispatch" subtitle="Create jobs, assign a driver + vehicle, and track them to completion. Non-compliant vehicles/drivers can't be assigned." />
+      <PageHeader
+        eyebrow="Bookings"
+        help="page.bookings"
+        title="Dispatch"
+        subtitle="Create jobs, assign a driver + vehicle, and track them to completion. Non-compliant vehicles/drivers can't be assigned."
+        actions={<Button href="/ops/series" size="sm" variant="outline">Recurring series</Button>}
+      />
 
       {/* 2-up before `sm` — three across overflowed the page at 320px (WCAG 1.4.10). */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
