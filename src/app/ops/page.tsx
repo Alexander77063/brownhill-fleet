@@ -1,6 +1,7 @@
 import { PageHeader, Stat, Card, CardTitle, Badge, Money, Button, Table, Th, Td, EmptyState } from '@/components/ui';
 import { Icon } from '@/components/icons';
 import { getFleetEconomics, getObligations, getArrears } from '@/lib/queries';
+import { countOpenIncidents, listOpenIncidents } from '@/lib/queries-ops-incidents';
 import { getTenantChecklist } from '@/lib/onboarding-checklist';
 import { OnboardingChecklist } from '@/components/OnboardingChecklist';
 import { BrandingNotice } from '@/components/BrandingNotice';
@@ -16,11 +17,13 @@ export default async function OpsDashboard({
   searchParams: Promise<{ notice?: string }>;
 }) {
   const { notice } = await searchParams;
-  const [econ, obligations, arrears, checklist] = await Promise.all([
+  const [econ, obligations, arrears, checklist, openIncidentCount, openIncidents] = await Promise.all([
     getFleetEconomics(),
     getObligations(),
     getArrears(),
     getTenantChecklist(),
+    countOpenIncidents(),
+    listOpenIncidents(),
   ]);
 
   const fleetCount = econ.length;
@@ -53,6 +56,37 @@ export default async function OpsDashboard({
         <Stat label="Avg occupancy (12m)" value={`${avgOccupancy}%`} tone={avgOccupancy >= 90 ? 'profit' : 'warn'} className="reveal" />
         <Stat label="Weekly recurring (net)" value={<Money pence={weeklyRecurring} showPence={false} />} tone="gold" className="reveal" />
         <Stat label="Contracted annual profit" value={<Money pence={contractedProfit} showPence={false} />} tone="profit" className="reveal" />
+      </section>
+
+      <section className="mt-4 grid grid-cols-1 gap-4">
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <CardTitle>
+              Driver-reported incidents
+              {openIncidentCount > 0 && (
+                <Badge tone="warn" className="ml-2">{openIncidentCount} open</Badge>
+              )}
+            </CardTitle>
+            <Button href="/ops/incidents" variant="ghost" size="sm">View queue <Icon name="chevron" className="h-4 w-4" /></Button>
+          </div>
+          {openIncidents.length === 0 ? (
+            <p className="text-sm text-muted">No driver reports waiting on the office.</p>
+          ) : (
+            <ul className="space-y-2">
+              {openIncidents.slice(0, 5).map((r) => (
+                <li key={r.id} className="flex items-start gap-3 rounded-[var(--radius)] border border-hair-soft px-3 py-2.5">
+                  <Badge tone={r.severity === 'major' ? 'loss' : r.severity === 'moderate' ? 'warn' : 'neutral'} className="mt-0.5">
+                    {r.severity}
+                  </Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-cream">{r.description}</p>
+                    <p className="text-xs text-muted">{r.driverName} · {r.vehicleReg} · {formatDate(r.createdAt)}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
       </section>
 
       <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">

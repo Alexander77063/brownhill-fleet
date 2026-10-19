@@ -7,6 +7,8 @@ import { submitDriverReceipt } from '@/lib/charges';
 import { isUploadedFile, uploadReceipt } from '@/lib/receipts';
 import { storagePut } from '@/lib/storage';
 import { pounds } from '@/lib/money';
+import { isValidSeverity } from '@/lib/driver/damage-report-status';
+import { getAuthContext } from '@/lib/auth/context';
 
 export interface ActionResult {
   ok: boolean;
@@ -178,4 +180,69 @@ export async function disputeCharge(id: string): Promise<ActionResult> {
 
   revalidatePath('/driver/charges');
   return { ok: true, message: 'Dispute raised. Ops will review with the issuing authority.' };
+}
+
+/**
+ * Submit a damage / incident the driver spotted on their vehicle — a new
+ * scratch, a warning on the dash, a panel crack. The operator sees it
+ * surface at /ops/incidents and triages it through the status state
+ * machine in @/lib/driver/damage-report-status.
+ *
+ * The driver is the source of truth for which vehicle it is (so we trust
+ * `vehicle_id` from the form) and the severity they chose. Description is
+ * required because a photo alone isn't enough — what happened, where,
+ * when. A photo is optional.
+ */
+export async function reportDamage(formData: FormData): Promise<ActionResult> {
+  const p = await getSessionProfile();
+  if (!p?.driverId) return { ok: false, message: 'No active driver account.' };
+
+  const vehicleId = String(formData.get('vehicle_id') ?? '');
+  if (!vehicleId) return { ok: false, message: 'Please pick the vehicle.' };
+  const severity = String(formData.get('severity') ?? '');
+  if (!isValidSeverity(severity)) {
+    return { ok: false, message: 'Please choose a severity (minor / moderate / major).' };
+  }
+  const description = String(formData.get('description') ?? '').trim();
+  if (description.length < 10) {
+    return { ok: false, message: 'Please describe what happened (at least 10 characters).' };
+  }
+
+  // Tenant comes from the driver's profile via the active agreement. We
+  // read it from the signed-in driver row rather than from the form to
+  // stop a driver submitting a report tagged to a tenant they don't
+  // belong to.
+  const ctx = await getAuthContext();
+  const tenantId = ctx?.tenantId;
+  if (!tenantId) return { ok: false, message: 'No active tenant in your session.' };
+
+  // Optional photo -> driver's own folder in the private receipts bucket.
+  let photoPath: string | null = null;
+  let warning = '';
+  const file = formData.get('photo');
+  if (isUploadedFile(file)) {
+    const up = await uploadReceipt(file, `${tenantId}/damage/${p.driverId}`);
+    photoPath = up.path;
+    if (up.warning) warning = ` ${up.warning}`;
+  }
+
+  const sb = createServiceClient();
+  const { error } = await sb.from('driver_damage_reports' as never).insert({
+    tenant_id: tenantId,
+    driver_id: p.driverId,
+    vehicle_id: vehicleId,
+    severity,
+    description,
+    photo_path: photoPath,
+    status: 'open',
+  } as never);
+
+  if (error) return { ok: false, message: `Could not submit: ${error.message}` };
+
+  revalidatePath('/driver/report');
+  revalidatePath('/ops/incidents');
+  return {
+    ok: true,
+    message: `Thanks — your ${severity} report has been sent to the office.${warning}`,
+  };
 }
