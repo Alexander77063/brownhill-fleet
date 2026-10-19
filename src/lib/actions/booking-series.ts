@@ -9,6 +9,7 @@
 import { revalidatePath } from 'next/cache';
 import { localDb } from '@/lib/auth/local-store';
 import { requireTenantContext } from '@/lib/auth/context';
+import { recordAudit } from '@/lib/audit';
 import {
   validateSeriesInput,
   expandSeries,
@@ -124,6 +125,12 @@ export async function createBookingSeries(formData: FormData): Promise<CreateSer
   revalidatePath('/ops/series');
   revalidatePath('/ops/bookings');
   revalidatePath('/ops');
+  await recordAudit({
+    action: 'booking_series.created',
+    entityType: 'booking_series',
+    entityId: id,
+    detail: { daysOfWeek, startDate, endDate, horizonWeeks, bookingsScheduled: dates.length },
+  });
   return { ok: true, message: `Series created — ${dates.length} bookings scheduled.` };
 }
 
@@ -144,4 +151,10 @@ export async function setSeriesStatus(formData: FormData): Promise<void> {
 
   revalidatePath('/ops/series');
   revalidatePath('/ops');
+  await recordAudit({
+    action: 'booking_series.status_changed',
+    entityType: 'booking_series',
+    entityId: id,
+    detail: { to },
+  });
 }

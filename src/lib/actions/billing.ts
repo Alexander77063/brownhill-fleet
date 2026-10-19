@@ -12,6 +12,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { requirePermission } from '@/lib/auth/context';
+import { recordAudit } from '@/lib/audit';
 import { localDb } from '@/lib/auth/local-store';
 import { sendSms } from '@/lib/notify';
 import { normalisePhone } from '@/lib/phone';
@@ -86,4 +87,11 @@ export async function sendPaymentLink(formData: FormData): Promise<void> {
 
   revalidatePath('/ops/billing');
   revalidatePath('/driver/payments');
+
+  await recordAudit({
+    action: 'payment_link.sent',
+    entityType: 'agreement',
+    entityId: agreementId,
+    detail: { driverId, smsStatus, tokenLast4: token.slice(-4), outstandingPence: row.outstanding_pence },
+  });
 }

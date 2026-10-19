@@ -14,6 +14,7 @@ import { revalidatePath } from 'next/cache';
 import { createServiceClient } from '@/lib/supabase/server';
 import { requirePermission } from '@/lib/auth/context';
 import { isValidTransition, type DamageReportStatus } from '@/lib/driver/damage-report-status';
+import { recordAudit } from '@/lib/audit';
 
 export async function setDamageReportStatus(formData: FormData): Promise<void> {
   const ctx = await requirePermission('tenant.settings');
@@ -58,4 +59,11 @@ export async function setDamageReportStatus(formData: FormData): Promise<void> {
   revalidatePath('/ops/incidents');
   revalidatePath('/ops');
   revalidatePath('/driver/report');
+
+  await recordAudit({
+    action: 'incident.status_changed',
+    entityType: 'driver_damage_report',
+    entityId: id,
+    detail: { from, to, notes },
+  });
 }
