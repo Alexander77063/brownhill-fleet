@@ -154,3 +154,34 @@ export async function assertPeriodOpenForPosting(year: number, month: number): P
   if (p.locked_at) throw new Error(`Period ${year}-${month} is locked`);
   if (p.closed_at) throw new Error(`Period ${year}-${month} is closed; reopen before posting`);
 }
+
+/**
+ * Pure-function rule: is a closed period still inside the reopen grace window?
+ *
+ * - 'no_close' — period was never closed (Reopen button should not render).
+ * - 'open'      — closed within REOPEN_WINDOW_DAYS; Reopen is allowed.
+ * - 'elapsed'   — closed more than REOPEN_WINDOW_DAYS ago; window expired.
+ * - 'locked'    — period was locked (permanent); Reopen never allowed.
+ *
+ * Used by both /admin/accounting/periods and /accounts/accounting/periods so
+ * the operator and the accountant see the same controls. Pure: takes the
+ * three clock inputs explicitly so unit tests don't need to mock Date.now().
+ */
+export type ReopenStatus = 'no_close' | 'open' | 'elapsed' | 'locked';
+
+export function reopenStatus(
+  closedAt: Date | null,
+  lockedAt: Date | null,
+  now: Date,
+): ReopenStatus {
+  if (!closedAt) return 'no_close';
+  if (lockedAt) return 'locked';
+  const windowEndMs = closedAt.getTime() + REOPEN_WINDOW_DAYS * 86_400_000;
+  return now.getTime() < windowEndMs ? 'open' : 'elapsed';
+}
+
+/** When does the reopen window close for a given closedAt? null when not closed. */
+export function reopenDeadline(closedAt: Date | null): Date | null {
+  if (!closedAt) return null;
+  return new Date(closedAt.getTime() + REOPEN_WINDOW_DAYS * 86_400_000);
+}

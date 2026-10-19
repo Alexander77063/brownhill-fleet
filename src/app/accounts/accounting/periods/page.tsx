@@ -1,7 +1,7 @@
 import { PageHeader, Card, CardTitle, Table, Th, Td, EmptyState, Button } from '@/components/ui';
 import { formatDate } from '@/lib/display';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
-import { listPeriods, REOPEN_WINDOW_DAYS } from '@/lib/accounting/periods';
+import { listPeriods, REOPEN_WINDOW_DAYS, reopenStatus, reopenDeadline } from '@/lib/accounting/periods';
 import { closePeriodAction, reopenPeriodAction } from '@/lib/actions/accounting-periods';
 
 export const dynamic = 'force-dynamic';
@@ -70,19 +70,18 @@ export default async function PeriodsPage() {
                 const isOpen = !p.closedAt && !p.lockedAt;
                 const isLocked = !!p.lockedAt;
                 const closedAt = p.closedAt;
-                // Reopen window: now - closedAt, in days. Closed > 7d = window elapsed.
-                const reopenDeadlineMs = closedAt
-                  ? closedAt.getTime() + REOPEN_WINDOW_DAYS * 86_400_000
-                  : 0;
-                const reopenOpen = !!closedAt && !isLocked && reopenDeadlineMs > now.getTime();
+                // Reopen-window rule (pure, lives in periods.ts so both the
+                // admin and the accountant page show the same controls).
+                const reopen = reopenStatus(p.closedAt, p.lockedAt, now);
+                const deadline = reopenDeadline(p.closedAt);
                 return (
                   <tr key={p.id}>
                     <Td className="font-mono text-cream">{ym}</Td>
                     <Td>{closedAt ? formatDate(closedAt.toISOString()) : <span className="text-muted">— open —</span>}</Td>
                     <Td>
-                      {reopenOpen ? (
+                      {reopen === 'open' && deadline ? (
                         <span className="text-cream">
-                          open · until {formatDate(new Date(reopenDeadlineMs).toISOString())}
+                          open · until {formatDate(deadline.toISOString())}
                         </span>
                       ) : closedAt ? (
                         <span className="text-muted">closed</span>
@@ -99,7 +98,7 @@ export default async function PeriodsPage() {
                           <Button type="submit" variant="outline" size="sm">Close</Button>
                         </form>
                       )}
-                      {reopenOpen && (
+                      {reopen === 'open' && (
                         <form action={reopenPeriodAction} className="ml-2 inline">
                           <input type="hidden" name="year" value={p.year} />
                           <input type="hidden" name="month" value={p.month} />
