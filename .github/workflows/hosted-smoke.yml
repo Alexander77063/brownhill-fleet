@@ -1,4 +1,15 @@
-name: hosted-tests
+# .github/workflows/hosted-smoke.yml
+#
+# Hosted stack smoke — spins up Postgres + PostgREST via docker compose,
+# applies every migration, runs the integration / portability / migrations-
+# regression / hosted-smoke shell suites. Requires a runner with Docker
+# AND a Pulsar-shaped environment (Postgres reachable, PostgREST image,
+# the supabase shim), so it's pinned to `runs-on: [self-hosted, pulsar]`
+# — the standard `ubuntu-latest` GH runner cannot satisfy these. The
+# unit-tests workflow runs everywhere and gives a fast signal; this one
+# is the real one when you can run it.
+
+name: hosted-smoke
 
 on:
   pull_request:
@@ -6,14 +17,17 @@ on:
       - 'supabase/migrations/**'
       - 'standalone/sql/**'
       - 'hosted/**'
-      - 'src/**'
       - 'package.json'
-      - '.github/workflows/hosted-tests.yml'
+      - '.github/workflows/hosted-smoke.yml'
   workflow_dispatch:
 
+concurrency:
+  group: hosted-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  hosted-tests:
-    runs-on: ubuntu-latest
+  hosted-smoke:
+    runs-on: [self-hosted, pulsar]
     timeout-minutes: 30
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
@@ -22,17 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      # pnpm version comes from packageManager in package.json — don't pass
-      # `version:` here or pnpm complains about "Multiple versions of pnpm
-      # specified" (ERR_PNPM_BAD_PM_VERSION) and exits before the test step.
       - uses: pnpm/action-setup@v4
-      # Dropped: `apt-get update && apt-get install -y --no-install-recommends systemd`.
-      # The standard `ubuntu-latest` GH Actions runner is sandboxed -- apt-get
-      # fails with "Could not open lock file /var/lib/apt/lists/lock -- open
-      # (13: Permission denied)" -- and the rest of the workflow doesn't
-      # actually depend on systemd (docker compose manages the Postgres /
-      # PostgREST services). If a future step genuinely needs systemd, add
-      # it back via `sudo` or a self-hosted runner.
       - run: pnpm install --frozen-lockfile
       - name: Spin up hosted stack
         run: docker compose -f hosted/dev/docker-compose.yml up -d
