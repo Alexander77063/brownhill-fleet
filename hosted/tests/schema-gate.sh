@@ -160,6 +160,23 @@ assert_eq "journal balance trigger is DEFERRED" "t" \
 assert_eq "journal balance trigger is INITIALLY DEFERRED" "t" \
   "$(q "select tginitdeferred from pg_trigger where tgname='trg_journal_lines_balanced'")"
 
+# 0068's is_current_tenant() is what every accounting RLS policy calls. It
+# only exists if the COALESCE of text and uuid was fixed; without the fix
+# the file could not be applied at all. With no tenant GUC set it must
+# return false — the accounting policies have to fail closed.
+assert_eq "accounting.is_current_tenant() fails closed with no tenant GUC" "f" \
+  "$(q "select accounting.is_current_tenant()")"
+
+# ...and with a tenant set it must be TRUE. Failing closed is only half the
+# guarantee: if the coalesce fix had made the function return false
+# unconditionally the accounting policies would be safe but useless, and no
+# other check in this repository would notice.
+#
+# The tenant GUC is set in a FROM-clause subquery, which PostgreSQL evaluates
+# before the target list — that ordering is what makes the result meaningful.
+assert_eq "accounting.is_current_tenant() sees the tenant GUC" "t" \
+  "$(q "select accounting.is_current_tenant() from (select set_config('app.tenant_id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', true) as s) g")"
+
 # The tables added by the recent feature migrations.
 assert_eq "driver damage / booking series / payment links / handover photos" "4" \
   "$(q "select count(*) from pg_tables where schemaname='public' and tablename in
