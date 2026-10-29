@@ -101,8 +101,39 @@ if [ "${ledger_count:-0}" -eq 0 ] && [ "${schema_present:-0}" -gt 0 ]; then
   legacy=1
 fi
 
-for f in $(ls -1 "$migs"/*.sql | sort); do
+# Read the migration files into an array with a null delimiter, rather than
+# `for f in $(ls ...)`: word splitting on that form breaks a file name
+# containing a space into two fragments, and the name check below would then
+# never see the real name. `sort -z` keeps the same name order as `ls | sort`.
+#
+# The list goes into an array rather than onto the loop's stdin on purpose: a
+# command inside the loop that reads stdin — psql, through `docker exec -i` —
+# would consume the rest of the list, and the loop would stop after the first
+# file with the schema half-built.
+mapfile -d '' -t mig_files < <(find "$migs" -maxdepth 1 -name '*.sql' -print0 | sort -z)
+
+# Fail closed if there is nothing to apply: an empty list would otherwise
+# leave the script exiting 0 with no schema applied at all.
+if [ "${#mig_files[@]}" -eq 0 ]; then
+  echo "ERROR: no migration files found in $migs" >&2
+  exit 1
+fi
+
+for f in "${mig_files[@]}"; do
   bn=$(basename "$f")
+  # The file name is written into the ledger and interpolated into SQL below.
+  # Restrict it to characters that are safe as a SQL string literal and
+  # unambiguous in a tab-separated dump: a name containing a quote could break
+  # out of the literal, and one containing a tab or a newline could not
+  # round-trip through the ledger. Every migration in this repository matches
+  # this pattern.
+  case "$bn" in
+    *[!A-Za-z0-9._-]*)
+      echo "ERROR: migration file name contains an unsupported character: $bn" >&2
+      echo "       Migration file names must match [A-Za-z0-9._-]." >&2
+      exit 1
+      ;;
+  esac
   sum=$(sha256sum "$f" | cut -d' ' -f1)
 
   applied_sum=$(psql -tAc "select checksum from schema_migrations where filename = '$bn'" | tr -d ' ')
