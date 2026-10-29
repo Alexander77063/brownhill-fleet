@@ -180,18 +180,25 @@ sudo ./hosted/tests/acceptance.sh
 
 This is the shippable definition (Spec §4.5.7). All five must return 0:
 
-1. `hosted/tests/schema-gate.sh` — builds the schema from zero on a throwaway
-   `postgres:16` using this repo's own `brownhill-bootstrap.sh`, asserts the ledger is
-   complete and a re-run applies nothing, then runs the portable RLS proof.
+1. `hosted/tests/schema-ledger-check.sh` — asserts this box's database matches this
+   repository: every migration file is recorded as applied, every recorded checksum
+   matches the file as it stands now, the accounting objects exist, and the
+   journal-balance trigger is present and deferred until COMMIT.
 2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–14 against the live stack.
 3. `hosted/tests/migrations-regression.sh` — replays the schema against a throwaway Postgres, replays portable RLS proof.
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trips one `.from()` per major resource.
 5. Sunday `brownhill-backup-verify.service` journal entry — restore from a fresh dump into a throwaway Postgres, row counts and RLS replay.
 
-Gate 1 needs Docker on the machine running it — it starts a throwaway Postgres container.
-It is the gate that fails when the schema is broken, which is the point: the gate that
-used to occupy this slot ran a `pnpm --filter` against a package name this repository does
-not have, so it printed "No projects matched the filters", exited 0, and could never fail.
+Gate 1 needs only `psql`, which the box already has — it does **not** need Docker, because
+the hosted stack is a native Postgres under systemd. It is the gate that fails when the
+schema is broken, which is the point: the gate that used to occupy this slot ran a
+`pnpm --filter` against a package name this repository does not have, so it printed
+"No projects matched the filters", exited 0, and could never fail.
+
+The *other* half of that guarantee — building the schema from zero on a throwaway
+`postgres:16` and running the portable RLS proof against it — is
+`hosted/tests/schema-gate.sh`. That one does need Docker, so it runs in CI (on
+`ubuntu-latest`, on every pull request) and on a developer machine, not on the box.
 
 Gate 5 won't have a journal entry on first deploy (no Sunday has passed). **Touch the service once manually to confirm the chain:**
 
@@ -401,6 +408,14 @@ sudo ./hosted/tests/chaos/07-mid-period-void.sh
 sudo ./hosted/tests/chaos/08-concurrent-period-close.sh
 sudo ./hosted/tests/chaos/09-mtd-token-expiry.sh
 ```
+
+`05`, `06`, `07` and `08` are placeholders: they print `OK` and assert nothing.
+The behaviours they cover — HMDR rejecting a VAT return, a close blocked by an
+open bank transaction, an invoice voided mid-period, two operators closing the
+same period — belong to the upstream multi-tenant accounting module and are
+not implemented here. `09` drives the MTD route and asserts only that the
+journal survives the call. The real drills are `01`–`04` above; their results
+are the ones to log in `hosted/tests/chaos/RUNS.md`.
 
 ---
 

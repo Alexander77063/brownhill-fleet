@@ -5,21 +5,24 @@
 # enabled (e.g. the SaaS profile), Gate 6 is skipped and the bar is 5 gates.
 set -uo pipefail
 GATES_PASSED=0
-GATE_NAMES=( "schema-gate" "verify-hosted-portability" "migrations-regression" "hosted-smoke" "backup-verify" )
+GATE_NAMES=( "schema-ledger-check" "verify-hosted-portability" "migrations-regression" "hosted-smoke" "backup-verify" )
 
-# 1 — the schema gate: the repo's own bootstrap builds the schema from zero on
-# a real postgres:16, the ledger is complete, a re-run is a no-op, and the RLS
-# portability proof passes.
+# 1 — the schema ledger check: every migration in this repository is applied
+# on this database, with the checksum the file has now.
 #
 # This replaces a gate that could not fail. It ran
 # `pnpm --filter @brownhill/webapp test`, but this repository has no
 # pnpm workspace and its package is named `elite-fleet-management`, so the
 # filter matched nothing, pnpm printed "No projects matched the filters" and
 # exited 0. A gate that cannot fail is worse than no gate: it manufactures
-# confidence that no test ran. The schema gate fails when the schema is
-# broken — which is exactly what it is there to catch.
-echo "== Gate 1: schema-gate.sh (build the schema from zero + RLS proof) =="
-if bash hosted/tests/schema-gate.sh 2>/tmp/g1.log; then
+# confidence that no test ran.
+#
+# The ledger check needs only psql, because the box has no Docker — the
+# hosted stack is a native Postgres under systemd. The from-zero build and
+# the RLS portability proof live in schema-gate.sh, which does need Docker
+# and runs in CI and on a developer machine.
+echo "== Gate 1: schema-ledger-check.sh (this box matches this repository) =="
+if bash hosted/tests/schema-ledger-check.sh 2>/tmp/g1.log; then
   echo "Gate 1 OK"; GATES_PASSED=$((GATES_PASSED+1))
 else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 

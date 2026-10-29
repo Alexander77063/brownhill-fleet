@@ -20,6 +20,14 @@
 # Runs on any machine with Docker. No self-hosted runner required.
 set -euo pipefail
 
+# Git Bash rewrites any argument that looks like an absolute POSIX path into
+# a Windows path before handing it to a native program. Every /tmp/... path
+# below is meant for the CONTAINER, not for the host, so the rewriting has
+# to be off — otherwise `docker exec ... mkdir -p /tmp/gate-sql` tries to
+# create "C:/Program Files/Git/tmp/gate-sql" on the host and fails with
+# "Permission denied". This variable has no effect on Linux CI.
+export MSYS_NO_PATHCONV=1
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -142,6 +150,15 @@ assert_eq "periods unique(year,month) restored" "1" \
   "$(q "select count(*) from pg_constraint where conname='periods_year_month_key'")"
 assert_eq "journal balance trigger present" "1" \
   "$(q "select count(*) from pg_trigger where tgname='trg_journal_lines_balanced'")"
+# It has to be a CONSTRAINT trigger, and it has to be deferred: the balance
+# check must run at COMMIT, once every line of the journal is present, not
+# after each row. `create trigger ... deferrable` was a syntax error, and a
+# regression that quietly downgraded it to a row-level trigger would still
+# pass a check that only looked for the trigger's existence.
+assert_eq "journal balance trigger is DEFERRED" "t" \
+  "$(q "select tgdeferrable from pg_trigger where tgname='trg_journal_lines_balanced'")"
+assert_eq "journal balance trigger is INITIALLY DEFERRED" "t" \
+  "$(q "select tginitdeferred from pg_trigger where tgname='trg_journal_lines_balanced'")"
 
 # The tables added by the recent feature migrations.
 assert_eq "driver damage / booking series / payment links / handover photos" "4" \
@@ -163,6 +180,16 @@ if echo "$out" | grep -q '^applying '; then
   fail=1
 else
   echo "  ok: the second run applied nothing"
+fi
+
+echo "== schema gate: ledger check (the box-side half of the guarantee) =="
+# The gate that runs on a deployed box. Run it here too, against the database
+# this gate just built, so CI proves both halves: the schema builds from
+# zero, and a database that has been built carries a ledger that matches the
+# repository exactly.
+if ! bash hosted/tests/schema-ledger-check.sh; then
+  echo "  FAIL: the ledger check rejected the schema this gate just built" >&2
+  fail=1
 fi
 
 echo "== schema gate: RLS portability proof =="
