@@ -45,8 +45,45 @@ because they aren't part of the Brownhill-hosted deployment:
 Periodic squash from `elite-fleet-management` `main`. SaaS-only paths are
 stripped at sync time; what remains is the latest Brownhill-relevant code.
 
+### Migration files need care at sync time
+
+The migration set is the one place where this mirror deliberately differs
+from upstream, and a naive squash will undo it.
+
+`elite-fleet-management` `main` carries three accounting migrations that
+this mirror must not take:
+
+- `0069_accounting_nigeria_tenant_scoping.sql`
+- `0070_accounting_reopen_window_per_tenant.sql`
+- `0071_accounting_per_tenant_thresholds.sql`
+
+They are the Nigeria tenant-scoping migrations. The integration plan that
+brought the accounting module into this mirror says explicitly: *"Do NOT
+re-add 0069–0071 (Nigeria-specific)"*. They break this single-tenant UK
+product in six places — they rename `mtd_credentials` to
+`firs_credentials`, drop the unique constraints this codebase's
+`on conflict (year, month)` and `on conflict (period_id)` depend on, and
+add `tenant_id` columns nothing populates.
+
+Upstream also still carries two defects this mirror has fixed: `0064`
+(`DEFERRABLE` on a plain trigger, which is a syntax error on PostgreSQL 16)
+and `0068` (a `coalesce` of `text` and `uuid`). Both are fixed here; both
+need fixing upstream too, or the next sync reintroduces them.
+
+After any sync, run the schema gate before deploying:
+
+```bash
+bash hosted/tests/schema-gate.sh
+```
+
+It builds the schema from zero on a throwaway `postgres:16` using this
+repository's own provisioning script and proves the RLS isolation holds.
+It is the same check CI runs on every pull request.
+
 ## Source of truth
 
 This is a mirror. The canonical source is
 [`Alexander77063/elite-fleet-management`](https://github.com/Alexander77063/elite-fleet-management).
-Bug fixes and changes land there first and are then squashed here.
+Bug fixes and changes land there first and are then squashed here — with
+the exception noted above: the accounting-migration fixes in this mirror
+should go upstream first, or a sync will revert them.
