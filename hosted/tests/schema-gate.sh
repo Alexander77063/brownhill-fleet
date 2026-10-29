@@ -29,11 +29,24 @@ trap 'rm -rf "$WORK"; [ -n "${CID:-}" ] && docker rm -f "$CID" >/dev/null 2>&1 |
 
 echo "== schema gate: starting a throwaway postgres:16 =="
 CID=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
+
+# Every psql call inside the container connects over TCP on 127.0.0.1:5432.
+#
+# `docker exec` does NOT inherit the caller's environment, so PGHOST/PGPORT
+# set in the bootstrap script never reach the container. Without them psql
+# falls back to the Unix socket at /var/run/postgresql/.s.PGSQL.5432, which
+# the container image does not create the way a package-installed Postgres
+# does — the connection fails with "No such file or directory" before a
+# single migration runs. Passing -h/-p explicitly is what makes the
+# container's psql reach its own server.
+psql_in() {
+  docker exec -u postgres "$CID" psql -h 127.0.0.1 -p 5432 "$@"
+}
 for _ in $(seq 1 60); do
-  docker exec -u postgres "$CID" psql -c 'SELECT 1' >/dev/null 2>&1 && break
+  psql_in -c 'SELECT 1' >/dev/null 2>&1 && break
   sleep 0.5
 done
-docker exec -u postgres "$CID" psql -c 'SELECT 1' >/dev/null
+psql_in -c 'SELECT 1' >/dev/null
 
 # The bootstrap script calls `psql` from PATH. There is no psql client on the
 # CI runner, so put a forwarding wrapper earlier on PATH.
@@ -67,7 +80,7 @@ for a in "$@"; do
   [ "$a" = "-f" ] && want_file=1
   args+=("$a")
 done
-exec docker exec -u postgres -i "$PG_CID" psql "${args[@]}"
+exec docker exec -u postgres -i "$PG_CID" psql -h 127.0.0.1 -p 5432 "${args[@]}"
 WRAP
 chmod +x "$WORK/bin/psql"
 export PG_CID="$CID"
@@ -99,7 +112,7 @@ export BROWNHILL_PGHOST=127.0.0.1
 export BROWNHILL_PGPORT=5432
 export BROWNHILL_PG_ENV_FILE="$WORK/secrets/pg.env"
 
-q() { docker exec -u postgres "$CID" psql -tAc "$1" | tr -d ' '; }
+q() { psql_in -tAc "$1" | tr -d ' '; }
 
 echo "== schema gate: running hosted/bootstrap/brownhill-bootstrap.sh =="
 bash hosted/bootstrap/brownhill-bootstrap.sh
@@ -154,7 +167,7 @@ fi
 
 echo "== schema gate: RLS portability proof =="
 stage_cp "$REPO_ROOT/standalone/sql/portable-rls-proof.sql" "$CID:/tmp/gate-sql/portable-rls-proof.sql"
-docker exec -u postgres "$CID" psql -v ON_ERROR_STOP=1 -f /tmp/gate-sql/portable-rls-proof.sql
+psql_in -v ON_ERROR_STOP=1 -f /tmp/gate-sql/portable-rls-proof.sql
 
 if [ "$fail" -ne 0 ]; then
   echo "SCHEMA GATE FAILED" >&2
