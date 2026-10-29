@@ -58,13 +58,18 @@ create policy driver_self_insert on driver_damage_reports
   );
 
 -- Tenant-scoped read for ops / admin (the operator console + the
--- /ops/incidents queue). The current_tenant() helper comes from 0016.
+-- /ops/incidents queue).
+--
+-- The guard is is_tenant_member(tenant_id), the helper 0016 defines and the
+-- one every other tenant-scoped table in this schema uses (0019, 0020, 0021,
+-- 0055, ...). There is no current_tenant() function — referencing one makes
+-- the policy un-creatable and the whole file fails to apply.
 create policy tenant_select on driver_damage_reports
   for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));
 
 -- Tenant-scoped update for ops / admin (status transitions, notes).
 create policy tenant_modify on driver_damage_reports
   for update to authenticated
-  using (current_tenant() = tenant_id)
-  with check (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id))
+  with check (is_tenant_member(tenant_id));

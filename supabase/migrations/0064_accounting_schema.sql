@@ -159,7 +159,15 @@ begin
   return null;
 end;
 $$ language plpgsql;
-create trigger trg_journal_lines_balanced
+-- CONSTRAINT TRIGGER, not TRIGGER: Postgres only accepts DEFERRABLE on a
+-- constraint trigger. `create trigger ... deferrable` is a syntax error, so
+-- this file could never be applied on PostgreSQL 16 — every install that
+-- reached this file stopped here.
+--
+-- Deferred on purpose. The balance check runs at COMMIT, once every line of
+-- the journal is present; a row-level check would fire after the FIRST line
+-- and reject every multi-line journal.
+create constraint trigger trg_journal_lines_balanced
   after insert or update on accounting.journal_lines
   deferrable initially deferred
   for each row execute function accounting.journal_balanced();

@@ -5,9 +5,15 @@
 
 set search_path = accounting, public;
 
+-- The cast has to be INSIDE the coalesce, not outside it. current_setting()
+-- returns text and auth.uid() returns uuid; Postgres resolves coalesce() from
+-- its arguments and rejects the mixed-type pair with
+-- "COALESCE types text and uuid cannot be matched". Casting the uuid to text
+-- first gives coalesce() two text arguments; casting the result afterwards
+-- cannot help, because the call has already failed to type-check.
 create or replace function accounting.is_current_tenant() returns boolean
 language sql stable as $$
-  select coalesce(current_setting('app.tenant_id', true), auth.uid())::text is not null
+  select coalesce(current_setting('app.tenant_id', true), auth.uid()::text) is not null
          and coalesce(current_setting('app.tenant_id', true), '') <> '';
 $$;
 

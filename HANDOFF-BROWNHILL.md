@@ -110,9 +110,11 @@ If you also want to use the **Linux binary tarball** path for PostgreSQL (instea
 The `brownhill-bootstrap.service` one-shot unit runs `/usr/local/bin/brownhill-bootstrap.sh`, which:
 
 1. Waits for Postgres to answer a real query.
-2. Applies `standalone/sql/0000_supabase_shim.sql` (idempotent).
-3. Applies every migration under `supabase/migrations/*.sql` in order, each in its own transaction.
-4. Writes `app_state.bootstrap_pending='1'`.
+2. Creates the `schema_migrations` ledger, if it does not exist.
+3. Applies `standalone/sql/0000_supabase_shim.sql` (idempotent).
+4. Applies every migration under `supabase/migrations/*.sql` in order, each in its own
+   transaction, recording each one's SHA-256 in the ledger as it goes.
+5. Writes `app_state.bootstrap_pending='1'`.
 
 This runs on the systemd `After=postgresql.service` ordering. To run it now:
 
@@ -121,7 +123,34 @@ sudo systemctl start brownhill-bootstrap.service
 sudo journalctl -u brownhill-bootstrap.service --since '1 minute ago' --no-pager
 ```
 
-The last log line should be `INSERT INTO app_state … ` and `exit 0`. You can also re-run it manually — it is idempotent.
+The last log line should be `INSERT INTO app_state … ` and `exit 0`. You can also re-run it
+manually — it is idempotent. A second run applies nothing and exits 0.
+
+The script reads the repository from `/opt/brownhill/repo`. If you install the code
+somewhere else, set `BROWNHILL_REPO_DIR` to that path.
+
+To see what a box has applied:
+
+```bash
+sudo -u postgres psql -h 127.0.0.1 -p 55432 -U postgres -d postgres \
+  -c 'select filename, applied_at from schema_migrations order by filename'
+```
+
+**Upgrading a box that was provisioned before the ledger existed.** Such a box has the
+schema but an empty ledger, so the script cannot tell what already ran and refuses to
+re-apply from the start — re-running would fail on the objects it already created. Tell
+it what the box has, and it records those without re-running them and applies anything
+else:
+
+```bash
+sudo systemctl set-environment \
+  BROWNHILL_ADOPTED_MIGRATIONS="0001_extensions.sql 0002_platform.sql ..."
+sudo systemctl restart brownhill-bootstrap.service
+```
+
+List only the files that actually ran on that box. Anything omitted is applied normally,
+so a box that skipped a migration picks it up on the next run. The live Brownhill box
+skipped `0064`–`0071` (see the deploy runbook), so it should list everything else.
 
 ### Step F — Issue the Let's Encrypt cert and substitute the FQDN
 
@@ -151,11 +180,18 @@ sudo ./hosted/tests/acceptance.sh
 
 This is the shippable definition (Spec §4.5.7). All five must return 0:
 
-1. `DEPLOYMENT_PROFILE=hosted pnpm test` — the test suite under `DEPLOYMENT_PROFILE=hosted`.
+1. `hosted/tests/schema-gate.sh` — builds the schema from zero on a throwaway
+   `postgres:16` using this repo's own `brownhill-bootstrap.sh`, asserts the ledger is
+   complete and a re-run applies nothing, then runs the portable RLS proof.
 2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–14 against the live stack.
 3. `hosted/tests/migrations-regression.sh` — replays the schema against a throwaway Postgres, replays portable RLS proof.
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trips one `.from()` per major resource.
 5. Sunday `brownhill-backup-verify.service` journal entry — restore from a fresh dump into a throwaway Postgres, row counts and RLS replay.
+
+Gate 1 needs Docker on the machine running it — it starts a throwaway Postgres container.
+It is the gate that fails when the schema is broken, which is the point: the gate that
+used to occupy this slot ran a `pnpm --filter` against a package name this repository does
+not have, so it printed "No projects matched the filters", exited 0, and could never fail.
 
 Gate 5 won't have a journal entry on first deploy (no Sunday has passed). **Touch the service once manually to confirm the chain:**
 

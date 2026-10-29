@@ -5,11 +5,21 @@
 # enabled (e.g. the SaaS profile), Gate 6 is skipped and the bar is 5 gates.
 set -uo pipefail
 GATES_PASSED=0
-GATE_NAMES=( "hosted-tests" "verify-hosted-portability" "migrations-regression" "hosted-smoke" "backup-verify" )
+GATE_NAMES=( "schema-gate" "verify-hosted-portability" "migrations-regression" "hosted-smoke" "backup-verify" )
 
-# 1 — pnpm test on DEPLOYMENT_PROFILE=hosted
-echo "== Gate 1: DEPLOYMENT_PROFILE=hosted pnpm test =="
-if DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test 2>/tmp/g1.log; then
+# 1 — the schema gate: the repo's own bootstrap builds the schema from zero on
+# a real postgres:16, the ledger is complete, a re-run is a no-op, and the RLS
+# portability proof passes.
+#
+# This replaces a gate that could not fail. It ran
+# `pnpm --filter @brownhill/webapp test`, but this repository has no
+# pnpm workspace and its package is named `elite-fleet-management`, so the
+# filter matched nothing, pnpm printed "No projects matched the filters" and
+# exited 0. A gate that cannot fail is worse than no gate: it manufactures
+# confidence that no test ran. The schema gate fails when the schema is
+# broken — which is exactly what it is there to catch.
+echo "== Gate 1: schema-gate.sh (build the schema from zero + RLS proof) =="
+if bash hosted/tests/schema-gate.sh 2>/tmp/g1.log; then
   echo "Gate 1 OK"; GATES_PASSED=$((GATES_PASSED+1))
 else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 

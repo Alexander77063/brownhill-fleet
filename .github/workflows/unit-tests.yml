@@ -39,3 +39,20 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+
+  # The schema gate: builds the schema from zero with the repo's own
+  # provisioning script against a real postgres:16, then runs the RLS
+  # portability proof.
+  #
+  # This is the check that was missing. Five migrations shipped unverified
+  # because nothing replayed them against a real PostgreSQL 16 — and the
+  # acceptance script's Gate 1 ran a pnpm filter that matched no package and
+  # exited 0, so it could never fail. It runs here on ubuntu-latest, which
+  # has Docker; the hosted-smoke workflow's `pulsar` runner is optional.
+  schema-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the schema from zero and prove RLS isolation
+        run: bash hosted/tests/schema-gate.sh

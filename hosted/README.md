@@ -34,8 +34,14 @@ bash hosted/tests/verify-hosted-portability.sh
 # End-to-end fresh-deploy smoke.
 bash hosted/tests/smoke/hosted-smoke.sh
 
-# Migration regression: replays the shim + 53 migrations against an empty
-# postgres:16 in a container and asserts the original nine RLS proofs hold.
+# Schema gate: builds the schema from zero on a throwaway postgres:16 using
+# this repo's own brownhill-bootstrap.sh, asserts the migration ledger is
+# complete, that a second run applies nothing, and that the portable RLS
+# proof passes. This is the gate that fails when the schema is broken.
+bash hosted/tests/schema-gate.sh
+
+# Migration regression: replays the shim + every migration against an empty
+# postgres:16 in a container and asserts the RLS proofs hold.
 bash hosted/tests/migrations-regression.sh
 
 # Five-gate acceptance — run before declaring shippable.

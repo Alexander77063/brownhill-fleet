@@ -28,7 +28,10 @@ docker cp standalone/sql/portable-rls-proof.sql "$cid":/tmp/
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/0000_supabase_shim.sql
 for f in $(ls -1 supabase/migrations/*.sql | sort); do
   bn=$(basename "$f")
-  docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$bn"
+  # --single-transaction, matching the provisioning script: a file that fails
+  # part-way commits nothing, so the failure points at the offending file
+  # rather than at a half-applied schema.
+  docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 --single-transaction -f "/tmp/migrations/$bn"
 done
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/portable-rls-proof.sql
 rm -rf .tmp
