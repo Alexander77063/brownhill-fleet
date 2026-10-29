@@ -34,5 +34,7 @@ create index agreement_handover_photos_tenant_idx on agreement_handover_photos (
 
 alter table agreement_handover_photos enable row level security;
 
+-- is_tenant_member(tenant_id) is the 0016 helper every other tenant-scoped
+-- table uses; there is no current_tenant() function to call.
 create policy tenant_select on agreement_handover_photos for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));

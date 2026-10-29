@@ -45,10 +45,12 @@ create policy driver_self_select on payment_link_tokens for select to authentica
   );
 
 -- Tenant side: ops/admin read+write their tenant's tokens.
+-- is_tenant_member(tenant_id) is the 0016 helper every other tenant-scoped
+-- table uses; there is no current_tenant() function to call.
 create policy tenant_select on payment_link_tokens for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));
 create policy tenant_insert on payment_link_tokens for insert to authenticated
-  with check (current_tenant() = tenant_id);
+  with check (is_tenant_member(tenant_id));
 create policy tenant_update on payment_link_tokens for update to authenticated
-  using (current_tenant() = tenant_id)
-  with check (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id))
+  with check (is_tenant_member(tenant_id));

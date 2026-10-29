@@ -44,7 +44,11 @@ create table booking_series (
   updated_at       timestamptz not null default now(),
   check (cardinality(days_of_week) between 1 and 7),
   check (end_date is null or end_date >= start_date),
-  check (every (d in days_of_week) (d between 0 and 6))
+  -- Containment, not every(): there is no every() aggregate for arrays in
+  -- Postgres, so the original expression was a syntax error and the file
+  -- could not be applied. '<@' means "is contained by", i.e. every element
+  -- of days_of_week is one of 0..6 (Postgres EXTRACT(dow): 0=Sunday).
+  check (days_of_week <@ array[0,1,2,3,4,5,6])
 );
 
 create index booking_series_tenant_idx on booking_series (tenant_id, status);
@@ -55,8 +59,10 @@ create trigger trg_booking_series_updated before update on booking_series
 
 alter table booking_series enable row level security;
 
+-- is_tenant_member(tenant_id) is the 0016 helper every other tenant-scoped
+-- table uses; there is no current_tenant() function to call.
 create policy tenant_select on booking_series for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));
 create policy tenant_modify on booking_series for all to authenticated
-  using (current_tenant() = tenant_id)
-  with check (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id))
+  with check (is_tenant_member(tenant_id));

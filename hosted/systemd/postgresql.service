@@ -8,11 +8,16 @@ Type=notify
 User=postgres
 Group=postgres
 EnvironmentFile=/etc/brownhill/secrets/pg.env
+# No --data-checksums here. That is an initdb flag, not a server flag: the
+# server rejects it and exits, so this unit could never start. Whether a
+# cluster has checksums is a property of the data directory, set once by
+# initdb -k; the server detects it on startup and needs no flag. The deploy
+# runbook records this as issue #110 — the box was patched by hand to drop
+# the flag, and the broken unit was never corrected in the repository.
 ExecStart=/opt/brownhill/pgsql/bin/postgres \
   -D /var/lib/postgresql/16/main \
   -h 127.0.0.1 -p 55432 \
-  -c unix_socket_directories=/var/run/postgresql \
-  --data-checksums
+  -c unix_socket_directories=/var/run/postgresql
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
