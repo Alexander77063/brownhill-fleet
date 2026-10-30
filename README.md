@@ -28,7 +28,9 @@ acceptance script. Read it through before running anything.
 | `standalone/scripts/verify-portability.sh` | Proves the schema applies cleanly to plain Postgres with RLS intact |
 | `HANDOFF-BROWNHILL.md` | The operator handoff doc — the entry point |
 | `docs/runbook/`, `docs/testing/` | Operational references |
-| `.github/workflows/hosted-tests.yml` | CI for the hosted acceptance script |
+| `docs/product/` | The product foundation set — PRD, TRD, MVP scope, user flow, design system, schema, monetisation, launch, acquisition, growth. Start at [`docs/product/README.md`](./docs/product/README.md) |
+| `.github/workflows/hosted-smoke.yml` | CI for the hosted stack (runs on the self-hosted `pulsar` runner) |
+| `.github/workflows/unit-tests.yml` | CI for typecheck + unit tests (runs on `ubuntu-latest`) |
 
 ## What's NOT in this repo (and why)
 
@@ -36,9 +38,17 @@ These paths existed in the upstream repo but were stripped for this mirror
 because they aren't part of the Brownhill-hosted deployment:
 
 - `standalone/tauri/`, `standalone/delivery/`, `standalone/scripts/*.ps1` — Windows Tauri installer (different deployment shape, not used here)
-- `docs/superpowers/`, `docs/accessibility/`, `docs/business/`, `docs/product/` — internal planning, SaaS-only docs
-- `tests/`, `scripts/`, `.github/workflows/{ci,migrate-production}.yml` — SaaS CI
+- `docs/superpowers/`, `docs/accessibility/`, `docs/business/` — internal planning, SaaS-only docs. **`docs/product/` is the exception: it is kept, because it describes this deployment**
+- `tests/`, `.github/workflows/{ci,migrate-production}.yml` — SaaS CI
 - `.claude/`, `.serena/`, `.vercel/`, `.sops.yaml`, `.env*` — local dev secrets, agent config
+
+## Where the rent-to-buy lives
+
+The rent-to-buy product — the calculator, the two rates, and the governance
+report — is described in [`docs/product/01-prd.md`](./docs/product/01-prd.md)
+and specified in [`docs/product/02-trd.md`](./docs/product/02-trd.md) §7. The
+engine is `src/lib/rtb-calculator.ts`; the report is `src/lib/reports/`; the
+investor's portal is `/investor`.
 
 ## Sync model
 

@@ -77,6 +77,10 @@ standalone/tauri/src-tauri/.cargo/
 .serena/
 .superpowers/
 
+# Scratch working files (ad-hoc SQL, replay scratch). Machine-local by
+# definition — nothing here belongs in a commit.
+.scratch/
+
 # SOPS-encrypted env files are SAFE to commit and MUST be, or the other
 # machine cannot run this project. The negation is explicit because the
 # .env* rules above would otherwise swallow them.
