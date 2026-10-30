@@ -1163,7 +1163,7 @@ fi
 ADMIN_TOKEN=$(curl -sk -c /tmp/cookies -b /tmp/cookies \
   -H 'content-type: application/json' \
   -d '{"email":"owner@example.test","password":"correct horse battery staple"}' \
-  http://127.0.0.1:55431/api/v1/auth/local/signin | jq -r .token)
+  http://127.0.0.1:55431/api/auth/local/signin | jq -r .token)
 [[ -n "$ADMIN_TOKEN" && "$ADMIN_TOKEN" != "null" ]] || { echo "FAIL: cannot sign in"; exit 1; }
 
 # 1) Issue an invoice through the API

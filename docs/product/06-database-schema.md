@@ -2,8 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-10-30. Read from `supabase/migrations/` (78 files)
-and `supabase/seed.sql`. The most recent migration is `0079_operator_only_tables.sql`.*
+*Status: current as of 2026-10-30. Read from `supabase/migrations/` (81 files)
+and `supabase/seed.sql`. The most recent migration is
+`0082_billing_allocation_guard.sql`.*
 
 ---
 
@@ -20,8 +21,9 @@ PostgreSQL 16.4, three schemas:
 `accounting` is a **fourth** schema (migration 0064) that holds the
 in-app accounting module: `chart_of_accounts`, `journal_entries`,
 `journal_lines`, `bank_accounts`, `bank_transactions`, `bank_imports`,
-`periods`, `vat_codes`, `vat_submissions`, `filing_artifacts`,
-`tenant_accounting_settings`, `bank_formats`. It is **opt-in**, and the schema
+`periods`, `vat_codes`, `vat_submissions`, `vat_return_lines`,
+`filing_artifacts`, `firs_credentials`, `tenant_accounting_settings`,
+`bank_formats`, `audit_log`. It is **opt-in**, and the schema
 contract knows the difference — a deployment without accounting tables still
 passes its preflight.
 
@@ -355,8 +357,55 @@ business paid.
 | `accounting.vat_codes` | `code ~ '^T[0-9]$'`, `vat_t1_rate_pct between 0 and 100`, `vat_treatment in ('standard','zero','exempt','outside')` |
 | `accounting.vat_submissions` | UK VAT return; `box_number between 1 and 6` (the nine boxes are spread across six box numbers with sub-boxes) |
 | `accounting.filing_artifacts` | What was filed, when, and the MTD response |
-| `accounting.mtd_credentials` | HMRC tokens, AES-GCM encrypted at rest |
+| `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4 |
+| `accounting.vat_return_lines` | The lines of a VAT return. Keyed on `vat_submission_id`; its tenancy is its submission's |
+| `accounting.audit_log` | The accounting module's own append-only audit trail — read and appended to, never edited or removed |
 | `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window |
+
+### 5.4 How the accounting schema is tenant-scoped
+
+The accounting schema is the one part of the product that **does not** follow
+the `public` tenancy spine by default, and getting that wrong is a
+cross-tenant data leak rather than a broken screen — so it is worth stating
+exactly.
+
+| Tables | Scope |
+| --- | --- |
+| `chart_of_accounts`, `vat_codes` | **Global.** Seeded once by migrations 0065/0066; nothing provisions a per-tenant copy. A tenant-scoped lookup would find nothing and every chart-of-accounts lookup in the product would break. They are reference data, not tenant data |
+| `vat_return_lines` | **Inherited.** Keyed on `vat_submission_id`; its tenancy is its submission's |
+| The other twelve — `periods`, `journal_entries`, `journal_lines`, `audit_log`, `bank_accounts`, `bank_imports`, `bank_transactions`, `vat_submissions`, `firs_credentials`, `tenant_accounting_settings`, `bank_formats`, `filing_artifacts` | **Tenant-scoped.** `tenant_id` is `NOT NULL`, indexed, and carries a RESTRICTIVE `tenant_isolation` policy ANDing `is_tenant_member(tenant_id)` onto the existing permissive policies |
+
+Migration 0069 added the `tenant_id` columns and the per-tenant UNIQUE
+constraints but left them nullable and the policies decorative — the policies
+called `accounting.is_current_tenant()`, which only checks that *a* tenant is
+pinned on the session and never compares it with the row's own `tenant_id`.
+Migration **0081** is what makes it real: it backfills `tenant_id` to the
+bootstrap tenant, makes it `NOT NULL` (a NULL tenant makes every row distinct,
+which would let two periods for the same `(year, month)` coexist), indexes it,
+and replaces the decorative policies with the house `tenant_isolation` pattern
+used by `public` since migration 0017.
+
+**The application must still name the tenant.** The Node server connects as a
+superuser, which bypasses RLS entirely, and the accounting schema is not
+exposed by PostgREST — so a policy is not what stops one tenant reading
+another's ledger. `tests/unit/accounting/sql-contract.test.ts` holds every
+statement that touches a tenant-scoped accounting table to containing
+`tenant_id`; the policy is the second line of defence for any connection that
+is *not* the superuser.
+
+Two other things 0081 fixes that the code had been working around:
+
+- `accounting.firs_credentials` gained `unique (tenant_id)`. The application
+  upserts on it; before that the only unique key was the primary key `id`,
+  which defaults to a fresh random uuid, so the conflict never fired, every
+  reconnect inserted another row, and `loadCredentials` could return a stale
+  token.
+- `accounting.bank_transactions` and `accounting.vat_submissions` gained
+  `posted_journal_id`, so a source row can point at the journal entry it
+  produced. The journal's idempotency key is
+  `(tenant_id, source_type, source_id)`, which is why `bank_receipt` and
+  `bank_fee` are separate source types — one bank transaction can produce more
+  than one posting.
 
 ## 6. Other invariants worth knowing
 
@@ -374,27 +423,101 @@ business paid.
 | `kind ~ '^[a-z][a-z0-9_]{1,40}$'` | `plan_features` | A malformed feature key |
 | `reopen_window_days between 1 and 90` | accounting settings | A reopen window of zero or two years |
 | `bank_statement_max_bytes between 1024 and 1073741824` | tenant settings | A nonsensical import cap |
+| allocation targets a non-void invoice (trigger `check_allocation()`) | `payment_allocations` | Money landing on a voided invoice |
 
-**Status vocabularies** are `CHECK`-constrained, not free text:
-`agreement_status`, `invoice_status` (`draft`, `issued`, `part_paid`, `paid`,
-`overdue`, `void`), `booking_status`, `subscription_status`
-(`trialing`, `unpaid`, `active`, `past_due`, `suspended`, `cancelled`),
-`device_status`, `notification_status`.
+**The void guard, and why it lives in the database.** An invoice that has
+been voided has been cancelled: nothing is owed on it, so a receipt must never
+be allocated to it. `public.check_allocation()` enforces that, and enforces it
+for *every* writer — the reconcile route, the bank import, the payment ingest,
+and any writer not yet written. The application applies the matching rule
+(`src/lib/accounting/invoice-eligibility.ts`: allocatable means `open`,
+`part_paid` or `overdue`) so it can explain the refusal; the database refuses
+it regardless.
+
+Two limits travel with the guard: an invoice's allocations cannot exceed its
+gross, and a payment's allocations cannot exceed the payment itself. The
+trigger takes the invoice row lock first and the payment row lock second —
+the same order the reconcile route uses — so the two cannot deadlock.
+
+Before migration 0082 the trigger checked neither the invoice's status nor
+the invoice row itself, so a void invoice accepted money. The regression proof
+`standalone/sql/billing-allocation-proof.sql` fails against 0001–0081 and
+passes against 0001–0082.
+
+**Status vocabularies** are enum-typed or `CHECK`-constrained, not free text —
+with one exception. `agreement_status` (`draft`, `pending_signature`, `active`,
+`ended`, `defaulted`, `transferred`), `invoice_status` (`open`, `paid`,
+`part_paid`, `void`, `overdue`) and `booking_status` (`requested`, `assigned`,
+`en_route`, `in_progress`, `completed`, `cancelled`, `no_show`) are enums.
+
+Two different invoice vocabularies exist and they are **not** the same list.
+`public.invoices.status` uses the `invoice_status` enum above — a tenant's
+invoice to its driver, which starts `open`. `subscription_invoices.status` is
+a `text` column with its own CHECK over `draft`, `issued`, `part_paid`,
+`paid`, `overdue`, `void` — the invoice **we** issue to a tenant for its
+protection subscription, which starts `draft`. `src/lib/collection/invoices.ts`
+types the second one and `src/lib/types.ts` types the first.
+
+`tenant_subscription.status` is a `text` column with a CHECK over `trialing`,
+`unpaid`, `active`, `past_due`, `suspended`, `cancelled`. `device_units.state`
+is a `text` column with a CHECK over `in_stock`, `allocated`, `fitted`,
+`faulty`, `returned`, `retired`, `lost`. **`notifications.status` is the
+exception**: it is free text with no CHECK, and the application writes
+`pending`, `sent`, `skipped` or `failed`.
 
 ## 7. Operational state
 
 | Table | What it is |
 | --- | --- |
-| `app_state` | Key/value operational flags: `bootstrap_pending`, `app_draining`. The middleware reads it through `localDb()` |
+| `app_state` | Key/value operational flags: `bootstrap_pending`, `app_draining`. Read by the Node server through `localDb()` (a direct connection as the table owner) and by the Edge middleware over HTTP from PostgREST — see §7.1 |
 | `numbering_sequences` | Per-tenant document numbering (agreement numbers, invoice numbers) |
 | `audit_log` | Append-only. Migration 0018 makes it immutable |
 | `void_events` | Void markers on financial records |
 | `notifications` | `status in ('pending','sent','acknowledged','failed')` |
 | `subscriptions` / `tenant_subscription` | The SaaS subscription — **unused in the hosted profile**, where entitlements come from `PROFILE_MODULES` |
 
+### 7.1 How `app_state` is read
+
+The table has **three** access paths, and they are not interchangeable.
+
+| Reader | Mechanism | RLS |
+| --- | --- | --- |
+| Node server — sign-in, `/admin/status`, `/admin/restore`, first-run setup | `localDb()` — a direct `postgres` connection as the table owner, using `DATABASE_URL` | Bypassed (owner) |
+| Any server-side path using the service client | `createServiceClient()` — a service-role JWT | Bypassed (`service_role` has `bypassrls`) |
+| **Edge middleware** — the drain check | `fetch()` to PostgREST as `anon` | **Applies.** One policy: `anon` may `select` the row whose `key = 'app_draining'`, and nothing else |
+
+Migration 0080 enables RLS on `app_state` and installs that single-row
+policy. Two things make it necessary rather than decorative:
+
+- `0014_grants.sql`'s `alter default privileges in schema public` grants
+  `authenticated` DML on every table created after it — which is `app_state`.
+  With RLS off, any signed-in account could write these flags: a driver
+  could set `app_draining='1'` and close the whole business, or set
+  `bootstrap_pending='0'` on a fresh install and lock the owner out of
+  first-run setup. A table with RLS enabled and no matching policy is
+  unreachable whatever the table-level grants say, so the blanket grant buys
+  nothing here.
+- The Edge runtime **cannot open a database connection**. The middleware
+  therefore reads the drain flag over HTTP from PostgREST, which needs a
+  role — and the only role that needs no credential is `anon`. The policy
+  exposes one row and nothing else: `anon` can read the drain flag, cannot
+  read `bootstrap_pending`, cannot write, and cannot see anything else.
+
+The alternative — a service-role token inside the Edge bundle — would put a
+credential that bypasses every policy in the database into the middleware, to
+read one flag. A single-row policy is a much smaller thing to hand out.
+
+`app_state` is also created by a migration rather than by
+`hosted/bootstrap/brownhill-bootstrap.sh` alone. It used to be created only
+by that shell script, which meant it existed only on a host where the script
+had been run by hand; every other path — a fresh CI stack, a container that
+provisions itself, a developer running the app locally — queried a table that
+did not exist and got `42P01`. The migration history is the one thing every
+install has applied, by definition.
+
 ## 8. Migrations
 
-- 78 files, `0001`–`0079` (there is no `0057`; the number was never used).
+- 81 files, `0001`–`0082` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

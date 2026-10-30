@@ -193,7 +193,7 @@ After step H:
 
 - `app_state.bootstrap_pending='0'` — bootstrap endpoint will not serve any future request.
 - `app_state.app_draining='0'` — application is live.
-- The owner can sign in via the regular `/api/v1/auth/signin` endpoint from the same Pulse.
+- The owner can sign in via the regular `/api/auth/local/signin` endpoint from the same Pulse.
 
 ## 5. Ongoing operations
 
@@ -201,12 +201,28 @@ After step H:
 
 ```bash
 sudo bash -c 'cd /opt/brownhill/repo && git pull origin main \
-  && pnpm install --frozen-lockfile \
-  && pnpm build:icons \
-  && pnpm --filter @brownhill/webapp build:hosted \
-  && systemctl restart brownhill-next.service \
+  && ./hosted/scripts/deploy-app.sh \
   && systemctl restart postgrest.service'
 ```
+
+`deploy-app.sh` performs the whole application update: `pnpm install
+--frozen-lockfile`, the standalone hosted build, copying the output into
+`/var/lib/brownhill/app`, and restarting `brownhill-next.service`.
+
+Two things it does that a hand-run build does not, and that are why the
+hand-run sequence deployed nothing:
+
+- **The build must be standalone.** `output: 'standalone'` is what produces
+  the `server.js` the unit runs, and it is also what enables the
+  `/rest/v1 → PostgREST` rewrite every `.from()` call reads its data
+  through. Without it the app starts and then cannot reach its database.
+- **The output must be copied into `/var/lib/brownhill/app`.** Building in
+  the repository and restarting the service leaves the service running the
+  *previous* build.
+
+The previous build is kept at `/var/lib/brownhill/app.previous` until the new
+one is in place, and the script prints the rollback command if the restart
+fails.
 
 A future v2 will host an in-app "click to update" button (out of scope for this PR).
 
@@ -277,7 +293,7 @@ Log results in `hosted/tests/chaos/RUNS.md`. They are the proof the failure-mode
 If a deploy goes wrong:
 
 1. **Stop further failures.** `systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer` — this freezes the running state without disrupting the DB.
-2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, `pnpm --filter @brownhill/webapp build:hosted`, `systemctl start brownhill-next.service`.
+2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, then `./hosted/scripts/deploy-app.sh` — it builds, installs into `/var/lib/brownhill/app` and restarts the service. (The service runs `node server.js` from that directory, so a build without the copy leaves the old build in place.)
 3. **Only if the database is the problem**, use the UI at `/admin/restore` to replay the most recent good dump onto the live cluster. Take a fresh `pg_dump` first if you can (`pg_dump` through PostgREST works at `127.0.0.1:55430`).
 4. **Don't roll back the schema.** The 53 SQL migrations are content-versioned forward-only. Restoring an old application build against a current schema is safe; restoring an old schema build against the current application data is not.
 
@@ -291,7 +307,7 @@ There is no automatic revert button. The paths above are exhaustive on purpose.
 
 ## 10. What's not in this handoff
 
-- **Multi-instance / horizontally-scaled deployments.** Single-Pulsar is supported; multi-instance needs the operator to add a shared KV (Redis is the natural choice) for the `app_state.app_draining` signal. The middleware reads it through `localDb()` today; the abstraction is small.
+- **Multi-instance / horizontally-scaled deployments.** Single-Pulsar is supported; multi-instance needs the operator to add a shared KV (Redis is the natural choice) for the `app_state.app_draining` signal. The Edge middleware reads the flag over HTTP from PostgREST as `anon`, against a one-row RLS policy; a second instance would need that flag served from somewhere both can reach. The abstraction is small.
 - **External monitoring / paging.** Alert markers are written; the page-out (Pushover / email / SMS) is wired as an empty shim at `/usr/local/bin/brownhill-alert-forward.sh`. Wire that to your channel of choice.
 - **In-app update button.** v1 is SSH + git pull. v2 will surface this in the operator UI.
 - **Multi-tenant routing.** The hosted profile is single-tenant-by-deployment. A second Brownhill-style customer requires their own deploy.

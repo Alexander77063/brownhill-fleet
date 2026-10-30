@@ -107,7 +107,10 @@ Email → SMTP** to your own SMTP (e.g. Resend, Postmark, SES). Add your product
    update profiles set driver_id = '<drivers.id>' where email = 'driver@email';
    ```
 
-> For local dev only, `node scripts/seed-auth.mjs` creates demo ops/driver/investor logins.
+> For local dev only, `SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs` creates the
+> demo ops/accounts/investor/driver/owner logins. There is no published demo password —
+> the seed refuses to run without one, and refuses to run against a server that is not
+> on this machine unless you set `SEED_ALLOW_REMOTE=1`.
 
 ---
 

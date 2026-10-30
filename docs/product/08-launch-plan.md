@@ -59,14 +59,14 @@ hosted/tests/acceptance.sh                                  # all gates green
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0079 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0082 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
 **Status: passed 2026-10-30.** The replay ran against a scratch `postgres:16`
 container, in two steps: a dry run that applied every migration inside one
 transaction and rolled it back — leaving `public_tables=0` behind, so nothing
 survived it — and then a real from-zero apply in production semantics, each
-migration in its own transaction. The result was 84 public tables, 15
+migration in its own transaction. The result was 85 public tables, 15
 accounting tables and 10 public views.
 
 What the run asserted, and what it found:
@@ -80,6 +80,7 @@ What the run asserted, and what it found:
 | `v_investor_rtb` exists and exposes no name or driver column | **Passed** |
 | All ten tenant roles map to the expected portal role through the signup trigger — including the `director_exec` → `accounts` case 0078 exists to fix | **Passed** |
 | Row-level security is on `agreements`, `drivers`, `vehicles` and `profiles` | **Passed** |
+| Money cannot be allocated to a voided invoice, and allocations cannot exceed the invoice's gross or the payment's amount | **Enforced by CI** — `standalone/sql/billing-allocation-proof.sql`, four assertions; it fails against 0001–0081 and passes against 0001–0082 |
 
 And, run as a live session rather than as the schema owner — a superuser
 bypasses RLS, so a check made as the owner would have proved nothing:
@@ -93,6 +94,7 @@ bypasses RLS, so a check made as the owner would have proved nothing:
 | A driver sees only their own damage report — not the office's other records, payment links, dispatch rules or handover photographs | **Enforced by CI** |
 | Ops in that tenant still sees all four kinds of record — the tightening must not close the office out | **Enforced by CI** |
 | Ops in another tenant sees none of them | **Enforced by CI** |
+| The accounting schema is tenant-isolated — all twelve tenant-scoped tables carry a RESTRICTIVE `tenant_isolation` policy ANDing `is_tenant_member(tenant_id)`, and the two global reference tables (`chart_of_accounts`, `vat_codes`) are deliberately exempt | **Passed** |
 
 The last three rows are the operator-only tables (`driver_damage_reports`,
 `booking_series`, `payment_link_tokens`, `agreement_handover_photos`), whose
@@ -177,9 +179,13 @@ not be reached by accident.
 ```
 1. systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer
 2. git log -5 → git checkout <sha>
-3. pnpm --filter @brownhill/webapp build:hosted
-4. systemctl start brownhill-next.service
+3. ./hosted/scripts/deploy-app.sh   (builds, installs into /var/lib/brownhill/app, restarts)
 ```
+
+Rolling the application back is a **build-and-install**, not a build: the unit
+runs `node server.js` from `/var/lib/brownhill/app`, so the standalone output
+has to be copied there. `deploy-app.sh` does both and keeps the build it
+replaced at `/var/lib/brownhill/app.previous`.
 
 ### 3.2 A bad database change
 

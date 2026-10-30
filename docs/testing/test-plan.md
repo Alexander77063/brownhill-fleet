@@ -52,20 +52,26 @@ network response, timestamp).
 
 ```bash
 pnpm install
-supabase start                 # Docker must be running
-node scripts/seed-auth.mjs     # creates the demo logins below
+supabase start                          # Docker must be running
+SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs   # creates the demo logins below
 pnpm dev
 ```
 
 ### 1.3 Demo accounts
 
-Password for all: `Elite Fleet Management123!`
+Password for all: **the value you set in `SEED_PASSWORD`**. No password is published in
+this repository and the seed refuses to run without one — you choose it, it is never
+echoed back, and every demo account gets it so one value signs you in as any role.
 
-| Role | Email | Sees |
-|---|---|---|
-| Ops (owner) | `ops@elitefleetmanagement.test` | Full operator console + admin settings |
-| Driver | `driver@elitefleetmanagement.test` | Driver portal only |
-| Investor | `investor@elitefleetmanagement.test` | Investor reporting only |
+| Role | Email | Portal | Sees |
+|---|---|---|---|
+| Ops | `ops@brownhill.test` | `/ops` | Full operator console + admin settings |
+| Accounts | `accounts@brownhill.test` | `/accounts` | Accounting console |
+| MD | `md@brownhill.test` | `/investor` | Investor reporting (md) |
+| Director | `director@brownhill.test` | `/investor` | Investor reporting (director_exec) |
+| Investor | `investor@brownhill.test` | `/investor` | Investor reporting only |
+| Driver | `driver@brownhill.test` | `/driver` | Driver portal only |
+| Owner | `owner@brownhill.test` | `/owner` | Vehicle owner portal |
 
 > **You will need a second tenant** for the isolation tests in section 3. Ask engineering
 > to provision one, or create it through `/platform` if you have super-admin access.

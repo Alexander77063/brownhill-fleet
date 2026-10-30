@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Unit tests | Vitest | 2.1.8 | 211 passing |
+| Unit tests | Vitest | 2.1.9 | 355 passing, 2 skipped |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -64,7 +64,11 @@ nginx  (:443, TLS via certbot, HSTS)          ← only public listener
   public interface.
 - The browser never sees a database URL. Every query goes through the app.
 - `app_state` holds the operational flags the middleware reads:
-  `bootstrap_pending`, `app_draining`.
+  `bootstrap_pending`, `app_draining`. The Node server reads it through
+  `localDb()` — a direct connection as the table owner. The **Edge** middleware
+  cannot open a database connection, so it reads the drain flag over HTTP from
+  PostgREST as `anon`, against a one-row RLS policy that exposes the drain row
+  and nothing else. See §7.1 of the [schema document](./06-database-schema.md).
 
 ### 3.1 The data-access seam (decision D2)
 
@@ -353,7 +357,7 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 211 passing, 16 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens |
+| Unit | `pnpm test` | 355 passing, 2 skipped, 28 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |

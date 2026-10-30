@@ -122,7 +122,7 @@ by **how soon it breaks**.
 | **The audit log is append-only** (migration 0018) | It grows forever and is never pruned. Under sustained write traffic it becomes a large fraction of the database | A retention policy, archived to cold storage. **Not implemented** |
 | **The `position_history` and `vehicle_positions` tables** | Telematics writes on a heartbeat. At 10× the vehicle count, the write rate goes up by 10× | Retention/pruning job. **Not implemented** |
 | **`notification` delivery is in-process** | A slow SMS provider blocks the request that triggered it | Move delivery to a queue. **Not implemented** — the upstream SaaS has this, the single-tenant deployment does not |
-| **`app_state` is a local read** | Multi-instance is impossible without a shared KV | Redis, or stay single-instance. Named in the handoff as out of scope for v1 |
+| **`app_state` is a per-deployment read** | Multi-instance is impossible without a shared KV | Redis, or stay single-instance. Named in the handoff as out of scope for v1 |
 | **Runtimes run in the request** | A long export or a large report competes with a page load for the same Postgres | Move heavy work off the request path |
 
 ### 4.4 Does not break

@@ -39,7 +39,7 @@ The PM2 reconfigure is a mitigation (heap ceiling + watchdog), not a fix. The ac
 
 1. Capture a heap snapshot from a healthy build (e.g. tag a clean build with `--heapsnapshot-signal=SIGUSR2` and snapshot after a single /login render).
 2. Diff against the captured snapshot above.
-3. Look for source-grew retains or repeated allocating closures; specifically check any route imported under `src/app/api/v1/auth/local/` and any Server Component touched by `/login`. Issue #125 on the SaaS repo has whatever was found upstream; merge any available fix or apply it stand-alone to this profile.
+3. Look for source-grew retains or repeated allocating closures; specifically check any route imported under `src/app/api/auth/local/` and any Server Component touched by `/login`. Issue #125 on the SaaS repo has whatever was found upstream; merge any available fix or apply it stand-alone to this profile.
 
 Until that fix lands, the customer CANNOT log in via the React app — every restart wedges within seconds. Confirm the customer is willing to wait, or else temporarily take the React app out of nginx's `proxy_pass` and have a minimal `proxy_pass` to a 6-line Node auth endpoint that just calls `signInWithPassword` from `local-store.ts` (no App Router, no React tree, no leak surface).
 

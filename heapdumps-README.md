@@ -32,7 +32,7 @@ Open in Chrome DevTools ("Memory" tab → "Load heap snapshot"). Look for:
 
 - Top-level retainers that grow on request (search "Retained Size" desc).
 - Server Components / route handlers retaining module-scope caches.
-- Closures inside auth routes (`src/app/api/v1/auth/local/`).
+- Closures inside auth routes (`src/app/api/auth/local/`).
 
 The leak is referenced upstream as **SaaS issue #125** ("next.js event-loop wedge"). The same commit message that landed the brownhill 7301b26 patch notes the wedge began on/around Oct 9-13.
 

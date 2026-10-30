@@ -92,8 +92,8 @@ the public one so a deployment without it still passes its preflight.
 | Not shipped | Why |
 | --- | --- |
 | **Multi-tenant hosting** | The hosted profile is single-tenant-by-deployment. A second Brownhill-style customer needs their own deploy. |
-| **Horizontal scaling** | `app_state.app_draining` is read through a local DB. A second instance needs a shared KV (Redis is the natural choice). The abstraction is small. |
-| **In-app update button** | v1 updates are SSH + `git pull` + rebuild + restart. The in-app button is v2. |
+| **Horizontal scaling** | `app_state.app_draining` is read from the deployment's own PostgREST. A second instance needs a shared KV (Redis is the natural choice) behind the same flag. The abstraction is small. |
+| **In-app update button** | v1 updates are SSH + `git pull` + `./hosted/scripts/deploy-app.sh`. The in-app button is v2. |
 | **Wired paging** | Alert markers are written to `/run/brownhill/alerts/`; the page-out (`brownhill-alert-forward.sh`) is an empty shim the operator points at their own channel. |
 | **PDF generation** | Reports are printable HTML and CSV. The browser prints to PDF; no PDF library is shipped. |
 | **Spreadsheet (.xlsx) export** | CSV only. No xlsx dependency. |

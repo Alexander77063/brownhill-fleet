@@ -2,6 +2,41 @@
 
 This directory is the runtime operation of Brownhill Fleet as a single-tenant web app on Namecheap Business VPS Pulsar, instead of the Tauri NSIS Windows installer that ships the standalone product. Same code, same migrations, same RLS — different process supervisor and network surface.
 
+## Running the stack locally
+
+```bash
+docker compose -f hosted/dev/docker-compose.yml up -d --build
+```
+
+**`--build` is not optional.** `docker compose up` reuses an existing `dev-next`
+image whenever one is present, so a stack that was brought up before a source
+change keeps running the *old* bundle — and every assertion afterwards is
+testing yesterday's code, not the change you just made. This is not
+hypothetical: the Edge middleware bundle was found still running the previous
+implementation for exactly this reason.
+
+The stack provisions itself. The `bootstrap` service runs the real
+`hosted/bootstrap/brownhill-bootstrap.sh`, which applies the shim and every
+migration and creates `app_state`; the `next` service waits for it to exit
+cleanly, so the app never starts against a half-built schema.
+
+```bash
+# what is up
+docker compose -f hosted/dev/docker-compose.yml ps -a
+
+# the app          → http://127.0.0.1:55431
+# PostgREST       → http://127.0.0.1:55430
+# PostgreSQL      → postgres://postgres@127.0.0.1:55432/postgres
+# nginx (TLS)     → https://127.0.0.1
+```
+
+To start clean from an empty database:
+
+```bash
+docker compose -f hosted/dev/docker-compose.yml down -v
+docker compose -f hosted/dev/docker-compose.yml up -d --build
+```
+
 ## Port layout
 
 | Port | Service             | Notes                                |
@@ -60,11 +95,32 @@ The default implementation is `backblazeB2`. Switching to another target is one 
 ssh brownhill-host
 cd /opt/brownhill/repo
 git pull origin main
-pnpm install --frozen-lockfile
-pnpm build:icons
-pnpm --filter @brownhill/webapp build:hosted
-systemctl restart brownhill-next.service
-systemctl restart postgrest.service   # only if postgrest.conf changed
+./hosted/scripts/deploy-app.sh
+```
+
+`deploy-app.sh` does the whole job: `pnpm install --frozen-lockfile`, the
+standalone hosted build, copying the output into `/var/lib/brownhill/app`
+(the systemd unit's `WorkingDirectory`), and restarting the service.
+
+**Do not hand-run the build and restart the unit instead.** Two things make
+that sequence deploy nothing:
+
+- The build must be a **standalone** build. `output: 'standalone'` is what
+  produces the `server.js` the unit runs, and it is also what enables the
+  `/rest/v1 → PostgREST` rewrite that every `.from()` call in the app reads
+  its data through. Without it the app starts and then cannot reach its own
+  database.
+- The build output must be **copied** to `/var/lib/brownhill/app`. Building in
+  the repository and restarting the service leaves the service running the
+  *previous* build, and the update looks like it worked.
+
+The script keeps the previous build at `/var/lib/brownhill/app.previous` until
+the new one is in place, and prints the rollback command if the restart fails.
+
+Restart PostgREST only if `postgrest.conf` changed:
+
+```bash
+systemctl restart postgrest.service
 ```
 
 In-app "click to update" is a v2 follow-up after the friction of the SSH+git-pull cycle is measured.

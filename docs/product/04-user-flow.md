@@ -68,7 +68,7 @@ anywhere.
 ## 2. Signing in
 
 ```
-Sign in → /api/v1/auth/signin (HS256 JWT, local PostgREST)
+Sign in → /api/auth/local/signin (HS256 JWT, local PostgREST)
        → access token (short) + refresh token (long)
        → profile read → profiles.role
        → ROLE_HOME[role]  → redirect
