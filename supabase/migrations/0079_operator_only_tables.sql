@@ -134,8 +134,12 @@ begin
     'payment_link_tokens',
     'agreement_handover_photos'
   ] loop
+    -- DROP then CREATE, the pattern used everywhere else in this file.
+    -- `create policy` has no `if not exists` in PostgreSQL — the statement was
+    -- added in no released version — so the drop is what makes this re-runnable.
+    execute format('drop policy if exists tenant_isolation on %I', t);
     execute format(
-      'create policy if not exists tenant_isolation on %I as restrictive to authenticated ' ||
+      'create policy tenant_isolation on %I as restrictive to authenticated ' ||
       'using (is_tenant_member(tenant_id)) with check (is_tenant_member(tenant_id))', t);
   end loop;
 end $$;
