@@ -8,8 +8,14 @@ GATES_PASSED=0
 GATE_NAMES=( "hosted-tests" "verify-hosted-portability" "migrations-regression" "hosted-smoke" "backup-verify" )
 
 # 1 — pnpm test on DEPLOYMENT_PROFILE=hosted
+#
+# The filter this used to carry — `pnpm --filter @brownhill/webapp test` —
+# matched no package: this repository is a single package named
+# "elite-fleet-management", with no pnpm-workspace.yaml. pnpm prints "No
+# projects matched the filters" and exits 0, so the gate passed without
+# running a single test. The command below runs the real suite.
 echo "== Gate 1: DEPLOYMENT_PROFILE=hosted pnpm test =="
-if DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test 2>/tmp/g1.log; then
+if DEPLOYMENT_PROFILE=hosted pnpm test 2>/tmp/g1.log; then
   echo "Gate 1 OK"; GATES_PASSED=$((GATES_PASSED+1))
 else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 

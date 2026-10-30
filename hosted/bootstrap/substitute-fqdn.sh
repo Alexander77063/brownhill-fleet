@@ -31,15 +31,21 @@ if ! grep -q 'brownhill.example.co.uk' "$nginx_config"; then
 fi
 
 sed -i.bak -e "s/brownhill\.example\.co\.uk/$fqdn/g" "$nginx_config"
-rm -f "$nginx_config.bak"
 
-# nginx config check (best-effort; non-fatal if nginx isn't on PATH)
-if command -v nginx >/dev/null 2>&1; then
+# nginx config check (best-effort; non-fatal if nginx isn't on PATH).
+#
+# The check is skipped when certbot has not run yet: the configuration
+# includes /etc/letsencrypt/options-ssl-nginx.conf, which only exists once a
+# certificate has been issued, so `nginx -t` would fail on a missing include
+# rather than on anything this substitution did.
+if command -v nginx >/dev/null 2>&1 && [[ -f /etc/letsencrypt/options-ssl-nginx.conf ]]; then
   nginx -t -c "$(pwd)/$nginx_config" || {
-    echo "nginx -t failed after substitution; reverting $nginx_config"
-    git checkout -- "$nginx_config" 2>/dev/null || true
+    echo "nginx -t failed after substitution; reverting $nginx_config" >&2
+    mv -f "$nginx_config.bak" "$nginx_config"
     exit 3
   }
 fi
+
+rm -f "$nginx_config.bak"
 
 echo "substituted placeholder → $fqdn in $nginx_config"

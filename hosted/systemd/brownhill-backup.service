@@ -5,5 +5,8 @@ Description=Brownhill nightly backup
 Type=oneshot
 User=postgres
 EnvironmentFile=/etc/brownhill/secrets/backup.env
+# brownhill-backup.sh shells out to `node` for the off-host copy. The pinned
+# runtime lives under /opt/brownhill/node, not on the default PATH.
+Environment=PATH=/opt/brownhill/node/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/bin/brownhill-backup.sh
 TimeoutStartSec=1800

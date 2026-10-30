@@ -1,6 +1,7 @@
 # hosted/bootstrap/postgrest.conf.template
 # Rendered by hosted/bootstrap/install-postgrest-conf.sh into /etc/brownhill/postgrest.conf
-# (mode 0640, owned by postgrest:postgrest). Variables are shell-style $FOO / ${FOO}.
+# (mode 0640, owned by root:brownhill — postgrest.service runs as the postgrest
+# account, which is a member of that group). Variables are shell-style $FOO / ${FOO}.
 # Values come from /etc/brownhill/secrets/jwt.env and the per-host Postgres config.
 
 db-uri = "postgresql://postgres:${PG_SUPERUSER_PASSWORD}@127.0.0.1:55432/postgres"

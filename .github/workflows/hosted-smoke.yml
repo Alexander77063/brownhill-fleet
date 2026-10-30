@@ -1,13 +1,28 @@
 # .github/workflows/hosted-smoke.yml
 #
-# Hosted stack smoke — spins up Postgres + PostgREST via docker compose,
-# applies every migration, runs the integration / portability / migrations-
-# regression / hosted-smoke shell suites. Requires a runner with Docker
-# AND a Pulsar-shaped environment (Postgres reachable, PostgREST image,
-# the supabase shim), so it's pinned to `runs-on: [self-hosted, pulsar]`
-# — the standard `ubuntu-latest` GH runner cannot satisfy these. The
-# unit-tests workflow runs everywhere and gives a fast signal; this one
-# is the real one when you can run it.
+# Hosted stack smoke — spins up Postgres + PostgREST + the Next app via docker
+# compose, and runs the integration / portability / migrations-regression /
+# hosted-smoke suites against it.
+#
+# Two jobs, and the split is about what each environment can actually prove.
+#
+#   hosted-smoke            — ubuntu-latest. Everything in the compose stack is
+#                             self-contained, so this job can run the whole
+#                             migration replay, the row-level-security proof and
+#                             the application smoke on a standard runner. It
+#                             runs on every PR that touches the schema.
+#
+#   hosted-smoke-production — the self-hosted `pulsar` runner, which is the
+#                             only place the production-shaped assertions can
+#                             run: the ones that need systemd, the real
+#                             backup service, the b2 CLI and the actual
+#                             certificate. It is opt-in (workflow_dispatch)
+#                             because there is no runner registered to the
+#                             repository, and a job pinned to a runner that
+#                             does not exist sits queued forever and gates
+#                             nothing.
+#
+# The `unit-tests` workflow runs everywhere and gives the fast signal.
 
 name: hosted-smoke
 
@@ -16,10 +31,16 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'standalone/sql/**'
+      - 'standalone/scripts/**'
       - 'hosted/**'
       - 'package.json'
       - '.github/workflows/hosted-smoke.yml'
   workflow_dispatch:
+    inputs:
+      production:
+        description: 'Also run the production-shaped job (needs the self-hosted pulsar runner)'
+        type: boolean
+        default: false
 
 concurrency:
   group: hosted-smoke-${{ github.ref }}
@@ -27,6 +48,61 @@ concurrency:
 
 jobs:
   hosted-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
+      BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Spin up hosted stack
+        # `--build` is not optional. `docker compose up` reuses an existing
+        # `dev-next` image when there is one, so a stack that was brought up
+        # before a source change keeps running the OLD bundle — and every
+        # assertion afterwards is testing yesterday's code. On a fresh CI
+        # runner the flag is free; on a developer machine it is the
+        # difference between testing the change and testing a memory of it.
+        run: docker compose -f hosted/dev/docker-compose.yml up -d --build --wait
+      # The stack provisions itself: the `bootstrap` service runs the real
+      # hosted/bootstrap/brownhill-bootstrap.sh, which applies the shim, every
+      # migration and the app_state table, and exits non-zero if any of that
+      # fails. `next` waits for it, so by the time this step runs the schema
+      # is there.
+      - name: Wait for the bootstrap to finish
+        run: |
+          for _ in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Status}}' "$(docker compose -f hosted/dev/docker-compose.yml ps -q bootstrap)" 2>/dev/null || echo missing)
+            code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose -f hosted/dev/docker-compose.yml ps -q bootstrap)" 2>/dev/null || echo 1)
+            if [ "$state" = "exited" ]; then
+              if [ "$code" != "0" ]; then
+                echo "the bootstrap failed (exit $code)"; docker compose -f hosted/dev/docker-compose.yml logs bootstrap; exit 1
+              fi
+              echo "the bootstrap finished cleanly"; exit 0
+            fi
+            sleep 2
+          done
+          echo "the bootstrap did not finish in time"; docker compose -f hosted/dev/docker-compose.yml logs bootstrap; exit 1
+      - name: Run the integration suite (DEPLOYMENT_PROFILE=hosted)
+        run: DEPLOYMENT_PROFILE=hosted pnpm test
+      - name: Hosted portability proof (assertions 0–17)
+        run: bash hosted/tests/verify-hosted-portability.sh
+      - name: Migrations-regression
+        run: bash hosted/tests/migrations-regression.sh
+      - name: Hosted smoke
+        run: bash hosted/tests/smoke/hosted-smoke.sh
+      - name: Tear down
+        if: always()
+        run: docker compose -f hosted/dev/docker-compose.yml down -v
+
+  hosted-smoke-production:
+    # Opt-in only. The assertions this job runs need a machine shaped like
+    # the production VM — systemd, the backup unit, the b2 CLI — so it runs
+    # on the self-hosted `pulsar` runner and only when a human asks for it.
+    if: github.event_name == 'workflow_dispatch' && inputs.production
     runs-on: [self-hosted, pulsar]
     timeout-minutes: 30
     env:
@@ -38,29 +114,9 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
-      - name: Spin up hosted stack
-        run: docker compose -f hosted/dev/docker-compose.yml up -d
-      - name: Wait for hosted Postgres to accept queries
-        run: |
-          for _ in $(seq 1 30); do
-            docker exec -u postgres $(docker compose -f hosted/dev/docker-compose.yml ps -q postgres) psql -c 'SELECT 1' && break
-            sleep 1
-          done
-      - name: Apply hosted schema + shim
-        run: |
-          PG=$(docker compose -f hosted/dev/docker-compose.yml ps -q postgres)
-          docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < standalone/sql/0000_supabase_shim.sql
-          for f in $(ls -1 supabase/migrations/*.sql | sort); do
-            docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < "$f"
-          done
-      - name: Run hosted integration tests (DEPLOYMENT_PROFILE=hosted)
-        run: DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test
-      - name: Hosted portability proof (assertions 0–17)
+      - name: Hosted portability proof against the live stack
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
-      - name: Tear down
-        if: always()
-        run: docker compose -f hosted/dev/docker-compose.yml down

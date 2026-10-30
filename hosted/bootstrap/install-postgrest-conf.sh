@@ -23,6 +23,10 @@ target=/etc/brownhill/postgrest.conf
 install -d /etc/brownhill
 envsubst < "$template" > "$target.new"
 chmod 0640 "$target.new"
-chown postgrest:postgrest "$target.new" 2>/dev/null || true   # non-fatal — postgrest user may not exist yet
+# Owned by the shared `brownhill` group rather than by the postgrest account:
+# postgrest.service runs as that account, and the account is a member of the
+# group. install.sh creates the group and the membership before calling this
+# script, so the chown cannot fail.
+chown root:brownhill "$target.new" 2>/dev/null || true
 mv "$target.new" "$target"
 echo "wrote $target"

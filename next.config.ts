@@ -13,10 +13,37 @@ const nextConfig: NextConfig = {
      */
     NEXT_PUBLIC_DEPLOYMENT_PROFILE: process.env.DEPLOYMENT_PROFILE ?? 'saas',
     /**
+     * The region pack, exposed for the same reason as the profile.
+     *
+     * The Edge runtime has no runtime environment — Next gives the middleware
+     * sandbox only its own build-id keys — so a value the server reads at
+     * runtime is invisible there. `deploymentProfile()` falls back to this
+     * one, which is why it has to exist.
+     */
+    NEXT_PUBLIC_DEPLOYMENT_REGION: process.env.DEPLOYMENT_REGION ?? 'uk',
+    /**
      * Lets a self-hosted build be branded for a specific customer without a
      * code change. Empty by default; each profile has its own fallback.
      */
     NEXT_PUBLIC_PRODUCT_NAME: process.env.PRODUCT_NAME ?? '',
+  },
+  /**
+   * Build-time constants for the server bundles only.
+   *
+   * `defineServer` is substituted into the Node and Edge server bundles and
+   * NOT into the browser bundle, which is what makes it the right tool for a
+   * value that names an internal service.
+   *
+   * `__POSTGREST_URL__` is where PostgREST listens. The middleware's drain
+   * check reads `app_state` over HTTP because the Edge runtime cannot open a
+   * database connection; the URL therefore has to be baked in, exactly as the
+   * `/rest/v1` rewrite below already bakes it. The two must be the same URL,
+   * so both read the same variable.
+   */
+  compiler: {
+    defineServer: {
+      __POSTGREST_URL__: process.env.POSTGREST_URL ?? 'http://127.0.0.1:55430',
+    },
   },
   // The standalone (Brownhill) build ships a self-contained server that the
   // desktop shell launches with a bundled node.exe — `server.js` plus only the

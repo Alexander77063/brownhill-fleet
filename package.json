@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:hosted": "pnpm build:icons && DEPLOYMENT_PROFILE=hosted next build",
-    "build:standalone": "pnpm build:icons && DEPLOYMENT_PROFILE=standalone next build",
+    "build:hosted": "node hosted/scripts/build-app.mjs hosted",
+    "build:standalone": "node hosted/scripts/build-app.mjs standalone",
     "build:icons": "node hosted/scripts/build-icons.mjs",
     "start": "next start",
     "lint": "next lint",

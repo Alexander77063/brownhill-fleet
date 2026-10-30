@@ -95,6 +95,11 @@ standalone/tauri/src-tauri/.cargo/
 hosted/dev/.secrets/
 hosted/dev/certs/local-*.pem
 hosted/dev/certs/local-*.key
+# The test CA's own private key. The stack needs the CA CERTIFICATE (ca.pem,
+# committed) and the leaf key (server.key, committed) — it never needs the
+# key that signs for the CA. Regenerate the whole set with
+# hosted/dev/certs/generate-test-cert.sh.
+hosted/dev/certs/ca.key
 # Hosted static rasterisations are built artefacts (Task 15: pnpm build:icons).
 hosted/static/
 !hosted/static/.gitkeep

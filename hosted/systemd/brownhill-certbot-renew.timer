@@ -1,0 +1,13 @@
+[Unit]
+Description=Let's Encrypt renewal timer for the Brownhill FQDN
+
+[Timer]
+# Twice a day, a little off the hour so a fleet of boxes does not all hit
+# Let's Encrypt's servers at the same instant.
+OnCalendar=*-*-* 01,13:00:00
+RandomizedDelaySec=900
+Persistent=true
+Unit=brownhill-certbot-renew.service
+
+[Install]
+WantedBy=timers.target

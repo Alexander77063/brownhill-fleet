@@ -16,6 +16,11 @@
 # nothing — `create table if not exists` succeeds either way.
 set -euo pipefail
 
+# Git Bash on Windows rewrites a container path like /tmp/foo into a Windows
+# path before it reaches docker. Turning the rewriting off is a no-op on Linux,
+# where CI runs this script.
+export MSYS_NO_PATHCONV=1
+
 CONTAINER="${EFM_TEST_CONTAINER:-efm-portable-test}"
 PORT="${EFM_TEST_PORT:-55433}"
 IMAGE="postgres:16"
@@ -77,12 +82,27 @@ set -e
 
 echo "$proof_output" | grep -E "PASS|FAIL|ERROR" || true
 
-if [ "$proof_status" -eq 0 ]; then
-  echo "==> PORTABILITY VERIFIED: the app runs on plain PostgreSQL with RLS intact"
-  status=0
-else
-  echo "==> PORTABILITY FAILED" >&2
+echo "==> proving the billing allocation guard"
+set +e
+alloc_output="$("${PSQL[@]}" -v ON_ERROR_STOP=1 < "$ROOT/standalone/sql/billing-allocation-proof.sql" 2>&1)"
+alloc_status=$?
+set -e
+
+echo "$alloc_output" | grep -E "PASS|FAIL|ERROR" || true
+
+status=0
+if [ "$proof_status" -ne 0 ]; then
+  echo "==> RLS PROOF FAILED" >&2
   status=1
+fi
+
+if [ "$alloc_status" -ne 0 ]; then
+  echo "==> ALLOCATION PROOF FAILED: money can be allocated to a void invoice" >&2
+  status=1
+fi
+
+if [ "$status" -eq 0 ]; then
+  echo "==> PORTABILITY VERIFIED: the app runs on plain PostgreSQL with RLS and the allocation guard intact"
 fi
 
 if [ "${EFM_KEEP_CONTAINER:-0}" != "1" ]; then

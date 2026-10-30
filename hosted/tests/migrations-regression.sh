@@ -5,8 +5,8 @@
 #
 # Two phases, because there are two ways a migration history can be wrong:
 #
-#   1. FROM ZERO — the shim, every migration in filename order, then the RLS proof. This is
-#      the path a brand-new install takes.
+#   1. FROM ZERO — the shim, every migration in filename order, then the RLS proof and the
+#      billing allocation proof. This is the path a brand-new install takes.
 #
 #   2. OVER EXISTING DATA — the same history again, but with rent-to-buy agreements already
 #      in the table when the rent-to-buy contract migration lands, so its backfill is
@@ -21,6 +21,14 @@
 # Skips gracefully when docker is absent; that env is for dev hosts without docker.
 
 set -euo pipefail
+
+# Git Bash on Windows rewrites a container path like /tmp/migrations into a
+# Windows path before it reaches docker, so `mkdir -p /tmp/migrations` inside
+# the container becomes `mkdir -p C:/Users/.../Temp/migrations` and fails with
+# "cannot create directory 'C'". Turning the rewriting off is a no-op on Linux,
+# where CI runs this script.
+export MSYS_NO_PATHCONV=1
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not present; skipping migrations-regression"
   exit 0
@@ -41,6 +49,7 @@ docker cp standalone/sql/0000_supabase_shim.sql "$cid":/tmp/
 docker exec -u postgres "$cid" mkdir -p /tmp/migrations
 docker cp supabase/migrations/. "$cid":/tmp/migrations/
 docker cp standalone/sql/portable-rls-proof.sql "$cid":/tmp/
+docker cp standalone/sql/billing-allocation-proof.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-fixture.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-assert.sql "$cid":/tmp/
 
@@ -50,6 +59,10 @@ for f in $(ls -1 supabase/migrations/*.sql | sort); do
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$bn"
 done
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/portable-rls-proof.sql
+# The billing allocation guard: money may never be allocated to a void invoice,
+# and the two caps that were always there still hold. This proof FAILS against
+# a schema without migration 0082, so it is a real guard and not a rubber stamp.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/billing-allocation-proof.sql
 
 # ── Phase 2: the same history, over data that already exists ───────────────────
 echo "== phase 2: the rent-to-buy backfill, over existing rent-to-buy rows =="

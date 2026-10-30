@@ -3,6 +3,14 @@ Description=Brownhill PostgreSQL 16.4 (single-tenant)
 After=network-online.target
 Wants=network-online.target
 
+# The cluster is created by install.sh with `initdb --data-checksums`, which
+# records `data_checksums = on` in the cluster's own postgresql.conf.
+#
+# This unit used to pass `--data-checksums` on the postgres command line.
+# That is an initdb flag, not a postgres one: the server rejected the
+# argument and refused to start, so the database was never up and the whole
+# box had no data. Data checksums are a property of the cluster on disk and
+# are read from its configuration file.
 [Service]
 Type=notify
 User=postgres
@@ -11,8 +19,7 @@ EnvironmentFile=/etc/brownhill/secrets/pg.env
 ExecStart=/opt/brownhill/pgsql/bin/postgres \
   -D /var/lib/postgresql/16/main \
   -h 127.0.0.1 -p 55432 \
-  -c unix_socket_directories=/var/run/postgresql \
-  --data-checksums
+  -c unix_socket_directories=/var/run/postgresql
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
