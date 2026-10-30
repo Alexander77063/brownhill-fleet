@@ -55,7 +55,7 @@ jobs:
           done
       - name: Run hosted integration tests (DEPLOYMENT_PROFILE=hosted)
         run: DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test
-      - name: Hosted portability proof (assertions 0–14)
+      - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh

@@ -152,7 +152,7 @@ sudo ./hosted/tests/acceptance.sh
 This is the shippable definition (Spec §4.5.7). All five must return 0:
 
 1. `DEPLOYMENT_PROFILE=hosted pnpm test` — the test suite under `DEPLOYMENT_PROFILE=hosted`.
-2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–14 against the live stack.
+2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–17 against the live stack.
 3. `hosted/tests/migrations-regression.sh` — replays the schema against a throwaway Postgres, replays portable RLS proof.
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trips one `.from()` per major resource.
 5. Sunday `brownhill-backup-verify.service` journal entry — restore from a fresh dump into a throwaway Postgres, row counts and RLS replay.

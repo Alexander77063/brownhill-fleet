@@ -13,7 +13,7 @@ if DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test 2>/tmp/g1.log;
   echo "Gate 1 OK"; GATES_PASSED=$((GATES_PASSED+1))
 else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 
-# 2 — verify-hosted-portability.sh 0–14 green
+# 2 — verify-hosted-portability.sh 0–17 green
 echo "== Gate 2: verify-hosted-portability.sh =="
 if bash hosted/tests/verify-hosted-portability.sh 2>/tmp/g2.log; then
   echo "Gate 2 OK"; GATES_PASSED=$((GATES_PASSED+1))
