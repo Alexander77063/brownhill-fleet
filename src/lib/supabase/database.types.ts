@@ -97,12 +97,15 @@ export type Database = {
       agreements: {
         Row: {
           agreed_residual_pence: number | null
+          agreed_vehicle_cost_pence: number | null
+          agreed_vehicle_price_pence: number | null
           created_at: string
           deposit_pence: number
           driver_id: string
           end_date: string | null
           excess_mile_pence: number
           id: string
+          monthly_gross_pence: number | null
           notice_weeks: number
           option_credit_weekly_pence: number | null
           signed_doc_path: string | null
@@ -110,6 +113,7 @@ export type Database = {
           start_date: string | null
           status: Database["public"]["Enums"]["agreement_status"]
           tenant_id: string
+          term_months: number | null
           term_weeks: number | null
           type: Database["public"]["Enums"]["agreement_type"]
           updated_at: string
@@ -120,12 +124,15 @@ export type Database = {
         }
         Insert: {
           agreed_residual_pence?: number | null
+          agreed_vehicle_cost_pence?: number | null
+          agreed_vehicle_price_pence?: number | null
           created_at?: string
           deposit_pence?: number
           driver_id: string
           end_date?: string | null
           excess_mile_pence?: number
           id?: string
+          monthly_gross_pence?: number | null
           notice_weeks?: number
           option_credit_weekly_pence?: number | null
           signed_doc_path?: string | null
@@ -133,6 +140,7 @@ export type Database = {
           start_date?: string | null
           status?: Database["public"]["Enums"]["agreement_status"]
           tenant_id: string
+          term_months?: number | null
           term_weeks?: number | null
           type: Database["public"]["Enums"]["agreement_type"]
           updated_at?: string
@@ -143,12 +151,15 @@ export type Database = {
         }
         Update: {
           agreed_residual_pence?: number | null
+          agreed_vehicle_cost_pence?: number | null
+          agreed_vehicle_price_pence?: number | null
           created_at?: string
           deposit_pence?: number
           driver_id?: string
           end_date?: string | null
           excess_mile_pence?: number
           id?: string
+          monthly_gross_pence?: number | null
           notice_weeks?: number
           option_credit_weekly_pence?: number | null
           signed_doc_path?: string | null
@@ -156,6 +167,7 @@ export type Database = {
           start_date?: string | null
           status?: Database["public"]["Enums"]["agreement_status"]
           tenant_id?: string
+          term_months?: number | null
           term_weeks?: number | null
           type?: Database["public"]["Enums"]["agreement_type"]
           updated_at?: string
@@ -5260,6 +5272,30 @@ export type Database = {
           net_received_to_date_pence: number | null
           on_hire: number | null
           vehicles: number | null
+        }
+        Relationships: []
+      }
+      v_investor_rtb: {
+        Row: {
+          agreement_id: string | null
+          agreed_residual_pence: number | null
+          agreed_vehicle_cost_pence: number | null
+          agreed_vehicle_price_pence: number | null
+          car_cost_pence: number | null
+          cost_basis: string | null
+          deposit_pence: number | null
+          list_value_pence: number | null
+          monthly_gross_pence: number | null
+          option_credit_weekly_pence: number | null
+          registration: string | null
+          start_date: string | null
+          status: Database["public"]["Enums"]["agreement_status"] | null
+          term_months: number | null
+          term_weeks: number | null
+          vehicle_id: string | null
+          weekly_gross_pence: number | null
+          weekly_net_pence: number | null
+          weekly_vat_pence: number | null
         }
         Relationships: []
       }
