@@ -63,6 +63,8 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/accounts/accounting', label: 'Accounting', icon: 'pound' },
     { href: '/accounts/accounting/banks', label: '  Banks', icon: 'wallet' },
     { href: '/accounts/accounting/reconcile', label: '  Reconcile', icon: 'check' },
+    { href: '/accounts/accounting/coa', label: '  Chart of accounts', icon: 'doc' },
+    { href: '/accounts/accounting/periods', label: '  Periods', icon: 'clock' },
     { href: '/accounts/accounting/reports/pnl', label: '  P&L', icon: 'trending' },
     { href: '/accounts/accounting/reports/balance-sheet', label: '  Balance sheet', icon: 'doc' },
     { href: '/accounts/accounting/reports/cashflow', label: '  Cashflow', icon: 'trending' },
