@@ -30,10 +30,11 @@ that proves it. Each row below was run, not asserted.
 
 | What | How | Status |
 | --- | --- | --- |
-| Migrations 0001–0078 apply from zero, in order, and the seed loads | A scratch `postgres:16` — a dry run rolled the whole set back, then a real apply produced 84 public tables, 15 accounting tables and 10 public views, with 17 assertions on top | **Verified 2026-10-30** |
+| Migrations 0001–0079 apply from zero, in order, and the seed loads | A scratch `postgres:16` — a dry run rolled the whole set back, then a real apply produced 84 public tables, 15 accounting tables and 10 public views, with 21 assertions on top | **Verified 2026-10-30** |
 | Every tenant role maps to a portal role at signup | The signup trigger was exercised for all ten roles, including the `director_exec` → `accounts` case migration 0078 exists to fix | **Verified 2026-10-30** |
 | `v_investor_rtb` returns the rent-to-buy book to an investor and to ops, and to nobody else | Live sessions run as `authenticated`, so row-level security was not bypassed | **Verified 2026-10-30** |
 | The rent-to-buy backfill (0077) runs correctly over rows that already exist | The second phase of `hosted/tests/migrations-regression.sh` | **Enforced by CI** — the `hosted-smoke` job runs it on every PR |
+| The four operator-only tables are closed to drivers and open to ops | Assertions 10–12 of `standalone/sql/portable-rls-proof.sql` — a driver reads their own damage report and none of the office's records; ops in that tenant still sees all four kinds of row; ops in another tenant sees none of them | **Enforced by CI** — the `hosted-smoke` job runs the proof on every PR that touches `supabase/migrations/**` |
 
 ## Why this repo has no `docs/product/` upstream
 

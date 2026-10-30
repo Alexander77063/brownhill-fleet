@@ -52,14 +52,14 @@ hosted/tests/acceptance.sh                                  # all gates green
 **Gate:** all five acceptance gates return 0 (six with accounting enabled).
 
 - `DEPLOYMENT_PROFILE=hosted pnpm test`
-- `hosted/tests/verify-hosted-portability.sh` — assertions 0–14 against the live stack
+- `hosted/tests/verify-hosted-portability.sh` — assertions 0–17 against the live stack
 - `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 - `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
 - the Sunday `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0078 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0079 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
 **Status: passed 2026-10-30.** The replay ran against a scratch `postgres:16`
@@ -90,6 +90,19 @@ bypasses RLS, so a check made as the owner would have proved nothing:
 | A driver sees none of them | **Passed** |
 | Ops sees both — the guard admits ops as well as investors | **Passed** |
 | An investor reaches no row of the `agreements` or `drivers` base table | **Passed** |
+| A driver sees only their own damage report — not the office's other records, payment links, dispatch rules or handover photographs | **Enforced by CI** |
+| Ops in that tenant still sees all four kinds of record — the tightening must not close the office out | **Enforced by CI** |
+| Ops in another tenant sees none of them | **Enforced by CI** |
+
+The last three rows are the operator-only tables (`driver_damage_reports`,
+`booking_series`, `payment_link_tokens`, `agreement_handover_photos`), whose
+policies now require the operator role as well as tenant membership. They are
+assertions 10–12 of `standalone/sql/portable-rls-proof.sql`, and the
+`Migrations-regression` step of the `hosted-smoke` job is what runs them, on
+every pull request that touches `supabase/migrations/**`. They are marked
+**Enforced by CI** rather than **Passed** because the gate for them is the
+pipeline, not a local claim: **a green `hosted-smoke` job is what turns them
+into Passed.**
 
 **The gap this left, and what now closes it.** A from-zero replay applies 0077
 to an *empty* `agreements` table: its backfill updates zero rows, and its

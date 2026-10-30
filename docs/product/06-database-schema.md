@@ -2,8 +2,8 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-10-30. Read from `supabase/migrations/` (77 files)
-and `supabase/seed.sql`. The most recent migration is `0078_profile_role_signup.sql`.*
+*Status: current as of 2026-10-30. Read from `supabase/migrations/` (78 files)
+and `supabase/seed.sql`. The most recent migration is `0079_operator_only_tables.sql`.*
 
 ---
 
@@ -123,6 +123,65 @@ through a lateral subquery to resolve the cost of the car — and exposes
 | `v_receipt_vat` | VAT on receipts |
 | `v_vat_by_quarter`, `v_vat_by_quarter_tenant` | The VAT return's inputs |
 | `v_vehicle_economics`, `v_vehicle_economics_all` | Per-vehicle economics |
+
+### 3.4 The operator-only tables
+
+Four tables are the **office's** records, not the driver's: the incident queue,
+the dispatch rules, the payment links, and the handover photographs.
+
+| Table | Created in | Who may read it |
+| --- | --- | --- |
+| `driver_damage_reports` | 0073 | the driver (their own rows), and ops in that tenant |
+| `booking_series` | 0074 | ops in that tenant |
+| `payment_link_tokens` | 0075 | the driver (their own rows), and ops in that tenant |
+| `agreement_handover_photos` | 0076 | ops in that tenant |
+
+Their tenant policies are `is_ops() and is_tenant_member(tenant_id)` — the
+role **and** the tenant, never the tenant alone.
+
+**Why the role has to be in there.** A driver is an *active member of their
+tenant* (`src/lib/ops/driver-invite.ts` upserts a `driver` membership with
+`status = 'active'`). On the tenant predicate alone, every driver in the
+business could read every damage report, every payment link and every handover
+photograph in the fleet. On `payment_link_tokens` that is not merely privacy:
+the `token` column **is** the credential, and the row carries the `used_ip` and
+`used_user_agent` that used it.
+
+**The tenant floor is structural.** Migration 0017 gave sixteen domain tables a
+`RESTRICTIVE` policy named `tenant_isolation`, which is ANDed onto the
+permissive role policies — so a permissive policy added later inherits the
+tenant check without anyone having to remember to write it. 0017 is shipped and
+is never edited, so migration **0079** adds the same policy, in the same shape,
+to the four tables created after it. The driver-scoped policies carry no tenant
+predicate of their own; 0079 bounds them, so a driver's read of their own rows
+is now ANDed with the tenant floor rather than standing beside it.
+
+`RESTRICTIVE` is only ever ANDed with the permissive policies, never ORed, so
+0079 can remove access and never add it.
+
+**Both changes are in 0079, and 0073–0076 are left as they shipped.** A
+policy's `USING` expression cannot be altered in place, so 0079 drops and
+recreates the four tables' tenant policies with the role in the predicate, and
+then adds the floor. Editing 0073–0076 in place would have been the shorter
+route and the wrong one: those files are already on `main`, and a migration
+that has already been applied is never applied again — an install would keep
+the permissive policies forever, which is the bug. A forward-only migration
+reaches every install, the new one and the old one alike.
+
+**No application path is affected.** Every ops path reads these tables through
+`localDb()` — a direct connection as the table owner — or through
+`createServiceClient()`, whose service-role JWT bypasses RLS entirely. The one
+path that does go through RLS, `src/lib/queries-driver-damage.ts`, is the
+driver's own read and relies on `driver_self_select`, which 0079 does not
+touch.
+
+**This is proven, not asserted.** `standalone/sql/portable-rls-proof.sql`
+assertions **10–12** run the three cases against a real Postgres with the
+migrations applied from zero: a driver sees their own damage report and none
+of the office's records; ops in that tenant still sees all four kinds of row
+(the fix must not close the office out); and ops in another tenant sees none of
+it. The `hosted-smoke` CI job replays that proof on every pull request that
+touches `supabase/migrations/**`.
 
 ## 4. The core tables
 
@@ -335,7 +394,7 @@ business paid.
 
 ## 8. Migrations
 
-- 77 files, `0001`–`0078` (there is no `0057`; the number was never used).
+- 78 files, `0001`–`0079` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

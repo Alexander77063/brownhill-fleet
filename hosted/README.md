@@ -34,7 +34,7 @@ bash hosted/tests/verify-hosted-portability.sh
 # End-to-end fresh-deploy smoke.
 bash hosted/tests/smoke/hosted-smoke.sh
 
-# Migration regression: replays the shim + 53 migrations against an empty
+# Migration regression: replays the shim + 78 migrations against an empty
 # postgres:16 in a container and asserts the original nine RLS proofs hold.
 bash hosted/tests/migrations-regression.sh
 

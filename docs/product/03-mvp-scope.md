@@ -124,7 +124,7 @@ out of rotation.
 return 0:
 
 1. `DEPLOYMENT_PROFILE=hosted pnpm test`
-2. `hosted/tests/verify-hosted-portability.sh` — assertions 0–14 against the live stack
+2. `hosted/tests/verify-hosted-portability.sh` — assertions 0–17 against the live stack
 3. `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
 5. Sunday's `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
