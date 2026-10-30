@@ -1,6 +1,9 @@
 -- Seed: realistic Elite Fleet Management demo data drawn from the investor memorandum.
 -- Domain rows only. Demo auth users (ops/driver/investor) are created by
--- `node scripts/seed-auth.mjs` which links the demo driver to DRIVER #1 below.
+-- `SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs`, which links the demo
+-- driver to DRIVER #1 below. The seed needs a password you choose: none is
+-- published in this repository, and it will not run against a server that is not
+-- on this machine unless SEED_ALLOW_REMOTE=1.
 -- Money is in pence.
 
 -- ── tenant attribution ──────────────────────────────────────────────────────

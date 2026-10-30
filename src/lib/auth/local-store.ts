@@ -333,14 +333,3 @@ export async function createFirstUserAndTenant(args: {
 
   return { user, tenantId };
 }
-
-
-/**
- * Stub: returns the role of the current request for admin routes that gate on
- * owner status. Real implementation should read the JWT from the session cookie
- * and return its claims. For now, returns null so admin routes correctly refuse
- * access until proper session handling is wired in.
- */
-export async function getClaims(): Promise<{ role: string } | null> {
-  return null;
-}

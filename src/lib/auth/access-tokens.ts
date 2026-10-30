@@ -11,11 +11,15 @@
 // per-install secret; the refresh token is rotated on /auth/refresh (PR #80 wires
 // a refresh endpoint, but the rotation itself is out of scope here).
 //
-// The secret is read from /etc/brownhill/secrets/jwt.env on each call, so secret
-// rotation between deploys is honoured without restarting the app.
+// The secret is read on each call, so secret rotation between deploys is
+// honoured without restarting the app. The environment is consulted first and
+// the file second: the systemd unit loads jwt.env into the app's environment,
+// but the container image has no /etc/brownhill at all, and asking for a file
+// that is not there made every bootstrap throw ENOENT.
 
 import { readFileSync } from 'node:fs';
 import { signJwt, type JwtClaims } from './jwt';
+import { findJwtSecret } from './secret';
 
 const ACCESS_TTL_SECONDS  = 5 * 60;        // 5 minutes
 const REFRESH_TTL_SECONDS = 30 * 24 * 3600; // 30 days
@@ -23,7 +27,18 @@ const REFRESH_TTL_SECONDS = 30 * 24 * 3600; // 30 days
 const JWT_SECRET_PATH = '/etc/brownhill/secrets/jwt.env';
 
 function readSecret(): string {
-  const raw = readFileSync(JWT_SECRET_PATH, 'utf8');
+  const fromEnv = findJwtSecret();
+  if (fromEnv) return fromEnv;
+
+  let raw: string;
+  try {
+    raw = readFileSync(JWT_SECRET_PATH, 'utf8');
+  } catch {
+    throw new Error(
+      `No JWT signing secret: neither LOCAL_JWT_SECRET nor JWT_SHARED_SECRET is ` +
+        `set, and ${JWT_SECRET_PATH} could not be read.`,
+    );
+  }
   const m = raw.match(/^JWT_SHARED_SECRET=(.+)$/m);
   if (!m) throw new Error(`No JWT_SHARED_SECRET in ${JWT_SECRET_PATH}`);
   return m[1].trim();

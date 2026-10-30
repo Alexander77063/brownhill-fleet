@@ -38,6 +38,15 @@ export interface JwtClaims {
   /** Active tenant. Becomes `app.tenant_id`. */
   tenant_id?: string;
   email?: string;
+  /**
+   * Where to send the user when the token comes back.
+   *
+   * Used by the HMRC OAuth `state` parameter, which has to survive a round
+   * trip through a third party that knows nothing about this session. The
+   * value is a path on this origin and is validated by the caller with
+   * `safeNextPath` before it is ever used.
+   */
+  return_to?: string;
   /** Issued-at and expiry, seconds since the epoch. */
   iat: number;
   exp: number;

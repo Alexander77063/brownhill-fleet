@@ -2,7 +2,8 @@ import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 import { deploymentProfile } from '@/lib/deployment/profile';
 import { signJwt } from '@/lib/auth/jwt';
-import { SESSION_COOKIE } from '@/lib/auth/local-session';
+import { resolveJwtSecret } from '@/lib/auth/secret';
+import { SESSION_COOKIE } from '@/lib/auth/session-cookie';
 import type { Database } from './database.types';
 
 /**
@@ -93,10 +94,12 @@ export async function createClient() {
  */
 export function createServiceClient() {
   if (isStandalone()) {
-    const secret = process.env.LOCAL_JWT_SECRET;
-    if (!secret) {
-      throw new Error('LOCAL_JWT_SECRET is not set; trusted server calls cannot be authorised.');
-    }
+    // The same resolver the session cookie uses, so the service token and the
+    // user's session are always signed with one value. Reading the environment
+    // directly here is how the two drifted apart in the first place: the
+    // hosted deployment sets JWT_SHARED_SECRET, and this path asked for
+    // LOCAL_JWT_SECRET, so every trusted server call threw.
+    const secret = resolveJwtSecret();
     // Signing is async (Web Crypto), but every caller of createServiceClient is
     // synchronous. supabase-js accepts a function for the Authorization header
     // and awaits it, so the token is minted per request instead — which also
