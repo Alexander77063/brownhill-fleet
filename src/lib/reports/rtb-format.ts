@@ -18,6 +18,7 @@
  */
 
 import { formatGBP } from '@/lib/money';
+import { csvCell } from '@/lib/csv';
 import type { RtbDealRow, RtbReport } from '@/lib/reports/rtb';
 
 /** One headline figure in the report. */
@@ -185,9 +186,14 @@ export function costBasisLabel(basis: string): string {
 /**
  * The report as a spreadsheet.
  *
- * A summary block, a blank line, then one row per deal. Every money figure is
- * in pounds and pence with no symbol and no thousands separator, so the sheet
- * reads them as numbers.
+ * A summary block, a blank line, then one row per deal. Money is written the
+ * way it is written everywhere else in this report — `£4,420.00` — so the
+ * figure in the sheet is the figure on screen and the figure in the printed
+ * document; the totals row at the foot is there for anyone who wants the book
+ * summed rather than the cell read.
+ *
+ * Every cell goes through the shared CSV writer, which quotes what has to be
+ * quoted and refuses to hand a spreadsheet something it would run.
  */
 export function rtbReportCsv(report: RtbReport): string {
   const lines: string[] = [];
@@ -234,11 +240,6 @@ export function rtbReportCsv(report: RtbReport): string {
   );
 
   return `${lines.join('\n')}\n`;
-}
-
-function csvCell(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
 }
 
 /* ── HTML ─────────────────────────────────────────────────────────────────── */

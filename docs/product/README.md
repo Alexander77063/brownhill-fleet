@@ -35,6 +35,7 @@ that proves it. Each row below was run, not asserted.
 | `v_investor_rtb` returns the rent-to-buy book to an investor and to ops, and to nobody else | Live sessions run as `authenticated`, so row-level security was not bypassed | **Verified 2026-10-30** |
 | The rent-to-buy backfill (0077) runs correctly over rows that already exist | The second phase of `hosted/tests/migrations-regression.sh` | **Enforced by CI** — the `hosted-smoke` job runs it on every PR |
 | The four operator-only tables are closed to drivers and open to ops | Assertions 10–12 of `standalone/sql/portable-rls-proof.sql` — a driver reads their own damage report and none of the office's records; ops in that tenant still sees all four kinds of row; ops in another tenant sees none of them | **Enforced by CI** — the `hosted-smoke` job runs the proof on every PR that touches `supabase/migrations/**` |
+| A spreadsheet is never handed a cell it would run | `tests/unit/csv.test.ts` and `tests/unit/rtb-format.test.ts` — the shared CSV writer refuses a cell starting `=`, `+`, `-`, `@`, tab or CR unless the cell is genuinely a number, and the rent-to-buy report's export is checked through it | **Verified 2026-10-30** — 43 unit tests green |
 
 ## Why this repo has no `docs/product/` upstream
 

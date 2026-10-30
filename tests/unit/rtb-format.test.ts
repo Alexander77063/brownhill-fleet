@@ -172,6 +172,29 @@ describe('the spreadsheet', () => {
   });
 });
 
+describe('the spreadsheet and the formulas in it', () => {
+  /**
+   * A cell whose text starts with `=` is not text to a spreadsheet — it is
+   * something to run. A driver called `=cmd|...` or a note pasted from a
+   * website must arrive in the finance team's sheet as words.
+   */
+  it('never hands a spreadsheet a cell it would run', () => {
+    const rows = [rtbDealEconomics(DEAL)];
+    const hostile = { ...rows[0], driverName: '=1+1' };
+    const csv = rtbReportCsv(reportFor({ rows: [hostile] }));
+
+    expect(csv).toContain("'=1+1");
+    expect(csv).not.toMatch(/,=1\+1/);
+  });
+
+  it('neutralises the same trick in the tenant name', () => {
+    const csv = rtbReportCsv(reportFor({ tenantName: '+HYPERLINK("http://x","y")' }));
+    // Quoting is not enough: the cell is quoted either way, and a quoted cell
+    // whose content starts with `+` is still something a spreadsheet runs.
+    expect(csv).toContain(`"'+HYPERLINK`);
+  });
+});
+
 describe('the printable document', () => {
   const html = rtbReportHtml(reportFor());
 
