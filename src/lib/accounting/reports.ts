@@ -15,6 +15,20 @@ type Sql = Awaited<ReturnType<typeof localDb>>;
 
 export type Pounds = bigint;
 
+/**
+ * A date as a plain `YYYY-MM-DD` string in UTC.
+ *
+ * `public.invoices.issued_on` is a `date` column. Casting a full ISO
+ * timestamp to `date` is timezone-dependent — `'2026-10-30T00:00:00.000Z'`
+ * can land on the previous or the next day depending on the session's
+ * TimeZone — which would age invoices by a day either side of midnight.
+ * Rendering the calendar date in UTC and comparing date to date removes the
+ * ambiguity entirely.
+ */
+function utcDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
 // ── Profit & Loss ──────────────────────────────────────────────────────────
 
 export interface PnLRow {
@@ -33,7 +47,7 @@ export interface PnLResult {
   netResultPence: Pounds;     // totalRevenue - totalExpense
 }
 
-export async function renderProfitAndLoss(fromDate: Date, toDate: Date): Promise<PnLResult> {
+export async function renderProfitAndLoss(tenantId: string, fromDate: Date, toDate: Date): Promise<PnLResult> {
   const sql = await localDb();
   const rows = (await sql`
     select coa.code as account_code, coa.name as account_name, coa.type as account_type,
@@ -44,6 +58,7 @@ export async function renderProfitAndLoss(fromDate: Date, toDate: Date): Promise
       join accounting.journal_entries je on je.id = jl.journal_id
       join accounting.chart_of_accounts coa on coa.id = jl.account_id
      where coa.type in ('revenue', 'expense')
+       and je.tenant_id = ${tenantId}::uuid
        and je.posted_at >= ${fromDate.toISOString()}::timestamptz
        and je.posted_at <= ${toDate.toISOString()}::timestamptz
      group by coa.code, coa.name, coa.type
@@ -90,7 +105,7 @@ export interface BSResult {
   imbalancePence: Pounds;
 }
 
-export async function renderBalanceSheet(asOfDate: Date): Promise<BSResult> {
+export async function renderBalanceSheet(tenantId: string, asOfDate: Date): Promise<BSResult> {
   const sql = await localDb();
   const rows = (await sql`
     select coa.code as account_code, coa.name as account_name, coa.type as account_class,
@@ -101,6 +116,7 @@ export async function renderBalanceSheet(asOfDate: Date): Promise<BSResult> {
       join accounting.journal_entries je on je.id = jl.journal_id
       join accounting.chart_of_accounts coa on coa.id = jl.account_id
      where coa.type in ('asset', 'liability', 'equity')
+       and je.tenant_id = ${tenantId}::uuid
        and je.posted_at <= ${asOfDate.toISOString()}::timestamptz
      group by coa.code, coa.name, coa.type
      order by
@@ -148,13 +164,13 @@ export interface CashflowResult {
   netChangePence: Pounds;
 }
 
-export async function renderCashflow(fromDate: Date, toDate: Date): Promise<CashflowResult> {
+export async function renderCashflow(tenantId: string, fromDate: Date, toDate: Date): Promise<CashflowResult> {
   // For v1, cashflow is a thin derivation from P&L + balance-sheet snapshots.
   // Real-world cashflow classification (operating vs investing vs financing)
   // depends on which account codes the operator tagged as "investing" / "financing"
   // in the COA seed; v1 ships with everything in "operating" until the operator
   // restructures. This is acceptable per spec §7 (chart-of-account editing is v2).
-  const pnl = await renderProfitAndLoss(fromDate, toDate);
+  const pnl = await renderProfitAndLoss(tenantId, fromDate, toDate);
 
   // Operating: P&L net result + Δ AR (Δ Trade Debtors) + Δ AP (Δ Trade Creditors).
   const sql = await localDb();
@@ -168,6 +184,7 @@ export async function renderCashflow(fromDate: Date, toDate: Date): Promise<Cash
       from accounting.journal_lines jl
       join accounting.journal_entries je on je.id = jl.journal_id
      where jl.account_id = (select id from accounting.chart_of_accounts where code = '1100')
+       and je.tenant_id = ${tenantId}::uuid
   `) as Array<{ delta_pence: string }>;
   const apMovement = (await sql`
     select sum(case when je.posted_at <= ${toDate.toISOString()}::timestamptz
@@ -179,6 +196,7 @@ export async function renderCashflow(fromDate: Date, toDate: Date): Promise<Cash
       from accounting.journal_lines jl
       join accounting.journal_entries je on je.id = jl.journal_id
      where jl.account_id = (select id from accounting.chart_of_accounts where code = '2100')
+       and je.tenant_id = ${tenantId}::uuid
   `) as Array<{ delta_pence: string }>;
 
   const deltaAr = BigInt(arMovement[0]?.delta_pence ?? '0');
@@ -223,11 +241,26 @@ export interface ArAgingResult {
   totalOutstandingPence: Pounds;
 }
 
-export async function renderArAging(asOfDate: Date): Promise<ArAgingResult> {
+export async function renderArAging(tenantId: string, asOfDate: Date): Promise<ArAgingResult> {
   // For v1, AR aging is per-invoice outstanding against the invoices table.
-  // The "customer" is whatever column the SaaS app's invoice has; we read it
-  // from invoices.contact_id and assume there's a name lookup. The SaaS team
-  // wires the actual customer name.
+  //
+  // Three column names in the previous version did not exist, and Postgres
+  // rejected the whole query with 42883 ("column does not exist") the moment
+  // anybody opened the report:
+  //
+  //   - `public.payments.invoice_id` — public.payments has no invoice
+  //     column. The payment↔invoice link is `public.payment_allocations
+  //     (payment_id, invoice_id, amount_pence)`, and a payment can be split
+  //     across several invoices, so the allocation table is the only correct
+  //     source of "how much of this invoice has been paid".
+  //   - `public.invoices.contact_id` — no such column. The customer is the
+  //     driver on the agreement: invoices.agreement_id → agreements.driver_id
+  //     → drivers.full_name.
+  //   - `public.invoices.issued_at` — the column is `issued_on`, and it is a
+  //     `date`, not a timestamp. Ageing is therefore computed in whole days
+  //     with date arithmetic, which is timezone-independent (casting a date
+  //     to timestamptz would shift it by a day either side of midnight).
+  //
   // Review I2 fix: the report name is "AR aging" — the *outstanding* balance
   // per age bucket. The previous `where i.status = 'open'` excluded any
   // invoice that's been touched by a payment (part_paid / paid) or marked
@@ -236,21 +269,34 @@ export async function renderArAging(asOfDate: Date): Promise<ArAgingResult> {
   // that has any positive outstanding balance on or before the as-of date.
   const sql = await localDb();
   const rows = (await sql`
-    select i.id as invoice_id, i.contact_id as customer_id,
-           i.gross_pence - coalesce((select sum(amount_pence) from public.payments p where p.invoice_id = i.id and p.status = 'confirmed'), 0) as outstanding_pence,
-           i.issued_at,
-           extract(epoch from (${asOfDate.toISOString()}::timestamptz - i.issued_at)) / 86400.0 as age_days
+    select i.id as invoice_id,
+           coalesce(a.driver_id::text, '') as customer_id,
+           coalesce(d.full_name, '') as customer_name,
+           i.gross_pence - coalesce(paid.amount_pence, 0) as outstanding_pence,
+           (${utcDate(asOfDate)}::date - i.issued_on) as age_days
       from public.invoices i
+      left join public.agreements a on a.id = i.agreement_id
+      left join public.drivers d on d.id = a.driver_id
+      left join lateral (
+           select sum(pa.amount_pence) as amount_pence
+             from public.payment_allocations pa
+             join public.payments p on p.id = pa.payment_id
+            where pa.invoice_id = i.id
+              and p.status = 'confirmed'
+              and p.tenant_id = ${tenantId}::uuid
+           ) paid on true
      where i.status <> 'void'
-       and i.gross_pence - coalesce((select sum(amount_pence) from public.payments p where p.invoice_id = i.id and p.status = 'confirmed'), 0) > 0
-       and i.issued_at <= ${asOfDate.toISOString()}::timestamptz
-  `) as Array<{ invoice_id: string; customer_id: string; outstanding_pence: string; issued_at: string; age_days: string }>;
+       and i.tenant_id = ${tenantId}::uuid
+       and i.issued_on <= ${utcDate(asOfDate)}::date
+       and i.gross_pence - coalesce(paid.amount_pence, 0) > 0
+     order by i.issued_on, i.id
+  `) as Array<{ invoice_id: string; customer_id: string; customer_name: string; outstanding_pence: string; age_days: string }>;
   const arRows: ArRow[] = rows.map(r => {
-    const days = parseFloat(r.age_days);
+    const days = parseInt(r.age_days ?? '0', 10) || 0;
     const bucket: ArRow['bucket'] = days <= 30 ? '0-30' : days <= 60 ? '31-60' : days <= 90 ? '61-90' : '90+';
     return {
       customerId: r.customer_id,
-      customerName: r.customer_id,  // SaaS team replaces with real customer name
+      customerName: r.customer_name || 'Unknown customer',
       outstandingPence: BigInt(r.outstanding_pence),
       bucket,
     };

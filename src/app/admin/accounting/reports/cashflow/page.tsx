@@ -1,5 +1,6 @@
 // src/app/admin/accounting/reports/cashflow/page.tsx
 import { renderCashflow } from '@/lib/accounting/reports';
+import { requirePermission } from '@/lib/auth/context';
 
 function fmt(p: bigint): string {
   const sign = p < 0n ? '-' : '';
@@ -8,10 +9,12 @@ function fmt(p: bigint): string {
 }
 
 export default async function CashflowPage({ searchParams }: { searchParams: Promise<{ from?: string; to?: string }> }) {
+  // Same owner-side gate as the rest of /admin/accounting/*.
+  const ctx = await requirePermission('tenant.settings');
   const sp = await searchParams;
   const to = sp.to ? new Date(sp.to) : new Date();
   const from = sp.from ? new Date(sp.from) : new Date(to.getTime() - 30 * 86400000);
-  const r = await renderCashflow(from, to);
+  const r = await renderCashflow(ctx.tenantId, from, to);
   return (
     <main className="p-6">
       <h1 className="text-2xl font-semibold mb-4">Cashflow</h1>

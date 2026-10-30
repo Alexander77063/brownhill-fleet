@@ -7,6 +7,10 @@ import { getAuthContext, requirePermission } from '@/lib/auth/context';
 import { syncBilledVehicles } from '@/lib/catalogue/quantity';
 import { requireEntitlement } from '@/lib/entitlements';
 import { pounds, formatGBP } from '@/lib/money';
+import {
+  ALLOCATABLE_INVOICE_STATUSES,
+  isAllocatableInvoiceStatus,
+} from '@/lib/accounting/invoice-eligibility';
 import { rtbBillingTerms } from '@/lib/rtb-calculator';
 import { sendDriverMessage } from '@/lib/comms';
 import type { Database } from '@/lib/supabase/database.types';
@@ -81,17 +85,19 @@ export async function recordPayment(formData: FormData): Promise<void> {
     .single();
   if (payErr || !payment) throw new Error(payErr?.message ?? 'Could not record payment');
 
-  // Allocate FIFO across open invoices, never exceeding each invoice's balance.
+  // Allocate FIFO across the invoices that still owe money, never exceeding
+  // each invoice's balance.
   const { data: invoices } = await sb
     .from('v_invoice_balance')
     .select('id, balance_pence, status')
     .eq('agreement_id', agreementId)
+    .in('status', [...ALLOCATABLE_INVOICE_STATUSES])
     .order('due_on', { ascending: true });
 
   let remaining = amountPence;
   for (const inv of (invoices ?? []) as { id: string; balance_pence: number; status: string }[]) {
     if (remaining <= 0) break;
-    if (inv.status === 'void') continue;
+    if (!isAllocatableInvoiceStatus(inv.status)) continue;
     const balance = inv.balance_pence ?? 0;
     if (balance <= 0) continue;
     const alloc = Math.min(remaining, balance);

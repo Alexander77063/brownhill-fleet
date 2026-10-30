@@ -1,5 +1,6 @@
 // src/app/admin/accounting/reports/ar-aging/page.tsx
 import { renderArAging } from '@/lib/accounting/reports';
+import { requirePermission } from '@/lib/auth/context';
 
 function fmt(p: bigint): string {
   const sign = p < 0n ? '-' : '';
@@ -8,9 +9,11 @@ function fmt(p: bigint): string {
 }
 
 export default async function ArAgingPage({ searchParams }: { searchParams: Promise<{ asOf?: string }> }) {
+  // Same owner-side gate as the rest of /admin/accounting/*.
+  const ctx = await requirePermission('tenant.settings');
   const sp = await searchParams;
   const asOf = sp.asOf ? new Date(sp.asOf) : new Date();
-  const r = await renderArAging(asOf);
+  const r = await renderArAging(ctx.tenantId, asOf);
   return (
     <main className="p-6">
       <h1 className="text-2xl font-semibold mb-4">Aged Accounts Receivable</h1>

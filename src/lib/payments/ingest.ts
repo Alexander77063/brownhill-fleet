@@ -6,11 +6,14 @@
  * guard on it here so a webhook retry and a manual entry can never double-count.
  *
  * On the FIRST successful insert (and only then) we auto-allocate the receipt
- * to that agreement's oldest open/part-paid invoices. Re-allocating on a retry
- * would re-bill the same cash, so allocation runs strictly when created === true.
+ * to that agreement's oldest invoices that still owe money — open, part-paid
+ * or overdue. A voided invoice is never one of them: it has been cancelled,
+ * so nothing is owed on it. Re-allocating on a retry would re-bill the same
+ * cash, so allocation runs strictly when created === true.
  */
 
 import { createServiceClient } from '@/lib/supabase/server';
+import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
 
 export type PaymentSource = 'manual' | 'bank_transfer' | 'gocardless' | 'stripe' | 'cash';
 
@@ -148,12 +151,17 @@ async function allocateToInvoices(
 ): Promise<number> {
   const { data: invoices } = await sb
     .from('v_invoice_balance')
-    .select('id, balance_pence, issued_on')
+    .select('id, balance_pence, issued_on, status')
     .eq('agreement_id', agreementId)
+    .in('status', [...ALLOCATABLE_INVOICE_STATUSES])
     .gt('balance_pence', 0)
     .order('issued_on', { ascending: true });
 
-  const rows = (invoices ?? []) as Array<{ id: string; balance_pence: number }>;
+  const rows = (invoices ?? []) as Array<{
+    id: string;
+    balance_pence: number;
+    status: string;
+  }>;
 
   let remaining = amountPence;
   let allocated = 0;
