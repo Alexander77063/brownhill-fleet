@@ -133,6 +133,30 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
+      - name: The portability proof's own guards
+        # The proof decides whether a deployment is fit to hand over, so its
+        # own guards have to be trustworthy. Four of them could never pass:
+        # the backup assertion asked for `systemctl` rather than for the
+        # Brownhill unit; the HTTPS assertion passed `-k` (skip
+        # verification) AND `--cacert` together, so the CA was decorative;
+        # the tenant assertion loaded a package this project does not
+        # depend on; and the off-host assertion synced to a bucket named
+        # "test" instead of reading the box's own recorded state.
+        #
+        # A guard that can never pass is not a guard — in a build log a
+        # skipped assertion is indistinguishable from a passing one. This
+        # gate holds those guards to their promises: off the deployed box
+        # they SKIP and the proof still exits 0; on a box a missing backup
+        # unit FAILS; a job told it must be on the box FAILS when it is
+        # not; the proof loads nothing the project does not have; the CA it
+        # verifies against is actually tracked in git; the HTTPS assertion
+        # really verifies; and the token it presents carries the claims the
+        # application itself mints.
+        #
+        # It needs no docker, no database and no stack, and it runs BEFORE
+        # the compose build so a regression in the proof costs a second
+        # rather than the whole image build.
+        run: bash hosted/tests/portability-guards.sh
       - name: Spin up hosted stack
         # `--build` is not optional. `docker compose up` reuses an existing
         # `dev-next` image when there is one, so a stack that was brought up
@@ -214,6 +238,13 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
+      - name: The portability proof's own guards
+        # The same gate as the hosted job above. It matters more here: this
+        # is the job that runs the proof against the REAL box, where the
+        # box-shaped assertions are supposed to PASS rather than skip. A
+        # guard that silently skipped there would turn this job into a job
+        # that proves nothing while still going green.
+        run: bash hosted/tests/portability-guards.sh
       - name: The bootstrap waiter can find the bootstrap
         run: bash hosted/tests/bootstrap-wait.sh
       - name: Hosted portability proof against the live stack

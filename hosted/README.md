@@ -103,6 +103,27 @@ bash hosted/tests/env-var-names.sh
 #   is not set at all.
 bash hosted/tests/backup-offhost-target.sh
 
+#   The portability proof's OWN guards. The proof decides whether a
+#   deployment is fit to hand over, so its guards have to be trustworthy —
+#   and four of them could never pass. The backup assertion asked for
+#   `systemctl` rather than for the Brownhill unit, so it failed on any
+#   machine that was not the deployed box; the HTTPS assertion passed `-k`
+#   (skip verification) AND `--cacert` together, which made the CA
+#   decorative; the tenant assertion loaded `jsonwebtoken`, which this
+#   project does not depend on, so it skipped itself everywhere; and the
+#   off-host assertion synced to a bucket named "test" instead of reading
+#   the box's own recorded state.
+#
+#   A guard that can never pass is not a guard — a skipped assertion looks
+#   exactly like a passing one in a build log. This gate holds them to
+#   their promises: off the box they skip and the proof still exits 0; on
+#   the box a missing backup unit FAILS; a job told it must be on the box
+#   FAILS when it is not; the CA the HTTPS assertion verifies against is
+#   really tracked in git; the proof loads nothing the project does not
+#   have; and the token it presents carries the claims the application
+#   itself mints. Hermetic — no docker, no database, no stack.
+bash hosted/tests/portability-guards.sh
+
 # Smoke run: confirms nginx serves HTTPS, the bootstrap endpoint contracts
 # hold, RLS still enforces, and the backup + restore-verify paths are real.
 bash hosted/tests/verify-hosted-portability.sh

@@ -20,10 +20,24 @@ if DEPLOYMENT_PROFILE=hosted pnpm test 2>/tmp/g1.log; then
 else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 
 # 2 — verify-hosted-portability.sh 0–17 green
-echo "== Gate 2: verify-hosted-portability.sh =="
-if bash hosted/tests/verify-hosted-portability.sh 2>/tmp/g2.log; then
+#
+# The proof's OWN guards run first, in the same gate. Four of those guards
+# could never pass — the backup assertion asked for `systemctl` rather than
+# for the Brownhill unit, the HTTPS assertion passed `-k` beside `--cacert`,
+# the tenant assertion loaded a package this project does not depend on, and
+# the off-host assertion synced to a bucket named "test". A guard that can
+# never pass is not a guard: in a build log a skipped assertion is
+# indistinguishable from a passing one. The guards are what make this gate
+# mean something, so they are part of it rather than a separate line.
+echo "== Gate 2: the portability proof and its own guards =="
+if bash hosted/tests/portability-guards.sh 2>/tmp/g2a.log \
+   && bash hosted/tests/verify-hosted-portability.sh 2>/tmp/g2.log; then
   echo "Gate 2 OK"; GATES_PASSED=$((GATES_PASSED+1))
-else echo "Gate 2 FAIL (see /tmp/g2.log)"; fi
+else
+  echo "Gate 2 FAIL (see /tmp/g2a.log and /tmp/g2.log)"
+  [[ -f /tmp/g2a.log ]] && sed 's/^/      /' /tmp/g2a.log
+  [[ -f /tmp/g2.log ]] && sed 's/^/      /' /tmp/g2.log
+fi
 
 # 3 — migrations-regression.sh green
 echo "== Gate 3: migrations-regression.sh =="
