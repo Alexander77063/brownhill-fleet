@@ -199,5 +199,34 @@ idempotent: every reboot from now on is a no-op that exits 0.
 
 - Daily: zero (timers handle backup, verify, certbot renew)
 - Monthly: chaos drills hosted/tests/chaos/0[1-4]-*.sh, log to RUNS.md
-- Updates: `cd /opt/brownhill/repo && git pull && pnpm install --frozen-lockfile && pnpm build:hosted && systemctl restart brownhill-next postgrest`
+- Updates: `cd /opt/brownhill/repo && git pull && pnpm install --frozen-lockfile && pnpm build:hosted && sudo ./hosted/bootstrap/install.sh && systemctl daemon-reload && systemctl restart brownhill-next postgrest`
 - Alert paging: wire /usr/local/bin/brownhill-alert-forward.sh — currently an empty shim
+
+### The installer has to run on every update, not just the first
+
+`hosted/bootstrap/install.sh` is what puts the **unit files** and the
+**operator scripts** on the box. `git pull` alone does not: the repository
+copy is not the installed copy. Two changes in this repository make that
+concrete, and both of them break the restore console on a box that was only
+`git pull`ed:
+
+- `brownhill-next.service` no longer sets `NoNewPrivileges=true`. Under that
+  flag the kernel refuses to honour a setuid bit, so `sudo` could not become
+  root and the restore console could not restore anything at all.
+- `restore.sh` now hands the restore to a transient systemd unit of its own
+  before it stops the application. The old script was killed by the
+  application's own stop, half way through a `pg_restore`.
+
+So the update line above runs the installer, and `systemctl daemon-reload`
+after it. `hosted/tests/restore-privilege-contract.sh` checks the **installed**
+unit, the installed sudoers rule and the installed script as well as the
+repository's copies, so running it on the box after an update says plainly
+whether the box actually has the fixed versions:
+
+```bash
+cd /opt/brownhill/repo && sudo bash hosted/tests/restore-privilege-contract.sh
+```
+
+The restore itself is proved by `hosted/tests/restore-survives-app-stop.sh`,
+which runs the real `restore.sh` against a model of systemd's control-group
+semantics and requires the restore to complete.

@@ -242,7 +242,8 @@ install -m 0644 standalone/scripts/schema-ledger.sh /usr/local/lib/brownhill/sch
 
 # restore.sh is NOT called by a unit — it is spawned by absolute path from the
 # restore console (src/app/admin/restore/route.ts), and exercised by
-# hosted/tests/chaos/03-mid-restore-crash.sh. It was missing from this list,
+# hosted/tests/chaos/03-corrupt-dump-rejected.sh and
+# hosted/tests/restore-survives-app-stop.sh. It was missing from this list,
 # so the operator's "restore this backup" button failed with ENOENT every
 # single time, and the chaos drill failed before it began.
 install -m 0750 hosted/bootstrap/restore.sh                   /usr/local/bin/

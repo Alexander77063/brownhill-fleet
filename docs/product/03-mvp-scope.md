@@ -83,7 +83,7 @@ the public one so a deployment without it still passes its preflight.
 | Schema bootstrap | `brownhill-bootstrap.service` — shim + every migration, one transaction each, recorded in the ledger (`public.schema_migrations`) so a re-run applies nothing |
 | TLS | `hosted/bootstrap/initial-cert.sh` — Let's Encrypt via certbot, then the FQDN substitution |
 | Backups | Nightly 02:00 to local + Backblaze B2; weekly restore-verify on Sunday 04:00 |
-| Restore | `/admin/restore` — browse dumps, confirm with `RESTORE`, drain, replay, un-drain |
+| Restore | `/admin/restore` — browse dumps, confirm with `RESTORE`, drain, replay, un-drain. The replay runs in a transient systemd unit of its own, so it survives the application's stop; the script owns the drain flag and writes the outcome to `/var/lib/brownhill/restore-last.json`. A **logical** restore — the database comes back as it was when the dump was taken, and anything entered since is lost |
 | Alarms | Path unit on `/run/brownhill/alerts/`; forwarder is an operator-wired shim |
 | Acceptance | `hosted/tests/acceptance.sh` — five baseline gates, plus the accounting smoke when that module is enabled and the no-credential scan when the tree is a git checkout (six or seven in total). Every gate that runs must be green: a conditional gate that runs and fails raises the bar rather than lowering it |
 

@@ -36,6 +36,7 @@ export type RestoreOutcomeKind =
   | 'bad_backup_id'
   | 'dump_unreadable'
   | 'pg_restore_failed'
+  | 'handoff_failed'
   | 'interrupted'
   | 'unknown';
 
@@ -54,6 +55,13 @@ export interface RestoreOutcome {
   summary: string;
   /** What the operator should do next. */
   nextStep: string;
+  /**
+   * The exit code of the restore script this describes.
+   *
+   * null when there was no script to exit — the script could not be started
+   * at all, so there was no code to read.
+   */
+  exitCode: number | null;
 }
 
 /**
@@ -69,6 +77,8 @@ export interface RestoreOutcome {
  *       stopped, so the database and the application are untouched.
  *   4 — pg_restore failed part way through. The database is in an unknown
  *       state and the script deliberately leaves the application stopped.
+ *   5 — the script could not be moved out of the application's control group,
+ *       so it refused to run. Nothing was touched and nothing was stopped.
  *
  * Anything else — an exit code we do not know, or the process being killed —
  * is also an unknown state, so the drain is kept. Releasing the drain on a
@@ -81,6 +91,7 @@ export function describeRestoreExit(code: number | null, signal: string | null =
       ok: true,
       kind: 'succeeded',
       drain: 'cleared',
+      exitCode: code,
       summary: 'The backup was replayed onto the live database and the application is back up.',
       nextStep:
         'Nothing to do. Confirm the application is serving again and that the data you expected is there.',
@@ -91,6 +102,7 @@ export function describeRestoreExit(code: number | null, signal: string | null =
       ok: false,
       kind: 'bad_backup_id',
       drain: 'cleared',
+      exitCode: code,
       summary: 'There is no dump with that id, so nothing was restored.',
       nextStep:
         'The live database has NOT been touched and the application was never stopped. Pick a dump from the list below and try again.',
@@ -101,6 +113,7 @@ export function describeRestoreExit(code: number | null, signal: string | null =
       ok: false,
       kind: 'dump_unreadable',
       drain: 'cleared',
+      exitCode: code,
       summary: 'That dump file is not a readable backup, so nothing was restored.',
       nextStep:
         'The live database has NOT been touched and the application was never stopped. Try an older dump, and check the backup job’s journal (journalctl -u brownhill-backup -n 100).',
@@ -111,9 +124,21 @@ export function describeRestoreExit(code: number | null, signal: string | null =
       ok: false,
       kind: 'pg_restore_failed',
       drain: 'kept',
+      exitCode: code,
       summary: 'The restore failed part way through, so the database is in an unknown state.',
       nextStep:
         'The application has been left stopped on purpose — starting it against a partly restored database is worse than leaving it down. Read the journal (journalctl -u brownhill-next -n 100), fix the cause, then restore a known-good dump again.',
+    };
+  }
+  if (code === 5) {
+    return {
+      ok: false,
+      kind: 'handoff_failed',
+      drain: 'cleared',
+      exitCode: code,
+      summary: 'The restore refused to start, so nothing was restored.',
+      nextStep:
+        'The script would have stopped the application from inside the application’s own control group, where the stop would have killed the restore itself, so it refused to run. Nothing was changed and the application was never stopped. Check that systemd-run is available on this box (journalctl -u brownhill-next -n 100), then try again.',
     };
   }
   if (code === null) {
@@ -121,6 +146,7 @@ export function describeRestoreExit(code: number | null, signal: string | null =
       ok: false,
       kind: 'interrupted',
       drain: 'kept',
+      exitCode: null,
       summary: signal
         ? `The restore was interrupted (${signal}) before it could finish.`
         : 'The restore was interrupted before it could finish.',
@@ -132,6 +158,7 @@ export function describeRestoreExit(code: number | null, signal: string | null =
     ok: false,
     kind: 'unknown',
     drain: 'kept',
+    exitCode: code,
     summary: `The restore stopped with exit code ${code}.`,
     nextStep:
       'The database may be in an unknown state, so the application has been left stopped. Read the journal (journalctl -u brownhill-next -n 100) before doing anything else.',
@@ -152,6 +179,13 @@ export interface RestoreRecord {
   /** When it finished, ISO-8601. Absent while it is still running. */
   finishedAt?: string;
   state: 'started' | 'succeeded' | 'failed';
+  /**
+   * The exit code of the restore script, when there is one.
+   *
+   * The script writes this; the wording is derived from it rather than
+   * stored beside it, so the two cannot disagree.
+   */
+  exitCode?: number;
   outcome?: RestoreOutcome;
 }
 
@@ -161,6 +195,12 @@ export interface RestoreRecord {
  * The record lives in a plain file rather than in the database because a
  * restore REPLAYS the database: anything written to app_state before the
  * restore is rolled back with it. A file beside the application survives.
+ *
+ * The restore script writes this file itself, because the application is
+ * stopped for the length of the restore and cannot write anything down
+ * afterwards. The script's record carries the exit code and no wording, so
+ * the wording is derived here — from the same table the application uses for
+ * its own exit code, so there is only one.
  */
 export function readRestoreRecord(path: string = RESTORE_RECORD_PATH): RestoreRecord | null {
   try {
@@ -168,12 +208,15 @@ export function readRestoreRecord(path: string = RESTORE_RECORD_PATH): RestoreRe
     if (!parsed || typeof parsed !== 'object') return null;
     const row = parsed as Record<string, unknown>;
     if (typeof row.backupId !== 'string' || typeof row.startedAt !== 'string') return null;
+    const exitCode = typeof row.exitCode === 'number' ? row.exitCode : undefined;
+    const stored = (row.outcome as RestoreOutcome | undefined) ?? undefined;
     return {
       backupId: row.backupId,
       startedAt: row.startedAt,
       finishedAt: typeof row.finishedAt === 'string' ? row.finishedAt : undefined,
       state: row.state === 'succeeded' || row.state === 'failed' ? row.state : 'started',
-      outcome: (row.outcome as RestoreOutcome | undefined) ?? undefined,
+      exitCode,
+      outcome: stored ?? (exitCode !== undefined ? describeRestoreExit(exitCode) : undefined),
     };
   } catch {
     return null;
@@ -183,6 +226,9 @@ export function readRestoreRecord(path: string = RESTORE_RECORD_PATH): RestoreRe
 /**
  * Record a restore attempt. Best effort: a box that cannot write the file
  * still restores correctly, it just cannot say afterwards what it did.
+ *
+ * The exit code is taken from the outcome rather than passed separately, so
+ * a record cannot claim one code and describe another.
  */
 export function writeRestoreRecord(
   record: RestoreRecord,
@@ -190,15 +236,42 @@ export function writeRestoreRecord(
 ): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true });
+    const exitCode = record.exitCode ?? record.outcome?.exitCode ?? undefined;
+    const payload = {
+      backupId: record.backupId,
+      startedAt: record.startedAt,
+      ...(record.finishedAt !== undefined ? { finishedAt: record.finishedAt } : {}),
+      state: record.state,
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      ...(record.outcome !== undefined ? { outcome: record.outcome } : {}),
+    };
     // Written to a temporary file and renamed, so a reader never sees half
     // a record if the box is interrupted mid-write.
     const tmp = `${path}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf8');
+    writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
     renameSync(tmp, path);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Does the application still owe this record an outcome?
+ *
+ * The restore script writes the record when the restore has an outcome of its
+ * own — which is every case where the application was stopped and could not
+ * write anything down. In those cases the script's record is the truth about
+ * the database, and the application must NOT write over it.
+ *
+ * The application writes the record only when the script never got that far:
+ * a malformed id, no systemd-run, or the script failing to start. In those
+ * cases the record still says 'started', and the application is still alive
+ * to finish it.
+ */
+export function recordNeedsOutcome(record: RestoreRecord | null): boolean {
+  if (!record) return true;
+  return record.state === 'started';
 }
 
 /**

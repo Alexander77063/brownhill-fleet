@@ -27,12 +27,22 @@
 // an unknown state, so the drain is kept there too.
 
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   BACKUP_ID_PATTERN,
   describeRestoreExit,
   isRestoreInFlight,
   isValidBackupId,
+  readRestoreRecord,
+  recordNeedsOutcome,
+  writeRestoreRecord,
 } from '@/lib/backup/restore';
+
+function scratchRecordPath(): string {
+  return join(mkdtempSync(join(tmpdir(), 'restore-record-')), 'restore-last.json');
+}
 
 describe('isValidBackupId', () => {
   it('accepts the id the backup script produces', () => {
@@ -109,12 +119,123 @@ describe('describeRestoreExit', () => {
     expect(outcome.drain).toBe('kept');
   });
 
+  it('releases the drain when the restore refused to start at all', () => {
+    // Exit 5: the script could not be moved out of the application's control
+    // group, so it refused to run. Nothing was touched and the application
+    // was never stopped, so the box must not be left closed.
+    const outcome = describeRestoreExit(5);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.kind).toBe('handoff_failed');
+    expect(outcome.drain).toBe('cleared');
+  });
+
   it('always tells the operator what to do next', () => {
-    for (const code of [0, 2, 3, 4, 127, null]) {
+    for (const code of [0, 2, 3, 4, 5, 127, null]) {
       const outcome = describeRestoreExit(code);
       expect(outcome.summary.length).toBeGreaterThan(0);
       expect(outcome.nextStep.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── the record ─────────────────────────────────────────────────────────────
+//
+// The restore script writes the record itself, because the application is
+// stopped for the length of the restore and cannot write anything down
+// afterwards. Its record carries the exit code and no wording; the wording
+// lives here, in one place, and is derived from the code.
+//
+// So the application has to be able to READ the script's record, and it has
+// to leave that record alone when it comes back — the script's answer is the
+// truth about the database.
+
+describe('the record the restore script writes', () => {
+  it('reads the outcome out of the exit code', () => {
+    const path = scratchRecordPath();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        backupId: '2026-09-23T02-00-01Z',
+        startedAt: '2026-10-31T10:00:00Z',
+        finishedAt: '2026-10-31T10:04:12Z',
+        state: 'succeeded',
+        exitCode: 0,
+      }),
+      'utf8',
+    );
+
+    const record = readRestoreRecord(path);
+    expect(record?.state).toBe('succeeded');
+    expect(record?.exitCode).toBe(0);
+    expect(record?.outcome?.kind).toBe('succeeded');
+    expect(record?.outcome?.drain).toBe('cleared');
+  });
+
+  it('reads a failure out of the exit code too', () => {
+    const path = scratchRecordPath();
+    writeFileSync(
+      path,
+      JSON.stringify({
+        backupId: '2026-09-23T02-00-01Z',
+        startedAt: '2026-10-31T10:00:00Z',
+        finishedAt: '2026-10-31T10:01:12Z',
+        state: 'failed',
+        exitCode: 4,
+      }),
+      'utf8',
+    );
+
+    const record = readRestoreRecord(path);
+    expect(record?.outcome?.kind).toBe('pg_restore_failed');
+    expect(record?.outcome?.drain).toBe('kept');
+  });
+
+  it('carries the exit code through a write', () => {
+    const path = scratchRecordPath();
+    writeRestoreRecord(
+      {
+        backupId: '2026-09-23T02-00-01Z',
+        startedAt: '2026-10-31T10:00:00Z',
+        finishedAt: '2026-10-31T10:01:12Z',
+        state: 'failed',
+        outcome: describeRestoreExit(4),
+      },
+      path,
+    );
+
+    const record = readRestoreRecord(path);
+    expect(record?.exitCode).toBe(4);
+    expect(record?.outcome?.kind).toBe('pg_restore_failed');
+  });
+});
+
+describe('recordNeedsOutcome', () => {
+  const started = {
+    backupId: '2026-09-23T02-00-01Z',
+    startedAt: '2026-10-31T10:00:00Z',
+    state: 'started' as const,
+  };
+
+  it('is true when there is no record at all', () => {
+    expect(recordNeedsOutcome(null)).toBe(true);
+  });
+
+  it('is true while the record still says the restore was starting', () => {
+    expect(recordNeedsOutcome(started)).toBe(true);
+  });
+
+  it('is false once the restore script has recorded an outcome', () => {
+    // The script ran, stopped the application, and wrote the outcome itself.
+    // The application must not write over that: the script's answer is the
+    // truth about the database.
+    expect(
+      recordNeedsOutcome({
+        ...started,
+        finishedAt: '2026-10-31T10:01:12Z',
+        state: 'failed',
+        exitCode: 4,
+      }),
+    ).toBe(false);
   });
 });
 

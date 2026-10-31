@@ -380,7 +380,61 @@ From the browser:
 2. Navigate to `/admin/restore`.
 3. The endpoint lists dumps read from `/var/backups/brownhill/_index.json`.
 4. Pick one, type `RESTORE` in the confirmation box, submit.
-5. The middleware 503s everything except `/admin/*` until the swap completes; the app becomes live again when the dump and WAL are replayed and `app_draining` flips back to 0.
+5. The middleware 503s everything except `/admin/*` while the restore runs. The
+   app comes back by itself when it finishes.
+
+**What happens under the button**, because the answer to "the box went down"
+is different depending on where it stopped:
+
+| Step | What runs |
+| --- | --- |
+| The app closes itself | `app_draining` is set to `1`, so everything but `/admin/*` answers 503 |
+| The app hands the work over | `/usr/local/bin/restore.sh` starts in a **transient systemd unit of its own** (`brownhill-restore-<id>`) before it stops anything |
+| The unit stops the app and the data API | `systemctl stop brownhill-next postgrest`, then the dump is replayed with `pg_restore --clean --if-exists` |
+| The unit brings them back | `postgrest` starts, `app_draining` flips to `0`, `brownhill-next` starts, and the operator's browser loads again |
+| The outcome is written down | `/var/lib/brownhill/restore-last.json` — the backup id, the start and finish times, and the exit code |
+
+The unit matters. The restore script is started by the application, so it
+begins inside `brownhill-next.service`'s control group — and systemd stops a
+unit by signalling that whole control group. If the script stopped the
+application from there, it would be killing itself half way through the
+replay. That is what used to happen: the operator's button dismantled the
+database and left the box down with nothing serving. The transient unit has a
+control group of its own, so the application's stop cannot reach it.
+
+**This is a logical restore, not a physical one.** A `pg_dump` is a snapshot
+of the data, not a copy of the cluster, so there is no write-ahead log to
+replay on top of it. The database comes back exactly as it was when the dump
+was taken, and **anything entered since then is gone**. That is why the
+console shows the timestamp of every dump before you choose one.
+
+**If it fails**, the app is deliberately left stopped and `app_draining`
+stays `1` — starting the application against a half-restored database would
+be worse than leaving it down. The exit code is in
+`/var/lib/brownhill/restore-last.json`:
+
+| Exit code | Meaning | What to do |
+| --- | --- | --- |
+| 0 | The dump was replayed and the services are back | Nothing |
+| 2 | No dump with that id | Pick another; nothing was touched |
+| 3 | The file is not a readable `pg_dump` archive | Try an older dump; check `journalctl -u brownhill-backup -n 100` |
+| 4 | `pg_restore` failed part way through | The database is in an unknown state. Read `journalctl -u brownhill-next -n 100`, fix the cause, restore a known-good dump again |
+| 5 | The script could not be moved out of the application's control group, so it refused to run | Nothing was touched. Check that `systemd-run` is present on the box |
+
+**One thing to know about the unit file.** `brownhill-next.service` used to
+carry `NoNewPrivileges=true`. That flag makes the kernel refuse to honour a
+setuid bit, so `sudo` — which is how the application reaches
+`/usr/local/bin/restore.sh` — could not become root, and the restore console
+could never restore anything. The flag is gone, the trade-off is written out
+in the unit file, and `hosted/tests/restore-privilege-contract.sh` checks the
+whole arrangement on every build. **If you update the box, run the
+installer** — it installs the new unit file:
+
+```bash
+cd /opt/brownhill/repo && git pull
+sudo ./hosted/bootstrap/install.sh
+sudo systemctl daemon-reload && sudo systemctl restart brownhill-next
+```
 
 A failed restore leaves `app_draining='1'` and pages the operator (see next section).
 
@@ -398,7 +452,7 @@ Run them on the live box — they are designed not to lose data:
 ```bash
 sudo ./hosted/tests/chaos/01-power-loss.sh          # SIGKILL postgres, restart, RLS replay
 sudo ./hosted/tests/chaos/02-postgres-restart.sh    # systemctl restart postgresql, time recovery, RLS
-sudo ./hosted/tests/chaos/03-mid-restore-crash.sh   # corrupt dump, assert drain retained + alarm fires
+sudo ./hosted/tests/chaos/03-corrupt-dump-rejected.sh  # corrupt dump, assert the box is untouched and the drain released
 sudo ./hosted/tests/chaos/04-b2-sync-stale.sh       # force b2 to fail, assert marker, restore, assert cleared
 ```
 

@@ -33,12 +33,12 @@ export function LastRestore({ record }: { record: RestoreRecord | null }) {
         </div>
         <p className="mt-2 text-sm text-muted">
           It was started at {formatTimestamp(record.startedAt)} and the box never recorded how
-          it ended. That is expected if the restore stopped the application: the restore
-          script shuts the application down to replay the database, so the application
-          cannot write the ending down. If the application is serving now, the restore
-          finished. If it is not, read the journal (
+          it ended. The restore script writes the ending itself, once the restore has one,
+          so a record still saying ‘started’ means the restore never got that far: it was
+          refused before it began, or it could not be started at all. Nothing was restored
+          and the database was not touched. Read the journal (
           <code className="text-parchment">journalctl -u brownhill-next -n 100</code>) to see
-          where it stopped.
+          why, then try again.
         </p>
       </Card>
     );

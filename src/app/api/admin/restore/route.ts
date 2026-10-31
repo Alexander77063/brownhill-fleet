@@ -26,6 +26,7 @@ import {
   isRestoreInFlight,
   isValidBackupId,
   readRestoreRecord,
+  recordNeedsOutcome,
   startRestore,
   writeRestoreRecord,
   type RestoreOutcome,
@@ -209,6 +210,7 @@ export async function POST(req: NextRequest) {
       ok: false,
       kind: 'unknown',
       drain: 'cleared',
+      exitCode: null,
       summary: 'The restore script could not be started.',
       nextStep: `Nothing was restored and the live database was not touched. ${started.error ?? ''}`.trim(),
     };
@@ -250,8 +252,15 @@ export async function POST(req: NextRequest) {
  *       release the drain.
  *   4 — pg_restore failed part way through. The database is in an unknown
  *       state, so the application must stay closed.
+ *   5 — the script refused to run because it could not be moved out of the
+ *       application's control group. Nothing was touched: release the drain.
  *
  * Anything else is also an unknown state, so the drain is kept there too.
+ *
+ * This only runs when the application SURVIVED the restore — and it can only
+ * survive a restore that never stopped it. Every restore that stopped the
+ * application took the application with it, so this handler is the one that
+ * was there for the failures that happen before anything is stopped.
  */
 async function finishRestore(
   sql: Awaited<ReturnType<typeof localDb>>,
@@ -275,6 +284,19 @@ async function finishRestore(
     // again on success), so the flag may not be writable. The record below is
     // what the operator reads, so this is not fatal.
   }
+
+  // The restore script writes the record itself whenever it got as far as
+  // stopping the application — which is every case where the application was
+  // stopped and could not write anything down afterwards. Its record is the
+  // truth about the database, and this one must NOT be written over it: the
+  // script knows the exit code, and it wrote it before it exited.
+  //
+  // The application writes the record only when the script never got that
+  // far — a malformed id, no systemd-run, or the script failing to start.
+  // In those cases the record still says 'started', and the application is
+  // still alive to finish it.
+  if (!recordNeedsOutcome(readRestoreRecord())) return;
+
   writeRestoreRecord({
     backupId,
     startedAt,
