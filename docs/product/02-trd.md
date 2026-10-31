@@ -357,13 +357,19 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 355 passing, 2 skipped, 28 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens |
+| Unit | `pnpm test` | 430 passing, 2 skipped, 31 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
-| Contrast | `pnpm test:a11y` | Colour-token contrast assertions |
+| Contrast | `pnpm test:a11y` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
 | E2E + axe | `pnpm test:axe` | Playwright, against a running app |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
+
+The three accessibility suites — form audit, lint and contrast — all run in the
+`unit-tests` CI job, on every pull request. The contrast gate is accompanied by
+`hosted/tests/a11y-contrast-negative.sh`, which runs it against three
+deliberately broken stylesheets and requires it to fail on each: a gate that
+cannot fail is not a gate.
 
 ### 8.1 What is *not* unit-tested, and why
 

@@ -40,8 +40,8 @@ brushed-metal memorandum — an instrument panel, not a dashboard template.
 | --- | --- | --- | --- |
 | `--color-gold` | `#b8972a` | `#9c7c1c` | Fill / border only — needs 3:1 as non-text |
 | `--color-gold-bright` | `#e6c558` | `#7d6410` | Accent text, gradients |
-| `--color-gold-dim` | `#8c7320` | `#b8972a` | Scrollbar thumb, gradient end |
-| `--color-gold-text` | `#b8972a` | `#7d6410` | **Text only** — 4.97:1 on the light page bg, 5.61:1 on card white |
+| `--color-gold-dim` | `#8c7320` | `#a38525` | Scrollbar thumb, gradient end — was `#b8972a` (2.48:1 on the light page bg, failed 1.4.11) |
+| `--color-gold-text` | `#b8972a` | `#7d6410` | **Text only** — 5.03:1 on the light page bg, 5.67:1 on card white |
 | `--color-on-gold` | `#0a1628` | `#0a1628` | Foreground that sits **on** gold — stays dark in both themes |
 
 The split between `--color-gold` and `--color-gold-text` is deliberate and
@@ -165,9 +165,45 @@ screen-reader user — the placeholder is not a label.
 
 ### 5.3 Contrast
 
-Every semantic colour clears 4.5:1 as text on both the page background and the
-card surface in the light theme, and 3:1 where it is used as a badge border.
-`pnpm test:a11y` asserts the token pairs.
+Every text token clears **4.5:1** (WCAG 2.1 SC 1.4.3, Contrast Minimum, Level
+AA) against both the page background (`--color-ink`) and the card surface
+(`--color-navy`), in **both** themes. Every non-text token — a fill, a border,
+an icon, a scrollbar thumb — clears **3:1** (SC 1.4.11, Non-text Contrast).
+The foreground that sits on the gold fill clears 4.5:1 against the gold.
+
+The light theme is opt-in (a cookie), but it is the theme the authenticated
+app uses when a person chooses it, so a colour that only reads on the dark
+background is a colour that fails for them. Both themes are measured.
+
+**These are measured, not asserted by hand.**
+`tests/unit/a11y-contrast.test.ts` (`pnpm test:a11y`) reads the real token
+values out of `src/app/globals.css` and computes the WCAG 2.1 contrast ratio
+for each pair. It runs in CI, and `hosted/tests/a11y-contrast-negative.sh`
+runs it against three deliberately broken stylesheets to prove it can fail.
+
+The measured ratios, at the time of writing:
+
+| Token | Dark, on ink / on navy | Light, on ink / on navy | Bar |
+| --- | --- | --- | --- |
+| `--color-cream` | 17.47 / 16.08 | 13.76 / 15.52 | 4.5:1 |
+| `--color-parchment` | 10.86 / 9.99 | 6.94 / 7.83 | 4.5:1 |
+| `--color-muted` | 6.64 / 6.11 | 4.85 / 5.47 | 4.5:1 |
+| `--color-gold-text` | 7.04 / 6.47 | 5.03 / 5.67 | 4.5:1 |
+| `--color-profit` | 7.26 / 6.68 | 4.92 / 5.55 | 4.5:1 |
+| `--color-loss` | 5.04 / 4.63 | 4.99 / 5.62 | 4.5:1 |
+| `--color-warn` | 8.62 / 7.93 | 4.85 / 5.47 | 4.5:1 |
+| `--color-info` | 7.75 / 7.13 | 4.65 / 5.24 | 4.5:1 |
+| `--color-gold` | 7.04 / 6.47 | 3.50 / 3.95 | 3:1 |
+| `--color-gold-bright` | 11.72 / 10.78 | 5.03 / 5.67 | 3:1 |
+| `--color-gold-dim` | 4.31 / 3.96 | 3.13 / 3.54 | 3:1 |
+| `--color-on-gold` on `--color-gold` | 6.47 | 4.59 | 4.5:1 |
+
+Three tokens were corrected once by hand, before any of this was checked by
+anything: the light theme's `--color-muted` (`#6b7688`, 4.07:1) and the four
+semantic colours, then the light theme's `--color-gold-dim` (`#b8972a`,
+2.48:1 on the page background). A hand correction that nothing re-checks
+drifts the moment a token is changed again, which is why the ratios above now
+come out of a test.
 
 ### 5.4 Headings
 

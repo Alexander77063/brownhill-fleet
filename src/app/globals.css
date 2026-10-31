@@ -60,7 +60,7 @@
 
   --color-gold: #9c7c1c;        /* fill/border only — 3:1 non-text, see 1.4.11 */
   --color-gold-bright: #7d6410; /* darker so gold TEXT/links read on white */
-  --color-gold-dim: #b8972a;
+  --color-gold-dim: #a38525;    /* was #b8972a (2.48:1 on the page bg, failed 1.4.11) */
   --color-gold-text: #7d6410;   /* 4.97:1 on the page bg, 5.61:1 on card white */
 
   --color-cream: #1a2438;    /* primary text */

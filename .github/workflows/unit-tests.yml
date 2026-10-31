@@ -44,6 +44,27 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+      - name: Accessibility gates
+        # The design system claims WCAG 2.1 AA conformance for the colour
+        # tokens and that every control sits inside a <label>, and the
+        # accessibility statement on /accessibility is made on the strength
+        # of exactly these two checks.
+        #
+        # Both were promises in a document. `pnpm test:a11y` pointed at a
+        # test file that did not exist and failed with "No test files found",
+        # so the contrast claim was never checked by anything. The form audit
+        # existed but ran nowhere, so a new unlabelled control would have
+        # landed without anyone noticing.
+        run: |
+          pnpm a11y:forms
+          pnpm test:a11y
+      - name: The contrast gate can fail
+        # A gate that cannot fail is not a gate. This runs the real contrast
+        # test against three deliberately broken stylesheets and requires it
+        # to fail on each — including one where the light theme's block is
+        # gone, which would otherwise leave the gate checking the dark theme
+        # twice and calling it a pass.
+        run: bash hosted/tests/a11y-contrast-negative.sh
       - name: No credential in the tree
         # This repository is PUBLIC, and it has already published two
         # credentials in plain text: the box's database superuser password,
