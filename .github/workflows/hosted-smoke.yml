@@ -62,8 +62,17 @@ jobs:
     # migration replay, the bootstrap-idempotency gate and the application
     # smoke. Each of the last three replays the whole migration history
     # against its own database, and the replay is not fast. 45 minutes was
-    # enough for two of them.
-    timeout-minutes: 60
+    # enough for two of them; there are now four, so the ceiling is 90.
+    #
+    # The number is deliberately generous. This job had never once reached a
+    # runner, so there is no measured duration to budget against — the only
+    # honest guess is the one taken from the same suites run on a developer
+    # machine (the replay alone is over half an hour there, and a CI runner
+    # is faster, but not by an order of magnitude). A ceiling that is too low
+    # costs a whole cycle: the run is killed at 59 minutes and the next one
+    # starts from nothing. A ceiling that is too high costs nothing — the job
+    # ends when it ends.
+    timeout-minutes: 90
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
@@ -160,7 +169,11 @@ jobs:
     # on the self-hosted `pulsar` runner and only when a human asks for it.
     if: github.event_name == 'workflow_dispatch' && inputs.production
     runs-on: [self-hosted, pulsar]
-    timeout-minutes: 45
+    # The same three suites as the job above — the replay, the idempotency
+    # gate and the smoke — minus the compose build, which the box already
+    # has. The replay and the gate are the bulk of it, so the ceiling is
+    # the same reasoning with the build taken off.
+    timeout-minutes: 60
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
