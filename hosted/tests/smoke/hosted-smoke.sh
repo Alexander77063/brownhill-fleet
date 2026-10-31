@@ -80,9 +80,31 @@ check "/login" 200 "the sign-in page"
 # 405, which says nothing about whether the endpoint works.
 check_post "/api/v1/bootstrap" 401 "the first-run bootstrap endpoint"
 
-# The operator status surface. Unauthenticated, it answers 403 — it exists,
-# it is closed to the public.
-check "/admin/status" 403 "the operator status surface"
+# The operator status surface. There are two of them, and they close the box
+# to the public in two different ways:
+#
+#   * the PAGE sits behind the admin layout, which requires the 'ops' role.
+#     A visitor with no session is sent to sign in — 307 to /login, the same
+#     contract as every other protected page in the app. Nothing is served.
+#   * the API refuses outright — 403.
+#
+# The assertion used to expect a 403 from the page. The page has never
+# returned one: the admin layout has required the 'ops' role since the
+# initial import, and requireRole sends a visitor with no session to /login.
+# The test was written expecting a contract the page never had — and it had
+# never run in CI to say so, because the hosted-smoke job has never been
+# green. A test that asserts a contract the code does not have is not
+# coverage; it is a job that cannot pass.
+admin_status=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$NEXT_URL/admin/status")
+admin_target=$(curl -sk -o /dev/null -w '%{redirect_url}' --max-time 15 "$NEXT_URL/admin/status")
+if [[ "$admin_status" == "307" && "$admin_target" == *"/login" ]]; then
+  echo "  ok: the operator status page sends a visitor to sign in ($admin_status → $admin_target)"
+else
+  echo "  FAIL: the operator status page answered $admin_status → '$admin_target', expected 307 to /login"
+  fail=1
+fi
+
+check "/api/admin/status" 403 "the operator status API"
 
 # ── the data plane ──────────────────────────────────────────────────────────
 # `/rest/v1` is rewritten to PostgREST. A broken rewrite — the wrong baked
