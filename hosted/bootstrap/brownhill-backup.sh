@@ -21,10 +21,19 @@
 # loud, non-zero exit, not a line in a log nobody reads.
 set -euo pipefail
 
-DUMP_DIR=/var/backups/brownhill
-ALERT_DIR=/run/brownhill/alerts
+# The directories are overridable so the job can be exercised without a box.
+# The defaults are the real ones.
+DUMP_DIR="${DUMP_DIR:-/var/backups/brownhill}"
+ALERT_DIR="${ALERT_DIR:-/run/brownhill/alerts}"
 STALE_MARKER="$ALERT_DIR/backup_sync_stale"
 SYNC_STATE="$DUMP_DIR/_sync.json"
+
+# The resolved remote prefix, filled in by sync_off_host. It is a global
+# because the caller writes it into _sync.json — and it has to be the value
+# the sync ACTUALLY used, not the environment variable read again, or a box
+# that is still on the pre-correction name records its target as "unset"
+# while copying to a real path.
+SYNC_FQDN=""
 
 # ── how to reach the cluster ────────────────────────────────────────────────
 # The unit runs postgres with its socket in /var/run/postgresql on port 55432.
@@ -72,42 +81,6 @@ clear_stale() {
   rm -f "$STALE_MARKER" 2>/dev/null || true
 }
 
-# ── the local dump ──────────────────────────────────────────────────────────
-mkdir -p "$DUMP_DIR/wal"
-pick_connection
-
-TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-DUMP="$DUMP_DIR/$TS.dump"
-/opt/brownhill/pgsql/bin/pg_dump --format=custom --jobs=4 --file="$DUMP"
-/opt/brownhill/pgsql/bin/psql -c 'SELECT pg_switch_wal();'
-# archive_command in postgresql.conf copies WALs into $DUMP_DIR/wal/.
-
-# Retain a week of dumps.
-/usr/bin/find "$DUMP_DIR" -maxdepth 1 -name '*.dump' -mtime +7 -delete
-
-# ── the index the restore console reads ─────────────────────────────────────
-# Newest first. The id is the dump's filename without the .dump suffix, and it
-# is the exact argument restore.sh expects — so the two cannot drift.
-#
-# The timestamp is written in UTC with an explicit Z. It used to be written in
-# the box's local time with no zone marker, which the status page then parsed
-# as local time on a possibly different box; on a UTC server the two agreed
-# by accident, and anywhere else they did not.
-{
-  printf '{"backups":['
-  first=1
-  while IFS= read -r f; do
-    [[ $first -eq 1 ]] || printf ','
-    first=0
-    printf '{"id":"%s","ts":"%s","path":"%s","size":%s}' \
-      "$(basename "$f" .dump)" \
-      "$(date -u -d "@$(stat -c %Y "$f")" +%Y-%m-%dT%H:%M:%SZ)" \
-      "$f" \
-      "$(stat -c %s "$f")"
-  done < <(find "$DUMP_DIR" -maxdepth 1 -name '*.dump' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
-  printf ']}\n'
-} > "$DUMP_DIR/_index.json"
-
 # ── the off-host copy ───────────────────────────────────────────────────────
 # Credentials come from /etc/brownhill/secrets/backup.env, which is this unit's
 # EnvironmentFile. The b2 CLI reads B2_APPLICATION_KEY_ID / B2_APPLICATION_KEY;
@@ -141,23 +114,101 @@ sync_off_host() {
     return 1
   fi
 
+  # The remote prefix: the deployment's hostname, which is also the path the
+  # dump is filed under inside the bucket.
+  #
+  # The name of this variable was corrected across the whole repository — the
+  # product's name is Brownhill, so the prefix is BROWNHILL_ and not the
+  # one-letter-short spelling the files used to carry. A box provisioned
+  # before that correction still has the old name in
+  # /etc/brownhill/secrets/backup.env, because the installer only writes that
+  # file when it is absent. So the old name is read as a fallback and the
+  # operator is told to rename it; `grep -rn 'legacy-env-var:'` finds every
+  # place that fallback lives.
+  local fqdn="${BROWNHILL_FQDN:-}"
+  if [[ -z "$fqdn" ]]; then
+    fqdn="${BROWNILL_FQDN:-}"   # legacy-env-var: the pre-correction name, still honoured
+    if [[ -n "$fqdn" ]]; then
+      echo "WARNING: /etc/brownhill/secrets/backup.env still uses the old name for" >&2
+      echo "         the FQDN variable. Rename it to BROWNHILL_FQDN — the old name" >&2
+      echo "         still works, but it will be removed." >&2
+    fi
+  fi
+  if [[ -z "$fqdn" ]]; then
+    echo "WARNING: BROWNHILL_FQDN is not set, so the dump was NOT copied off" >&2
+    echo "         this box. Set it in /etc/brownhill/secrets/backup.env to the" >&2
+    echo "         deployment's hostname, e.g. brownhill.example.co.uk." >&2
+    return 1
+  fi
+  SYNC_FQDN="$fqdn"
+
   export B2_APPLICATION_KEY_ID="$key_id"
   export B2_APPLICATION_KEY="$key"
-  b2 sync "$DUMP_DIR" "b2://$bucket/brownhill/${BROWNILL_FQDN:-unset}/"
+  b2 sync "$DUMP_DIR" "b2://$bucket/brownhill/$fqdn/"
 }
 
-if sync_off_host; then
-  echo "off-host copy complete"
-  clear_stale
-  printf '{"ok":true,"at":"%s","target":"b2://%s/brownhill/%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "${BACKBLAZE_B2_BUCKET:-}" \
-    "${BROWNILL_FQDN:-unset}" > "$SYNC_STATE"
-  exit 0
-fi
+# ── the nightly job ─────────────────────────────────────────────────────────
+# Everything above this line is a definition; everything inside this function
+# is the job. It is wrapped in a function so that the off-host copy can be
+# exercised on its own: the test sources this file and calls sync_off_host
+# directly, and a file that is read must not take a dump as a side effect.
+run_backup() {
+  # ── the local dump ────────────────────────────────────────────────────────
+  mkdir -p "$DUMP_DIR/wal"
+  pick_connection
 
-echo "off-host copy did not complete — the local dump is retained at $DUMP" >&2
-raise_stale
-printf '{"ok":false,"at":"%s","detail":"the off-host copy did not complete"}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SYNC_STATE"
-exit 1
+  TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+  DUMP="$DUMP_DIR/$TS.dump"
+  /opt/brownhill/pgsql/bin/pg_dump --format=custom --jobs=4 --file="$DUMP"
+  /opt/brownhill/pgsql/bin/psql -c 'SELECT pg_switch_wal();'
+  # archive_command in postgresql.conf copies WALs into $DUMP_DIR/wal/.
+
+  # Retain a week of dumps.
+  /usr/bin/find "$DUMP_DIR" -maxdepth 1 -name '*.dump' -mtime +7 -delete
+
+  # ── the index the restore console reads ───────────────────────────────────
+  # Newest first. The id is the dump's filename without the .dump suffix, and
+  # it is the exact argument restore.sh expects — so the two cannot drift.
+  #
+  # The timestamp is written in UTC with an explicit Z. It used to be written
+  # in the box's local time with no zone marker, which the status page then
+  # parsed as local time on a possibly different box; on a UTC server the two
+  # agreed by accident, and anywhere else they did not.
+  {
+    printf '{"backups":['
+    first=1
+    while IFS= read -r f; do
+      [[ $first -eq 1 ]] || printf ','
+      first=0
+      printf '{"id":"%s","ts":"%s","path":"%s","size":%s}' \
+        "$(basename "$f" .dump)" \
+        "$(date -u -d "@$(stat -c %Y "$f")" +%Y-%m-%dT%H:%M:%SZ)" \
+        "$f" \
+        "$(stat -c %s "$f")"
+    done < <(find "$DUMP_DIR" -maxdepth 1 -name '*.dump' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+    printf ']}\n'
+  } > "$DUMP_DIR/_index.json"
+
+  # ── the copy that leaves the box ──────────────────────────────────────────
+  if sync_off_host; then
+    echo "off-host copy complete"
+    clear_stale
+    printf '{"ok":true,"at":"%s","target":"b2://%s/brownhill/%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "${BACKBLAZE_B2_BUCKET:-}" \
+      "${SYNC_FQDN:-unset}" > "$SYNC_STATE"
+    exit 0
+  fi
+
+  echo "off-host copy did not complete — the local dump is retained at $DUMP" >&2
+  raise_stale
+  printf '{"ok":false,"at":"%s","detail":"the off-host copy did not complete"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SYNC_STATE"
+  exit 1
+}
+
+# The job runs when this file is EXECUTED, and not when it is sourced. The
+# systemd unit executes it; the test sources it.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  run_backup
+fi

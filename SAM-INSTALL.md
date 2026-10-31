@@ -53,7 +53,7 @@ sudo tee /etc/brownhill/secrets/backup.env > /dev/null <<'EOF'
 BACKBLAZE_B2_KEY_ID=<your-b2-key-id>
 BACKBLAZE_B2_APPLICATION_KEY=<your-b2-application-key>
 BACKBLAZE_B2_BUCKET=brownhill-fleet-prod
-BROWNILL_FQDN=brownhill.example.co.uk
+BROWNHILL_FQDN=brownhill.example.co.uk
 EOF
 sudo chmod 0640 /etc/brownhill/secrets/backup.env
 ```

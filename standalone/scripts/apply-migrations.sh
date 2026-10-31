@@ -12,36 +12,58 @@
 # identically for a local psql and for a psql running in a container, so the
 # same script serves the local replay, the CI container and the production host.
 #
-# The shim and the migrations are both written to be re-runnable — `if not
-# exists` on creates, `drop policy if exists` before `create policy` — so
-# running this twice against the same database is safe and is exactly what a
-# redeploy does.
+# The shim and the migrations are applied through the migration ledger
+# (standalone/scripts/schema-ledger.sh), so running this twice against the same
+# database applies nothing the second time. Before the ledger, running it
+# twice died on migration 0001 — `create type user_role` has no guard — which
+# is exactly what the hosted bootstrap hit on every boot.
+#
+# Each migration is applied in ONE transaction, together with the ledger row
+# that records it. The migration set is written for that: migration 0059 adds
+# an enum value and deliberately does not use it in the same file, because
+# PostgreSQL does not allow a value to be used in the transaction that adds
+# it.
+#
+# Options:
+#   --baseline-through=FILE   adopt a database that was provisioned before the
+#                             ledger existed. FILE and every migration before it
+#                             are recorded as applied; the claim is checked
+#                             against the database first, and refused if it is
+#                             not true.
+#   --skip=FILE[,FILE...]     do not apply these migrations. They are recorded
+#                             as skipped so they are not retried on every run.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-  echo "usage: apply-migrations.sh <psql command...>" >&2
+  echo "usage: apply-migrations.sh <psql command...> [--baseline-through=FILE] [--skip=FILE]" >&2
   exit 64
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PSQL=("$@")
 
-run() {
-  # ON_ERROR_STOP makes psql exit non-zero on the first failing statement, so
-  # `set -e` stops the run at the migration that broke rather than carrying on
-  # and applying later ones against a half-built schema.
-  "${PSQL[@]}" -v ON_ERROR_STOP=1 -q
-}
-
-echo "==> applying the compatibility shim"
-run < "$ROOT/standalone/sql/0000_supabase_shim.sql"
-
-count=0
-for f in "$ROOT"/supabase/migrations/*.sql; do
-  bn="$(basename "$f")"
-  printf '    %s\n' "$bn"
-  run < "$f"
-  count=$((count + 1))
+# The psql command is the arguments that are not options. Options are
+# recognised by their `--` prefix, which no psql argument uses.
+PSQL=()
+OPTS=()
+for a in "$@"; do
+  case "$a" in
+    --*) OPTS+=("$a") ;;
+    *) PSQL+=("$a") ;;
+  esac
 done
 
-echo "==> applied $count migrations"
+if [[ ${#PSQL[@]} -eq 0 ]]; then
+  echo "usage: apply-migrations.sh <psql command...> [--baseline-through=FILE] [--skip=FILE]" >&2
+  exit 64
+fi
+
+LEDGER_PSQL=("${PSQL[@]}")
+
+# shellcheck source=standalone/scripts/schema-ledger.sh
+source "$ROOT/standalone/scripts/schema-ledger.sh"
+
+ledger_parse_args "${OPTS[@]:-}"
+
+ledger_apply_all \
+  "$ROOT/standalone/sql/0000_supabase_shim.sql" \
+  "$ROOT/supabase/migrations"

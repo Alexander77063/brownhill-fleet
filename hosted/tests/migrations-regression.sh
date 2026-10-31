@@ -22,6 +22,8 @@
 
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 # Git Bash on Windows rewrites a container path like /tmp/migrations into a
 # Windows path before it reaches docker, so `mkdir -p /tmp/migrations` inside
 # the container becomes `mkdir -p C:/Users/.../Temp/migrations` and fails with
@@ -112,6 +114,61 @@ else
   done
 
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -d backfill -f /tmp/backfill-assert.sql
+fi
+
+# ── Phase 3: the migration runner is idempotent ──────────────────────────────
+# The runner keeps a ledger of what it has applied — public.schema_migrations —
+# so running it a second time applies nothing. That is the property the hosted
+# bootstrap depends on: it is a systemd oneshot, it runs on every boot, and
+# before the ledger it died on migration 0001, which creates the `user_role`
+# enum without a guard.
+#
+# A second database in the same cluster, because the ledger has to be built by
+# the runner itself. The database in phase 1 was migrated by hand, so it has
+# the schema but no ledger — which is exactly the state the baseline option
+# exists for, and hosted/tests/hosted-bootstrap-idempotency.sh covers that.
+echo "== phase 3: the migration runner applies everything once, then nothing =="
+
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -c 'create database runner'
+
+runner_psql=(docker exec -i -u postgres "$cid" psql -U postgres -d runner)
+
+set +e
+first_run=$(bash "$ROOT/standalone/scripts/apply-migrations.sh" "${runner_psql[@]}" 2>&1)
+first_status=$?
+set -e
+if [ "$first_status" -ne 0 ]; then
+  echo "FAIL: the first run of the migration runner failed"
+  echo "$first_run" | tail -20
+  exit 1
+fi
+echo "ok: the first run applied the whole history"
+
+set +e
+second_run=$(bash "$ROOT/standalone/scripts/apply-migrations.sh" "${runner_psql[@]}" 2>&1)
+second_status=$?
+set -e
+if [ "$second_status" -ne 0 ]; then
+  echo "FAIL: the second run of the migration runner failed"
+  echo "$second_run" | tail -20
+  exit 1
+fi
+if echo "$second_run" | grep -q 'applied 0 migrations'; then
+  echo "ok: the second run applied 0 migrations"
+else
+  echo "FAIL: the second run applied something it should not have"
+  echo "$second_run" | tail -20
+  exit 1
+fi
+
+ledger_rows=$(docker exec -u postgres "$cid" psql -U postgres -d runner -tAc \
+  "select count(*) from public.schema_migrations")
+expected_rows=$(( $(ls -1 "$ROOT"/supabase/migrations/*.sql | wc -l) + 1 ))
+if [ "$ledger_rows" = "$expected_rows" ]; then
+  echo "ok: the ledger holds $ledger_rows rows"
+else
+  echo "FAIL: the ledger holds $ledger_rows rows, expected $expected_rows"
+  exit 1
 fi
 
 echo OK

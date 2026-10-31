@@ -470,6 +470,7 @@ exception**: it is free text with no CHECK, and the application writes
 | Table | What it is |
 | --- | --- |
 | `app_state` | Key/value operational flags: `bootstrap_pending`, `app_draining`. Read by the Node server through `localDb()` (a direct connection as the table owner) and by the Edge middleware over HTTP from PostgREST — see §7.1 |
+| `schema_migrations` | The migration ledger: which migrations this database has applied — see §8.1 |
 | `numbering_sequences` | Per-tenant document numbering (agreement numbers, invoice numbers) |
 | `audit_log` | Append-only. Migration 0018 makes it immutable |
 | `void_events` | Void markers on financial records |
@@ -525,10 +526,99 @@ install has applied, by definition.
   data is not.
 - The hosted deployment applies `standalone/sql/0000_supabase_shim.sql` first,
   then the migrations.
+- **What has been applied is recorded**, in `public.schema_migrations` — see
+  §8.1. The bootstrap is a systemd oneshot that runs on every boot, so it has
+  to be a no-op against a database that is already provisioned, and it can
+  only be a no-op if it knows what it already did.
 - `supabase/seed.sql` provides the development seed: one tenant, four
   vehicles, four drivers, four agreements — two of them rent-to-buy, one of
   those live and one a draft — a rent schedule and invoices for thirty weeks
   of the live deal, the equity ledger, and the accounting chart of accounts.
+
+### 8.1 The migration ledger — `public.schema_migrations`
+
+| Column | Type | What it is |
+| --- | --- | --- |
+| `filename` | `text` primary key | The migration file, e.g. `0080_app_state.sql` |
+| `checksum` | `text` | sha256 of the file as applied |
+| `applied_at` | `timestamptz` | When it was applied |
+| `source` | `text` | `applied` (this script ran it), `baseline` (the operator asserted it was already there), or `skipped` (deliberately not applied) |
+
+RLS is on and the request roles are revoked, so nothing that reaches
+PostgREST as `anon` or `authenticated` can read it. `service_role` bypasses
+RLS by design and can; that role is the server's own.
+
+**Why it exists.** The bootstrap is a systemd oneshot with `RemainAfterExit`,
+so it runs on every boot. Until the ledger, it applied every migration from
+the top on every run, and migration `0001` creates twenty-three enum types
+with no guard — so the second run died on its first statement with
+`ERROR: type "user_role" already exists` and the unit exited 3. The script's
+header claimed it was idempotent. It was not.
+
+**What it guarantees.**
+
+- A migration is applied **at most once**. A re-run applies nothing.
+- The migration and the ledger row that records it are applied in **one
+  transaction**, so the two can never disagree — not even if the process is
+  killed between them.
+- A migration whose **content changed** after it was applied is refused, and
+  the refusal names the file. The history is content-versioned, so a changed
+  file means someone rewrote history.
+- A database provisioned **before the ledger existed** can be adopted
+  explicitly (`--baseline-through=<file>`), and a baseline that over-claims
+  what is actually in the database is **refused** — the script checks that
+  the tables, enum types and functions the claimed migrations create are
+  really there.
+- A **refused** baseline changes nothing. The claim is checked before the
+  shim is applied and before any ledger row is written, so the refusal is
+  the only trace and the database is exactly as it was found.
+
+The ledger is the same idea Flyway, Liquibase and the Supabase CLI use, for
+the same reason: a forward-only history needs to know where "forward"
+currently is.
+
+**Operating it.** Three options, each with an environment-variable equivalent
+so a systemd drop-in can set it:
+
+| Option | Environment variable | What it does |
+| --- | --- | --- |
+| `--status` | — | Report what the ledger sees, and the cut to baseline through. Does not touch the application's schema. |
+| `--baseline-through=FILE` | `BROWNHILL_BASELINE_THROUGH` | Adopt a database provisioned before the ledger existed. FILE and every migration before it are recorded as applied. Checked against the database, and refused if the claim is false. |
+| `--skip=FILE[,FILE...]` | `BROWNHILL_SKIP_MIGRATIONS` | Do not apply these migrations. Recorded as `skipped`, so they are not retried. |
+
+`--baseline-through=FILE` is inclusive: it claims FILE **and** everything
+before it, so the file an operator names is the last one already applied.
+That is what makes the whole-history case expressible — a database that
+already has everything can be adopted by naming its last migration, with
+nothing applied again.
+
+**How the claim is checked.** The ledger fingerprints each migration: the set
+of tables, enum types and functions it creates. The baseline is accepted only
+if the database really has those objects. Three details make that check
+honest rather than nominal, and each of them was a bug first:
+
+- The fingerprint sees **all three kinds** of object. It used to see tables
+  only — three greps shared one stdin, so the first consumed the stream and
+  the others matched nothing — which meant a baseline claiming a migration
+  that creates only enum types found nothing to check and was accepted
+  against an empty database.
+- A function's **name ends at its parameter list**. Read off the token whole,
+  `fn_x(p_vehicle uuid)` became `fn_xp_vehicle`, which matches no function in
+  the database, and the baseline was refused against a database that has it.
+- A migration can **rename** what an earlier one created — `0069` renames
+  `accounting.mtd_credentials` to `accounting.firs_credentials` — so the
+  object is in the database under a name the fingerprint never saw. The
+  check accepts it under **either** name.
+
+`hosted/tests/schema-ledger-fingerprint.sh` is the gate for all three.
+
+The variable names are spelled one way throughout the repository, and
+`hosted/tests/env-var-names.sh` fails the build if a second spelling appears.
+A variable that is set under one spelling and read under another is not a
+failure — it is silence, and the script carries on with a fallback that
+happens to work on the developer's machine and not on the box. The full
+procedure for adopting a live database is in
+[the deploy runbook](../../runbook/brownhill-namecheap-deploy-2026-10-07.md).
 
 ## 9. The investor's rent-to-buy book — verified
 

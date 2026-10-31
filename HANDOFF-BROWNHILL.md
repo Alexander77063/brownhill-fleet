@@ -41,7 +41,7 @@ These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre
 | `jwt.env` | `JWT_SHARED_SECRET` | HS256 secret that signs the issued access/refresh JWTs **and** verifies them at PostgREST. Same value on both sides by design. |
 | `bootstrap.env` | `BOOTSTRAP_TOKEN` | HMAC key for the `/api/v1/bootstrap` first-run endpoint. Only used **once**, on the day the owner account is created. After that the row in `app_state` flips and the token is no longer accepted. |
 | `backup.env` | `BACKBLAZE_B2_KEY_ID`, `BACKBLAZE_B2_APPLICATION_KEY`, `BACKBLAZE_B2_BUCKET` | B2 credential for nightly off-host backups. |
-| `backup.env` (continued) | `BROWNILL_FQDN` | The FQDN above; used as the B2 path prefix. |
+| `backup.env` (continued) | `BROWNHILL_FQDN` | The FQDN above; used as the B2 path prefix. |
 
 `hosted/bootstrap/operator-secrets.example` is a template you can copy and fill in. Once filled, drop it onto the box at `/etc/brownhill/secrets/` (renamed to remove `.example`) before `install.sh`. The default behaviour is to **generate** secrets at install time if your file is absent.
 
@@ -112,7 +112,8 @@ The `brownhill-bootstrap.service` one-shot unit runs `/usr/local/bin/brownhill-b
 1. Waits for Postgres to answer a real query.
 2. Applies `standalone/sql/0000_supabase_shim.sql` (idempotent).
 3. Applies every migration under `supabase/migrations/*.sql` in order, each in its own transaction.
-4. Writes `app_state.bootstrap_pending='1'`.
+4. Records what it applied in `public.schema_migrations` — the ledger.
+5. Writes `app_state.bootstrap_pending='1'` **only if that row is not already there**.
 
 This runs on the systemd `After=postgresql.service` ordering. To run it now:
 
@@ -121,7 +122,44 @@ sudo systemctl start brownhill-bootstrap.service
 sudo journalctl -u brownhill-bootstrap.service --since '1 minute ago' --no-pager
 ```
 
-The last log line should be `INSERT INTO app_state … ` and `exit 0`. You can also re-run it manually — it is idempotent.
+The last log line should be `INSERT INTO app_state … ` and `exit 0`.
+
+**You can re-run it as often as you like.** It is a no-op against a database
+that is already provisioned: the ledger says what has been applied, and only
+what has not been applied is applied. Before the ledger existed, a second run
+died on migration `0001` — `create type user_role` has no guard — and the unit
+exited 3 on every boot after the first. That is fixed, and
+`hosted/tests/hosted-bootstrap-idempotency.sh` is the gate that proves it.
+
+Two things worth knowing:
+
+- **The first-run flag is a one-way door.** The bootstrap endpoint flips
+  `app_state.bootstrap_pending` to `'0'` when you complete first-run setup
+  (step H), and the bootstrap script does not set it back. Do not be surprised
+  that `bootstrap_pending` is `'0'` on a system that has been set up — that is
+  correct, and the first-run endpoint stays closed.
+- **A database that was provisioned before the ledger existed** has to be
+  adopted once, explicitly:
+
+  ```bash
+  sudo /usr/local/bin/brownhill-bootstrap.sh --baseline-through=<the last migration that HAS been applied>
+  ```
+
+  The option is inclusive: it claims the file you name **and** every
+  migration before it. The script checks the claim against the database — the
+  tables, enum types and functions those migrations create must actually be
+  there — and refuses if they are not. The check happens **before anything
+  is written**, so a refused baseline leaves the database exactly as it was:
+  it is safe to try a cut, read the refusal, and try another.
+  `brownhill-bootstrap.sh --status` reports every migration's state and the
+  file to use; it does not touch the application's schema.
+
+  The adoption is a **one-off**, not a setting. Once the ledger holds the
+  history, the cut is no longer needed, and leaving it in place would
+  re-assert the claim on every boot. The ledger records a baseline as
+  `source='baseline'`, so the record says plainly that it was the operator's
+  word rather than the script's work. The full procedure is in
+  [`docs/runbook/brownhill-namecheap-deploy-2026-10-07.md`](docs/runbook/brownhill-namecheap-deploy-2026-10-07.md).
 
 ### Step F — Issue the Let's Encrypt cert and substitute the FQDN
 

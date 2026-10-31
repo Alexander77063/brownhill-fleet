@@ -80,7 +80,7 @@ the public one so a deployment without it still passes its preflight.
 | Area | Detail |
 | --- | --- |
 | Install | `hosted/bootstrap/install.sh` — idempotent, systemd units, secrets, PostgREST config |
-| Schema bootstrap | `brownhill-bootstrap.service` — shim + every migration, one transaction each |
+| Schema bootstrap | `brownhill-bootstrap.service` — shim + every migration, one transaction each, recorded in the ledger (`public.schema_migrations`) so a re-run applies nothing |
 | TLS | `hosted/bootstrap/initial-cert.sh` — Let's Encrypt via certbot, then the FQDN substitution |
 | Backups | Nightly 02:00 to local + Backblaze B2; weekly restore-verify on Sunday 04:00 |
 | Restore | `/admin/restore` — browse dumps, confirm with `RESTORE`, drain, replay, un-drain |

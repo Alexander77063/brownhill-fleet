@@ -58,7 +58,7 @@ services:
       PGPORT: "5432"
       PGUSER: postgres
       PGDATABASE: postgres
-      BROWNILL_REPO: /opt/brownhill
+      BROWNHILL_REPO: /opt/brownhill
     entrypoint: ["/bin/sh", "-c", "bash /opt/brownhill/hosted/bootstrap/brownhill-bootstrap.sh"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -85,7 +85,7 @@ services:
       # two must agree or PostgREST rejects every session the app mints.
       JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-ci-bootstrap-token}
-      BROWNILL_FQDN: brownhill.localhost
+      BROWNHILL_FQDN: brownhill.localhost
     # Published so the app is reachable from the host: the hosted smoke test
     # curls http://127.0.0.1:55431, and a person driving the stack by hand
     # needs a URL too. Without this the smoke test skipped itself, silently,

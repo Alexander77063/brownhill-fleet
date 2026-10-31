@@ -212,7 +212,8 @@ failure. Everything binds to loopback.
 | `scripts/fetch-runtime.ps1` | Downloads the pinned third-party binaries |
 | `sql/0000_supabase_shim.sql` | Supplies what the migrations assume Supabase provides: the `anon`/`authenticated`/`service_role` roles, the `auth` schema (`users`, `uid()`, `role()`, `pre_request()`), the `storage` schema, and `auth.local_credentials` for local passwords. Runs once, before `0001`. |
 | `sql/portable-rls-proof.sql` | The fourteen assertions above. |
-| `scripts/apply-migrations.sh` | Applies shim + every migration in order, each in its own transaction, halting at the first failure. This is the migration runner the installer uses. |
+| `scripts/apply-migrations.sh` | Applies shim + every migration in order, each in its own transaction, halting at the first failure. This is the migration runner the installer uses. It keeps a ledger in `public.schema_migrations`, so running it again against the same database applies nothing — see `scripts/schema-ledger.sh`. |
+| `scripts/schema-ledger.sh` | The migration ledger: what has been applied, the checksum of each migration as applied, and the `--baseline-through` option that adopts a database provisioned before the ledger existed. |
 | `scripts/verify-portability.sh` | One-command end-to-end proof. |
 | `scripts/reset-test-db.sh` | Drops the schemas so a run starts from genuinely empty. |
 

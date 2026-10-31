@@ -4,9 +4,10 @@ The ten documents every Brownhill Fleet project carries. This file is the
 index: it says what each document is for, when it was last checked against
 the code, and where its gaps are.
 
-**Last audited against the code: 2026-10-30**, on `feat/rtb-calculator`
+**Last audited against the code: 2026-10-31**, on `feat/rtb-calculator`
 (fork `Alexander77063/brownhill-fleet`, base commit `dc6e043`). The migration
-replay below was run against a scratch Postgres on the same date.
+replay, the bootstrap idempotency gate and the environment-variable gate
+below were all run against a scratch Postgres on the same date.
 
 ## The set
 
@@ -37,6 +38,9 @@ that proves it. Each row below was run, not asserted.
 | The rent-to-buy backfill (0077) runs correctly over rows that already exist | The second phase of `hosted/tests/migrations-regression.sh` | **Enforced by CI** — the `hosted-smoke` job runs it on every PR that touches `supabase/migrations/**`, `standalone/sql/**`, `hosted/**` or `package.json` |
 | The four operator-only tables are closed to drivers and open to ops | Assertions 10–12 of `standalone/sql/portable-rls-proof.sql` — a driver reads their own damage report and none of the office's records; ops in that tenant still sees all four kinds of row; ops in another tenant sees none of them | **Enforced by CI** — the same job, on the same trigger paths |
 | A spreadsheet is never handed a cell it would run | `tests/unit/csv.test.ts` and `tests/unit/rtb-format.test.ts` — the shared CSV writer refuses a cell starting `=`, `+`, `-`, `@`, tab or CR unless the cell is genuinely a number, and the rent-to-buy report's export is checked through it | **Verified 2026-10-30** — 43 unit tests green |
+| The hosted bootstrap is a genuine no-op on a re-run | `hosted/tests/hosted-bootstrap-idempotency.sh` — runs the **real** `hosted/bootstrap/brownhill-bootstrap.sh` inside a real `postgres:16` against the real migration files. A first run applies the shim and all 81 migrations and records them; a second run applies nothing, exits 0 and leaves the schema fingerprint unchanged; a migration whose content changed after it was applied is **refused by checksum**, naming the file; a database provisioned before the ledger existed can be adopted, and a baseline that over-claims is refused — and a refused baseline leaves the database exactly as it was, because the claim is checked before anything is written. The gate fails against the pre-ledger script (`type "user_role" already exists`) — it was written before the fix and watched fail | **Enforced by CI** — 30 assertions, green 2026-10-31 |
+| The deployment's settings are spelled one way, and are actually wired | `hosted/tests/env-var-names.sh` — asserts one spelling for every `BROWNHILL_*` variable, that everything the code **reads** is provided by something, that everything **provided** is read by something, and that the compose stack and the bootstrap script agree on the name of the repository override. A variable that is set under one spelling and read under another is not a failure — it is silence, and the script carries on with a fallback that works on the developer's machine and not on the box | **Enforced by CI** — 5 assertions, green 2026-10-31 |
+| The ledger's fingerprint sees every kind of object a migration creates, and names them the way the database does | `hosted/tests/schema-ledger-fingerprint.sh` — the fingerprint is what makes a baseline **checkable** rather than merely asserted, so it has to see tables, enum types *and* functions. It used to see tables only: three greps shared one stdin, so the first consumed the whole stream and the other two matched nothing. The consequence was that a baseline claiming a migration creating only enums was **accepted** against an empty database — and the ledger then recorded it as applied, leaving the schema silently broken while the ledger said it was fine. Two more defects had the same shape: a function's name was read with its parameter list glued on (`fn_xp_vehicle` — a function that does not exist), and a table renamed by a later migration (`mtd_credentials` → `firs_credentials`) was reported missing against a database that has it. The gate now pins all three | **Enforced by CI** — 23 assertions, green 2026-10-31 |
 
 ## Why this repo has no `docs/product/` upstream
 
@@ -75,7 +79,7 @@ These are the honest holes. Each has a named gate rather than an omission.
 | Monetisation has no Brownhill-specific numbers | Brownhill's actual cost to serve (hosting, SMS, DVLA, telematics, funder finance) and its actual revenue per agreement | Business |
 | Acquisition has no named first hundred | Brown's list of existing customers and the channel that reaches them | Business |
 | Growth has no retention data | The product has not run for a reporting period yet | — |
-| The live deploy has not been migrated to this branch | The branch's migrations apply from zero and the rent-to-buy backfill is covered by the regression harness (both verified); what is left is running them against the live database itself | Engineering |
+| The live deploy has not been adopted into the migration ledger | The procedure is written down — see "Adopting this box into the migration ledger" in [the deploy runbook](../runbook/brownhill-namecheap-deploy-2026-10-07.md): `--status` to find the cut, `--baseline-through=` to adopt the database, `--skip=` for the migrations the box deliberately left out. It has not been run against the live database | Engineering |
 | The report's figures have never been reconciled against a live deal | Stage 2 of the [launch plan](./08-launch-plan.md) — price one real agreement on the calculator, write it, and assert the report shows the same monthly payment, the same buyout balance, the same APR and the same yield | Engineering |
 
 ## How to keep this honest

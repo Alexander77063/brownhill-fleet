@@ -174,10 +174,25 @@ if [[ ! -f /etc/brownhill/secrets/backup.env ]]; then
     "BACKBLAZE_B2_KEY_ID=REPLACE_WITH_B2_KEY_ID" \
     "BACKBLAZE_B2_APPLICATION_KEY=REPLACE_WITH_B2_APPLICATION_KEY" \
     "BACKBLAZE_B2_BUCKET=brownhill-fleet-prod" \
-    "BROWNILL_FQDN=brownhill.example.co.uk"
+    "BROWNHILL_FQDN=brownhill.example.co.uk"
   echo "WARNING: /etc/brownhill/secrets/backup.env was created with placeholder" >&2
   echo "         values. The nightly dump will stay on the box until you fill" >&2
   echo "         in the Backblaze B2 credentials and restart the timer." >&2
+fi
+
+# A box provisioned before the FQDN variable was renamed still carries the old
+# key in backup.env, and the block above only writes that file when it is
+# absent. Rename the key in place so the operator's value is kept and the box
+# matches the documentation. The backup script still reads the old name as a
+# fallback, so this is a tidy-up rather than a repair — but without it a box
+# that installs once and then only updates the app keeps the old name, and
+# the nightly job warns about it every night.
+legacy_backup_key='BROWNILL_FQDN'   # legacy-env-var: the pre-correction key
+if grep -q "^${legacy_backup_key}=" /etc/brownhill/secrets/backup.env 2>/dev/null; then
+  sed -i "s/^${legacy_backup_key}=/BROWNHILL_FQDN=/" /etc/brownhill/secrets/backup.env
+  chown root:brownhill /etc/brownhill/secrets/backup.env
+  chmod 0640 /etc/brownhill/secrets/backup.env
+  echo "brownhill: renamed the FQDN variable in backup.env to BROWNHILL_FQDN."
 fi
 
 # ── systemd units ────────────────────────────────────────────────────────────
@@ -204,10 +219,26 @@ install -m 0644 hosted/systemd/alert-watch.path                /etc/systemd/syst
 # ── scripts the units execute ────────────────────────────────────────────────
 # The units call these by absolute path from /usr/local/bin. Without them
 # every one of those units fails with "ExecStart= ... No such file".
-install -m 0750 hosted/bootstrap/brownhill-bootstrap.sh      /usr/local/bin/
-install -m 0750 hosted/bootstrap/brownhill-backup.sh         /usr/local/bin/
-install -m 0750 hosted/bootstrap/brownhill-backup-verify.sh  /usr/local/bin/
+#
+# The group is postgres because three of these units run as postgres
+# (brownhill-bootstrap.service, brownhill-backup.service,
+# brownhill-backup-verify.service). They were installed root:root 0750, which
+# postgres cannot execute: the unit failed with "Permission denied" and the
+# schema was never applied by the service that exists to apply it. The
+# operator could still run the script by hand as root, which is why the box
+# has a schema at all — and why the failure was invisible until a reboot.
+install -m 0750 -o root -g postgres hosted/bootstrap/brownhill-bootstrap.sh      /usr/local/bin/
+install -m 0750 -o root -g postgres hosted/bootstrap/brownhill-backup.sh         /usr/local/bin/
+install -m 0750 -o root -g postgres hosted/bootstrap/brownhill-backup-verify.sh  /usr/local/bin/
 install -m 0750 hosted/bootstrap/brownhill-alert-forward.sh  /usr/local/bin/
+
+# The migration ledger: the record of which migrations a database has applied,
+# and the thing that makes the bootstrap safe to run on every boot. The
+# bootstrap script sources it, so it has to be where the script can find it
+# whether the repository is checked out or not. It is not a secret — it is
+# shell and SQL — so it is world-readable.
+install -d -m 0755 /usr/local/lib/brownhill
+install -m 0644 standalone/scripts/schema-ledger.sh /usr/local/lib/brownhill/schema-ledger.sh
 
 # restore.sh is NOT called by a unit — it is spawned by absolute path from the
 # restore console (src/app/admin/restore/route.ts), and exercised by
@@ -219,7 +250,7 @@ install -m 0750 hosted/bootstrap/restore.sh                   /usr/local/bin/
 # The portability suite's gate 16b calls /usr/local/bin/verify-restore.sh.
 # That is the same script as the weekly verify timer — one implementation,
 # installed under both names, so the drill and the timer can never drift.
-install -m 0750 hosted/bootstrap/brownhill-backup-verify.sh  /usr/local/bin/verify-restore.sh
+install -m 0750 -o root -g postgres hosted/bootstrap/brownhill-backup-verify.sh  /usr/local/bin/verify-restore.sh
 
 # The restore console runs restore.sh as root, because the restore stops and
 # starts the application and the data API around itself. This is the only
