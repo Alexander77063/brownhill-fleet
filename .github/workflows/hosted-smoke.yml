@@ -114,6 +114,21 @@ jobs:
         # pre-rename name still working, and a loud refusal when there is no
         # hostname at all.
         run: bash hosted/tests/backup-offhost-target.sh
+      - name: The bootstrap waiter can find the bootstrap
+        # A step that waits for the stack's bootstrap has to be able to FIND
+        # it, and the obvious way to find a container does not work:
+        # `docker compose ps` lists only the project's RUNNING containers, so
+        # a oneshot that has already exited is invisible to it — and a
+        # bootstrap that has exited is exactly what the step is looking for.
+        # The hosted smoke's own wait step did exactly that on 2026-10-31 and
+        # failed a job whose bootstrap had applied all 81 migrations and
+        # exited cleanly.
+        #
+        # This gate builds a real compose project with a real oneshot and
+        # proves the waiter finds it, reports a failure with the service's
+        # own log, and waits for one that is still running. It needs only
+        # docker, so it runs before the build.
+        run: bash hosted/tests/bootstrap-wait.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
@@ -125,26 +140,36 @@ jobs:
         # assertion afterwards is testing yesterday's code. On a fresh CI
         # runner the flag is free; on a developer machine it is the
         # difference between testing the change and testing a memory of it.
-        run: docker compose -f hosted/dev/docker-compose.yml up -d --build --wait
+        #
+        # If the stack does not come up, the bootstrap's own log is printed
+        # here. Compose's message is terse — "service "bootstrap" didn't
+        # complete successfully: exit 3" — and it does not say WHY. The
+        # reason is in the bootstrap's output, and the operator should not
+        # have to go and find it.
+        run: |
+          if ! docker compose -f hosted/dev/docker-compose.yml up -d --build --wait; then
+            echo "the stack did not come up; the bootstrap's own log follows:"
+            docker compose -f hosted/dev/docker-compose.yml logs bootstrap || true
+            exit 1
+          fi
       # The stack provisions itself: the `bootstrap` service runs the real
       # hosted/bootstrap/brownhill-bootstrap.sh, which applies the shim, every
       # migration and the app_state table, and exits non-zero if any of that
       # fails. `next` waits for it, so by the time this step runs the schema
       # is there.
       - name: Wait for the bootstrap to finish
-        run: |
-          for _ in $(seq 1 60); do
-            state=$(docker inspect -f '{{.State.Status}}' "$(docker compose -f hosted/dev/docker-compose.yml ps -q bootstrap)" 2>/dev/null || echo missing)
-            code=$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose -f hosted/dev/docker-compose.yml ps -q bootstrap)" 2>/dev/null || echo 1)
-            if [ "$state" = "exited" ]; then
-              if [ "$code" != "0" ]; then
-                echo "the bootstrap failed (exit $code)"; docker compose -f hosted/dev/docker-compose.yml logs bootstrap; exit 1
-              fi
-              echo "the bootstrap finished cleanly"; exit 0
-            fi
-            sleep 2
-          done
-          echo "the bootstrap did not finish in time"; docker compose -f hosted/dev/docker-compose.yml logs bootstrap; exit 1
+        # Waiting for the bootstrap and LOOKING FOR the bootstrap are not the
+        # same thing. `docker compose ps -q` lists only the project's
+        # RUNNING containers, so a oneshot that has already exited is
+        # invisible to it — and a bootstrap that has exited is exactly what
+        # this step is looking for. This step used to do the lookup itself,
+        # and on 2026-10-31 it failed a job whose bootstrap had in fact
+        # applied all 81 migrations and exited cleanly: the job's log carried
+        # the bootstrap's successful output right beside the failure.
+        #
+        # The script finds the container with `--all` and blocks on its exit
+        # code, so the wait is exactly as long as the bootstrap takes.
+        run: bash hosted/scripts/wait-for-bootstrap.sh --compose-file hosted/dev/docker-compose.yml
       - name: Run the integration suite (DEPLOYMENT_PROFILE=hosted)
         run: DEPLOYMENT_PROFILE=hosted pnpm test
       - name: Hosted portability proof (assertions 0–17)
@@ -189,6 +214,8 @@ jobs:
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
+      - name: The bootstrap waiter can find the bootstrap
+        run: bash hosted/tests/bootstrap-wait.sh
       - name: Hosted portability proof against the live stack
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: Migrations-regression

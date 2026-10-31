@@ -363,7 +363,7 @@ order, so the board's figure and the investor's figure are the same figure.
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
 | Contrast | `pnpm test:a11y` | Colour-token contrast assertions |
 | E2E + axe | `pnpm test:axe` | Playwright, against a running app |
-| Hosted smoke | `hosted/tests/*` | The real deployment, on the self-hosted `pulsar` runner |
+| Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 ### 8.1 What is *not* unit-tested, and why
 

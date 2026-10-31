@@ -118,6 +118,14 @@ bash hosted/tests/migrations-regression.sh
 # oneshot depends on, because it runs on every boot.
 bash hosted/tests/hosted-bootstrap-idempotency.sh
 
+# The CI step that waits for the stack's bootstrap can actually FIND it.
+# `docker compose ps` lists only the project's RUNNING containers, so a
+# oneshot that has already exited is invisible to it — and a bootstrap that
+# has exited is exactly what the step is looking for. The hosted smoke's
+# wait step did exactly that on 2026-10-31 and failed a job whose
+# bootstrap had applied all 81 migrations and exited cleanly.
+bash hosted/tests/bootstrap-wait.sh
+
 # Five-gate acceptance — run before declaring shippable.
 bash hosted/tests/acceptance.sh
 ```

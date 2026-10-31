@@ -29,7 +29,7 @@ acceptance script. Read it through before running anything.
 | `HANDOFF-BROWNHILL.md` | The operator handoff doc — the entry point |
 | `docs/runbook/`, `docs/testing/` | Operational references |
 | `docs/product/` | The product foundation set — PRD, TRD, MVP scope, user flow, design system, schema, monetisation, launch, acquisition, growth. Start at [`docs/product/README.md`](./docs/product/README.md) |
-| `.github/workflows/hosted-smoke.yml` | CI for the hosted stack (runs on the self-hosted `pulsar` runner) |
+| `.github/workflows/hosted-smoke.yml` | CI for the hosted stack (runs on `ubuntu-latest`; the production-shaped job is opt-in, on the self-hosted `pulsar` runner) |
 | `.github/workflows/unit-tests.yml` | CI for typecheck + unit tests (runs on `ubuntu-latest`) |
 
 ## What's NOT in this repo (and why)
