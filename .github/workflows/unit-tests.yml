@@ -2,8 +2,9 @@
 #
 # Fast, runnable-on-anything CI: install deps, typecheck, run vitest.
 # Always green if the repo typechecks and the unit suite passes.
-# The hosted Pulsar / docker-compose smoke is in hosted-smoke.yml and
-# only runs on a self-hosted runner labelled `pulsar`.
+# The hosted stack's smoke is in hosted-smoke.yml, which runs on
+# ubuntu-latest too; its production-shaped job needs the self-hosted
+# `pulsar` runner and is opt-in.
 
 name: unit-tests
 

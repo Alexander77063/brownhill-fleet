@@ -44,12 +44,24 @@ on:
 
 concurrency:
   group: hosted-smoke-${{ github.ref }}
-  cancel-in-progress: false
+  # Cancel the previous run when a new one starts.
+  #
+  # This was `false`, and it cost this repository its hosted smoke entirely.
+  # A run that is queued for a runner that does not exist holds its
+  # concurrency group for as long as it is queued — GitHub cancels such a run
+  # after 24 hours — so every later run for the same pull request waited
+  # behind it, and no run for the pull request ever reached a runner at all.
+  # The unit-tests workflow has always cancelled duplicates for exactly this
+  # reason.
+  cancel-in-progress: true
 
 jobs:
   hosted-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The job replays the whole migration history against its own database,
+    # more than once, and the replay is not fast. 45 minutes was enough when
+    # there was one replay.
+    timeout-minutes: 60
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
@@ -104,7 +116,7 @@ jobs:
     # on the self-hosted `pulsar` runner and only when a human asks for it.
     if: github.event_name == 'workflow_dispatch' && inputs.production
     runs-on: [self-hosted, pulsar]
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
