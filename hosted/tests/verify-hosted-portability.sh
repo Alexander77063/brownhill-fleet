@@ -142,33 +142,80 @@ fi
 # .gitignore swallowed it — so on every machine that mattered the assertion
 # skipped itself. A skipped assertion looks exactly like a passing one.
 #
-# The chain is now really verified: against the test CA on the compose stack,
-# and against the system's own trust store on the deployed box, where the
-# certificate is issued by a public authority for the deployment's hostname.
+# It then failed the hosted-smoke job on 2026-10-31 for the opposite reason:
+# it treated any HTTP status outside {200, 301, 302} as a broken chain, and
+# nginx answers a request for / with an ordinary 307 redirect. The chain had
+# verified; the assertion called it broken anyway. What is being asserted is
+# the HANDSHAKE, so the handshake is what gets asserted.
+#
+# The chain is verified with openssl, not with curl. curl's certificate
+# handling depends on the TLS backend it was built against: the OpenSSL
+# backend honours the CA file it is given, and the Schannel backend that
+# ships with Windows curl loads that file and then refuses the certificate
+# because the test CA publishes no revocation information ("the revocation
+# status is unknown"). The same assertion would then fail on a developer
+# machine and pass on the runner, which says nothing at all about the
+# server. openssl verifies the chain against a named CA and the
+# certificate's identity, and exits non-zero if either fails — the same
+# answer on every platform.
+#
+# The chain is verified against the test CA on the compose stack, and against
+# the system's own trust store on the deployed box, where the certificate is
+# issued by a public authority for the deployment's hostname.
 step "Assertion 14: nginx serves HTTPS with a valid chain"
+
+tls_name=""
+tls_args=()
+
 if ! have_service "$NGX" "$PORT_HTTPS"; then
   skip "14: nginx not reachable on $NGX:$PORT_HTTPS"
+elif ! command -v openssl >/dev/null 2>&1; then
+  # A missing tool is not a passing assertion. openssl is what verifies the
+  # chain against a named CA on every platform, and the dev stack already
+  # needs it to issue the test certificates.
+  bad "14: openssl is not available, so the chain cannot be verified"
 elif is_box; then
   fqdn="${BROWNHILL_FQDN:-}"
   if [[ -z "$fqdn" ]]; then
     bad "14: BROWNHILL_FQDN is not set, so the deployment's certificate cannot be checked"
   else
-    https_ok=$(curl -s --resolve "$fqdn:443:$NGX" -o /dev/null -w '%{http_code}' "https://$fqdn/" 2>"$TMP/curl14.err" || echo 000)
-    case "$https_ok" in
-      200|301|302) ok "14: HTTPS reachable with a chain the system trusts ($https_ok)" ;;
-      *) bad "14: HTTPS did not verify for $fqdn ($https_ok) — $(cat "$TMP/curl14.err")" ;;
-    esac
+    # The box's certificate is issued by a public authority for the
+    # deployment's name, so the question is whether the system's own trust
+    # store accepts it: openssl's default verify paths, with no -CAfile.
+    tls_name="$fqdn"
+    tls_args=(-connect "$NGX:$PORT_HTTPS" -servername "$fqdn"
+              -verify_return_error -verify_hostname "$fqdn" -quiet)
   fi
 else
-  ca="$REPO/hosted/dev/certs/ca.pem"
+  # Overridable so the negative gate can point the proof at a CA that signed
+  # nothing, and prove that this assertion can fail.
+  ca="${BROWNHILL_TEST_CA:-$REPO/hosted/dev/certs/ca.pem}"
   if [[ ! -f "$ca" ]]; then
     bad "14: the test CA is missing ($ca) — the chain cannot be verified"
   else
-    https_ok=$(curl -s --cacert "$ca" -o /dev/null -w '%{http_code}' "https://$NGX:$PORT_HTTPS/" 2>"$TMP/curl14.err" || echo 000)
-    case "$https_ok" in
-      200|301|302) ok "14: HTTPS reachable with a chain that verifies against the test CA ($https_ok)" ;;
-      *) bad "14: HTTPS did not verify ($https_ok) — $(cat "$TMP/curl14.err")" ;;
-    esac
+    # The dev stack's certificate is issued for brownhill.localhost, which is
+    # also the name nginx's server block answers to.
+    tls_name="brownhill.localhost"
+    tls_args=(-connect "$NGX:$PORT_HTTPS" -servername "brownhill.localhost"
+              -CAfile "$ca" -verify_return_error -verify_hostname "brownhill.localhost" -quiet)
+  fi
+fi
+
+if [[ -n "$tls_name" ]]; then
+  # The request goes over the verified channel, so a status line in the
+  # response proves the server answered over a chain that verified. The
+  # status is NOT a whitelist: 307 is a redirect, 404 is a missing page, and
+  # both are the server talking normally.
+  printf 'GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n' "$tls_name" \
+    | openssl s_client "${tls_args[@]}" >"$TMP/http14.out" 2>"$TMP/openssl14.err"
+  tls_rc=${PIPESTATUS[1]}
+  status_line=$(grep -m1 '^HTTP/' "$TMP/http14.out" 2>/dev/null | tr -d '\r')
+  if [[ "$tls_rc" -ne 0 ]]; then
+    bad "14: the chain did not verify for $tls_name (openssl exit $tls_rc) — $(tail -3 "$TMP/openssl14.err" | tr '\n' ' ')"
+  elif [[ -z "$status_line" ]]; then
+    bad "14: the chain verified for $tls_name but the server answered nothing — $(tail -3 "$TMP/openssl14.err" | tr '\n' ' ')"
+  else
+    ok "14: HTTPS answers over a chain that verifies for $tls_name ($status_line)"
   fi
 fi
 

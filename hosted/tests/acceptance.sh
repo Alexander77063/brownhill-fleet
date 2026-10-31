@@ -29,14 +29,22 @@ else echo "Gate 1 FAIL (see /tmp/g1.log)"; fi
 # never pass is not a guard: in a build log a skipped assertion is
 # indistinguishable from a passing one. The guards are what make this gate
 # mean something, so they are part of it rather than a separate line.
+#
+# The negative gate runs last, and it runs the proof AGAIN with a CA that
+# signed nothing, requiring the proof to fail on assertion 14. A
+# verification that cannot fail is not a verification — and this one had
+# started failing the job against a perfectly healthy stack, which is the
+# other way a guard stops meaning anything.
 echo "== Gate 2: the portability proof and its own guards =="
 if bash hosted/tests/portability-guards.sh 2>/tmp/g2a.log \
-   && bash hosted/tests/verify-hosted-portability.sh 2>/tmp/g2.log; then
+   && bash hosted/tests/verify-hosted-portability.sh 2>/tmp/g2.log \
+   && bash hosted/tests/tls-assertion-negative.sh 2>/tmp/g2b.log; then
   echo "Gate 2 OK"; GATES_PASSED=$((GATES_PASSED+1))
 else
-  echo "Gate 2 FAIL (see /tmp/g2a.log and /tmp/g2.log)"
+  echo "Gate 2 FAIL (see /tmp/g2a.log, /tmp/g2.log and /tmp/g2b.log)"
   [[ -f /tmp/g2a.log ]] && sed 's/^/      /' /tmp/g2a.log
   [[ -f /tmp/g2.log ]] && sed 's/^/      /' /tmp/g2.log
+  [[ -f /tmp/g2b.log ]] && sed 's/^/      /' /tmp/g2b.log
 fi
 
 # 3 — migrations-regression.sh green

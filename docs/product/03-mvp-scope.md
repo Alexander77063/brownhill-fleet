@@ -124,7 +124,7 @@ out of rotation.
 return 0:
 
 1. `DEPLOYMENT_PROFILE=hosted pnpm test`
-2. `hosted/tests/portability-guards.sh` and `hosted/tests/verify-hosted-portability.sh` — the proof's own guards first (four of them could never pass, and a skipped assertion looks exactly like a passing one), then assertions 0–17 against the live stack
+2. `hosted/tests/portability-guards.sh`, `hosted/tests/verify-hosted-portability.sh` and `hosted/tests/tls-assertion-negative.sh` — the proof's own guards first (four of them could never pass, and a skipped assertion looks exactly like a passing one), then assertions 0–17 against the live stack, then the **negative case**: the proof run again with a CA that signed nothing, which must fail on assertion 14. A verification that cannot fail is not a verification — and assertion 14 had started failing the hosted-smoke job against a healthy stack, because it judged the TLS chain by an HTTP status whitelist that did not include the 307 nginx answers for `/`
 3. `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
 5. Sunday's `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS

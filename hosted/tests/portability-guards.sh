@@ -234,21 +234,66 @@ fi
 
 echo "== 6: the HTTPS assertion really verifies =="
 
-if grep -q -- '--cacert' "$PROOF"; then
-  ok "the proof verifies against the CA"
-else
-  bad "the proof does not verify against the CA at all"
-fi
+# The chain assertion is scoped out of the whole proof, because `-k` is
+# legitimate elsewhere: assertion 13 is about the endpoint's contract, not
+# about TLS, and says so in its own comment.
+block14="$(awk '/^# 14 /,/^# 15 /' "$PROOF")"
 
-# `-k` means "skip verification", and it is very often bundled with other
-# short flags — `curl -sk` is `-s` and `-k` together. A plain search for the
-# substring "-k" does NOT find it: "-sk" is dash-s-k, and "-k" is not a
-# substring of that. So the short-flag GROUP is what gets matched.
-if grep -- '--cacert' "$PROOF" | grep -qE -- '(^|[[:space:]])-[a-zA-Z]*k([[:space:]]|$)'; then
-  bad "a curl call verifies against the CA and skips verification in the same breath — the CA is decorative"
-  grep -n -- '--cacert' "$PROOF" | sed 's/^/      /'
+# And the comments are stripped out of it, because these checks are about
+# what the proof DOES, not about the history it explains. Assertion 14's
+# comment names the option it used to use, and a gate that matched the prose
+# would be reporting the documentation as the defect.
+code14="$(grep -v '^[[:space:]]*#' <<<"$block14")"
+
+if [[ -z "$block14" ]]; then
+  bad "could not find assertion 14 in the proof"
 else
-  ok "no curl call skips verification beside the CA"
+  # `-verify_return_error` is what turns a failed verification into a
+  # non-zero exit. Without it openssl prints the failure and carries on.
+  if grep -q -- '-verify_return_error' <<<"$code14"; then
+    ok "the chain assertion fails the run when the chain does not verify"
+  else
+    bad "the chain assertion has no way to fail on a bad chain"
+  fi
+
+  # The certificate's identity is checked, not only its chain: a valid
+  # certificate for the wrong name is still the wrong certificate.
+  if grep -q -- '-verify_hostname' <<<"$code14"; then
+    ok "the chain assertion checks the certificate's identity"
+  else
+    bad "the chain assertion does not check the certificate's identity"
+  fi
+
+  # curl's certificate handling depends on the TLS backend it was built
+  # against: the OpenSSL backend honours the CA file it is given, and the
+  # Schannel backend that ships with Windows curl loads that file and then
+  # refuses the certificate because the test CA publishes no revocation
+  # information. An assertion that only passes on the runner says nothing
+  # about the server.
+  if grep -q -- '--cacert' <<<"$code14"; then
+    bad "the chain assertion relies on curl's CA-file option, which only the OpenSSL backend honours"
+  else
+    ok "the chain assertion does not depend on curl's certificate backend"
+  fi
+
+  # The chain is judged by the handshake, not by the HTTP status. The old
+  # version accepted only {200, 301, 302} and so failed the hosted-smoke job
+  # on 2026-10-31 against a healthy stack that answered with a 307.
+  if grep -q -- '%{http_code}' <<<"$code14"; then
+    bad "the chain assertion judges the chain by an HTTP status code"
+  else
+    ok "the chain assertion does not judge the chain by an HTTP status code"
+  fi
+
+  # `-k` means "skip verification", and it is very often bundled with other
+  # short flags — `curl -sk` is `-s` and `-k` together. A plain search for
+  # the substring "-k" does NOT find it: "-sk" is dash-s-k, and "-k" is not
+  # a substring of that. So the short-flag GROUP is what gets matched.
+  if grep -qE -- '(^|[[:space:]])curl[[:space:]].*-[a-zA-Z]*k([[:space:]]|$)' <<<"$code14"; then
+    bad "a curl call in the chain assertion skips verification"
+  else
+    ok "no curl call in the chain assertion skips verification"
+  fi
 fi
 
 echo "== 7: the token minter mints the claims the application mints =="
@@ -307,6 +352,26 @@ if grep -rn 'BROWNHILL_SKIP_STANDALONE_REPLAY' "$REPO/.github/workflows/" >/dev/
   grep -rn 'BROWNHILL_SKIP_STANDALONE_REPLAY' "$REPO/.github/workflows/" | sed 's/^/      /'
 else
   ok "no CI workflow switches the standalone replay off"
+fi
+
+echo "== 10: the chain assertion can fail =="
+
+# A verification that cannot fail is not a verification. The chain assertion
+# failed the hosted-smoke job on 2026-10-31 while the stack was healthy,
+# because it judged the chain by an HTTP status whitelist that did not
+# include the 307 nginx answers for /. An assertion that cries wolf at a
+# healthy server is a guard nobody can trust to catch a sick one — so the
+# negative case is a gate of its own.
+if [[ -f "$REPO/hosted/tests/tls-assertion-negative.sh" ]]; then
+  ok "the negative gate for the chain assertion exists"
+else
+  bad "there is no negative gate for the chain assertion"
+fi
+
+if grep -rn 'tls-assertion-negative.sh' "$REPO/.github/workflows/" >/dev/null 2>&1; then
+  ok "CI runs the negative gate"
+else
+  bad "CI does not run the negative gate — a gate that is never run is decoration"
 fi
 
 echo

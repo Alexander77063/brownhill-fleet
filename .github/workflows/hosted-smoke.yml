@@ -198,6 +198,18 @@ jobs:
         run: DEPLOYMENT_PROFILE=hosted pnpm test
       - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh
+      - name: The chain assertion can fail
+        # The proof's assertion 14 verifies nginx's certificate chain against
+        # the test CA. A verification that cannot fail is not a verification.
+        # This runs the proof against the same live stack with a CA that
+        # signed nothing, and requires the proof to FAIL on assertion 14.
+        #
+        # It is here because assertion 14 failed this very job on 2026-10-31
+        # while the stack was healthy: it judged the chain by an HTTP status
+        # whitelist that did not include the 307 nginx answers for /. An
+        # assertion that cries wolf at a healthy server is a guard nobody can
+        # trust to catch a sick one.
+        run: bash hosted/tests/tls-assertion-negative.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
       - name: Bootstrap idempotency (a re-run applies nothing)

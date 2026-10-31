@@ -128,6 +128,12 @@ bash hosted/tests/portability-guards.sh
 # hold, RLS still enforces, and the backup + restore-verify paths are real.
 bash hosted/tests/verify-hosted-portability.sh
 
+#   The chain assertion's negative case. Assertion 14 verifies nginx's
+#   certificate chain; this runs the proof against the live stack with a CA
+#   that signed nothing and requires the proof to FAIL on assertion 14.
+#   Needs the stack up.
+bash hosted/tests/tls-assertion-negative.sh
+
 # End-to-end fresh-deploy smoke.
 bash hosted/tests/smoke/hosted-smoke.sh
 

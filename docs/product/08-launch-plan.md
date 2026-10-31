@@ -52,7 +52,7 @@ hosted/tests/acceptance.sh                                  # all gates green
 **Gate:** all five acceptance gates return 0 (six with accounting enabled).
 
 - `DEPLOYMENT_PROFILE=hosted pnpm test`
-- `hosted/tests/portability-guards.sh` + `hosted/tests/verify-hosted-portability.sh` — the proof's own guards, then assertions 0–17 against the live stack
+- `hosted/tests/portability-guards.sh` + `hosted/tests/verify-hosted-portability.sh` + `hosted/tests/tls-assertion-negative.sh` — the proof's own guards, then assertions 0–17 against the live stack, then the negative case: the proof run again with a CA that signed nothing, which must fail on assertion 14
 - `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 - `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
 - the Sunday `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
