@@ -191,7 +191,7 @@ idempotent: every reboot from now on is a no-op that exits 0.
 8. Install brownhill-next.service: copy + `systemctl daemon-reload && systemctl enable --now brownhill-next`.
 9. Configure nginx with the brownhill.conf template and substitute-fqdn.sh.
 10. Issue cert via initial-cert.sh brownhillmanagementfleet.online ops@brownhillmanagementfleet.online. Verify with `curl -I https://brownhillmanagementfleet.online/`.
-11. Run the 5-gate acceptance.sh. Gate 5 may need backup service touched manually (no Sunday yet).
+11. Run the acceptance bar: `bash hosted/tests/acceptance.sh`. Five baseline gates, plus the accounting smoke and the no-credential scan when they apply (six or seven in total) — every gate that runs must be green. Gate 5 may need backup service touched manually (no Sunday yet).
 12. Bootstrap owner (HMAC-signed POST to /api/v1/bootstrap).
 13. Browser sign-in from laptop to /ops.
 

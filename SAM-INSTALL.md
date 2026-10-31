@@ -131,13 +131,15 @@ sudo systemctl status postgrest brownhill-next --no-pager
 
 Both should show `active (running)`. If they don't, `journalctl -u <service> -n 50`.
 
-## 10. Run the five-gate acceptance
+## 10. Run the acceptance bar
 
 ```bash
 sudo ./hosted/tests/acceptance.sh
 ```
 
-All five gates must return OK. Gate 5 (Sunday backup-verify) won't have a run on first deploy — touch the chain once manually to confirm it works:
+Five baseline gates always run, plus the accounting smoke and the
+no-credential scan when they apply. Every gate that runs must return OK.
+Gate 5 (Sunday backup-verify) won't have a run on first deploy — touch the chain once manually to confirm it works:
 
 ```bash
 sudo systemctl start brownhill-backup.service

@@ -13,15 +13,15 @@ Namecheap Business VPS Pulsar (Ubuntu 24.4.4 LTS).
 See **[`HANDOFF-BROWNHILL.md`](./HANDOFF-BROWNHILL.md)**. That document is
 the full, ordered, idempotent procedure: prereqs, the five secrets you own,
 `install.sh`, `fetch-runtime.sh`, the schema-bootstrap systemd unit, the
-nginx/certbot config, the Backblaze B2 backup path, and the 5-gate
-acceptance script. Read it through before running anything.
+nginx/certbot config, the Backblaze B2 backup path, and the acceptance
+script. Read it through before running anything.
 
 ## What's in this repo
 
 | Path | What it is |
 | --- | --- |
 | `src/` | The Next.js 15 application (the same source as the SaaS; `DEPLOYMENT_PROFILE=hosted` gates SaaS-only code paths out at compile time) |
-| `hosted/` | The Linux deployment — bootstrap, systemd units, nginx config, runtime fetcher, brand assets, the 5-gate acceptance test |
+| `hosted/` | The Linux deployment — bootstrap, systemd units, nginx config, runtime fetcher, brand assets, the acceptance bar |
 | `supabase/` | SQL migrations (Postgres schema history, applied by `brownhill-bootstrap.service` on first run) |
 | `standalone/sql/0000_supabase_shim.sql` | The schema shim that lets the migrations apply cleanly to plain Postgres (Supabase Auth is replaced by local HS256 JWT) |
 | `standalone/README.md`, `standalone/CODE-SIGNING.md` | Architecture documentation (kept for context) |

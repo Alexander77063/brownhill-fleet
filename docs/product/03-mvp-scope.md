@@ -85,7 +85,7 @@ the public one so a deployment without it still passes its preflight.
 | Backups | Nightly 02:00 to local + Backblaze B2; weekly restore-verify on Sunday 04:00 |
 | Restore | `/admin/restore` — browse dumps, confirm with `RESTORE`, drain, replay, un-drain |
 | Alarms | Path unit on `/run/brownhill/alerts/`; forwarder is an operator-wired shim |
-| Acceptance | `hosted/tests/acceptance.sh` — five gates (six with accounting) |
+| Acceptance | `hosted/tests/acceptance.sh` — five baseline gates, plus the accounting smoke when that module is enabled and the no-credential scan when the tree is a git checkout (six or seven in total). Every gate that runs must be green: a conditional gate that runs and fails raises the bar rather than lowering it |
 
 ## 3. Out of scope — explicitly not shipped
 
@@ -129,6 +129,11 @@ return 0:
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
 5. Sunday's `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
 6. *(opt-in)* accounting smoke — when `accounting.chart_of_accounts` rows exist
+7. *(opt-in)* no-credential scan — when this is a git checkout, which is what it scans. `hosted/tests/no-committed-credentials.sh`, then `hosted/tests/no-committed-credentials-negative.sh` to prove the scan can fail. The repository is public and has already published two credentials in plain text; this gate is the half of that fix that lives in the repository, and the other half is rotation on the box before handover
+
+The bar is the count of gates that **ran**, and every one of them has to be
+green. It used to be the count that passed, which let a gate that ran and
+failed drop the deployment back to the smaller bar and report it as met.
 
 Plus the monthly chaos drills (`hosted/tests/chaos/`), which are designed not
 to lose data: power loss, Postgres restart, mid-restore crash, B2 sync stale.

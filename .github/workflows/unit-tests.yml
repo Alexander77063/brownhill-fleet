@@ -5,6 +5,10 @@
 # The hosted stack's smoke is in hosted-smoke.yml, which runs on
 # ubuntu-latest too; its production-shaped job needs the self-hosted
 # `pulsar` runner and is opt-in.
+#
+# It also runs the repository's no-credential gate, because that gate is
+# about the repository and not about the deployment: it has to run on every
+# pull request, including the ones that touch nothing under hosted/.
 
 name: unit-tests
 
@@ -40,3 +44,36 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+      - name: No credential in the tree
+        # This repository is PUBLIC, and it has already published two
+        # credentials in plain text: the box's database superuser password,
+        # and the customer's own login password. Both were tracked files.
+        #
+        # Deleting the lines removed them from the checkout, not from the
+        # history — so the other half of that fix is ROTATION on the box,
+        # which the handover says how to do. This gate is the half that
+        # lives in the repository: it makes sure the NEXT one does not
+        # happen, and it runs on every pull request because a credential can
+        # land in any file at all.
+        run: bash hosted/tests/no-committed-credentials.sh
+      - name: The no-credential gate can fail
+        # A gate that cannot fail is not a gate. This runs it against a tree
+        # that really does hold a value of the hunted shape, and requires it
+        # to fail on the right rule.
+        #
+        # It earns its place. The first version of this gate passed every
+        # tree in the repository, including the ones it was written for: a
+        # greedy regular expression stripped the hit it had found, so the
+        # rule reported "no fallback" on a file that had one in plain text.
+        # The gate looked green for as long as it existed.
+        run: bash hosted/tests/no-committed-credentials-negative.sh
+      - name: The acceptance bar's own arithmetic
+        # hosted/tests/acceptance.sh decides whether a deployment is fit to
+        # hand over, and that decision is arithmetic. The arithmetic asked
+        # "did the accounting gate pass?" instead of "how many gates ran?", so
+        # a deployment whose accounting smoke FAILED dropped back to the
+        # five-gate bar and was reported as five of five — met.
+        #
+        # This runs the real acceptance script against stubbed gates and
+        # holds the counting to its promise.
+        run: bash hosted/tests/acceptance-arithmetic.sh
