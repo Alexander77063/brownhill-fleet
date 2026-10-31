@@ -47,7 +47,7 @@ concurrency:
   # Cancel the previous run when a new one starts.
   #
   # This was `false`, and it cost this repository its hosted smoke entirely.
-  # A run that is queued for a runner that does not exist holds its
+  # A run that was queued for a runner that does not exist holds its
   # concurrency group for as long as it is queued — GitHub cancels such a run
   # after 24 hours — so every later run for the same pull request waited
   # behind it, and no run for the pull request ever reached a runner at all.
@@ -58,15 +58,53 @@ concurrency:
 jobs:
   hosted-smoke:
     runs-on: ubuntu-latest
-    # The job replays the whole migration history against its own database,
-    # more than once, and the replay is not fast. 45 minutes was enough when
-    # there was one replay.
+    # The job runs four suites against a real stack: the compose build, the
+    # migration replay, the bootstrap-idempotency gate and the application
+    # smoke. Each of the last three replays the whole migration history
+    # against its own database, and the replay is not fast. 45 minutes was
+    # enough for two of them.
     timeout-minutes: 60
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
     steps:
       - uses: actions/checkout@v4
+      - name: The migration ledger's fingerprint
+        # The ledger's fingerprint — the set of objects each migration
+        # creates — is what makes a baseline CHECKABLE rather than merely
+        # asserted. It has to see tables, enum types AND functions, because
+        # the early migrations create all three.
+        #
+        # It used to see tables only: the three greps shared one stdin, so
+        # the first consumed the whole stream and the other two matched
+        # nothing. The consequence was a baseline that claimed a migration
+        # creating only enums being ACCEPTED against an empty database — and
+        # the ledger then recorded it as applied, so the schema was left
+        # silently broken.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/schema-ledger-fingerprint.sh
+      - name: Environment-variable names and wiring
+        # The deployment's settings are environment variables, and a variable
+        # that is SET under one spelling and READ under another does not
+        # fail — it is ignored, and the script carries on with a fallback that
+        # works on the developer's machine and not on the box. This check
+        # asserts there is one spelling, that everything read is provided and
+        # that everything provided is read.
+        #
+        # It is a static check over the repository: no docker, no database, a
+        # second of work. It runs first because it is the cheapest gate that
+        # can catch the most expensive mistake.
+        run: bash hosted/tests/env-var-names.sh
+      - name: The off-host backup's path prefix
+        # The copy that leaves the box is the reason a backup exists. It is
+        # filed under a path built from the deployment's hostname, and that
+        # variable was read under a name nobody provided — so every dump
+        # landed under a placeholder path nobody looks in. This drives the
+        # real backup script with a stubbed b2: the right path, the
+        # pre-rename name still working, and a loud refusal when there is no
+        # hostname at all.
+        run: bash hosted/tests/backup-offhost-target.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
@@ -104,6 +142,12 @@ jobs:
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
+      - name: Bootstrap idempotency (a re-run applies nothing)
+        # The bootstrap is a systemd oneshot that runs on every boot, so it has
+        # to be a no-op against a database that is already provisioned. It was
+        # not: it applied every migration from the top and died on 0001, which
+        # creates the `user_role` enum without a guard.
+        run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
       - name: Tear down
@@ -122,6 +166,12 @@ jobs:
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
     steps:
       - uses: actions/checkout@v4
+      - name: The migration ledger's fingerprint
+        run: bash hosted/tests/schema-ledger-fingerprint.sh
+      - name: Environment-variable names and wiring
+        run: bash hosted/tests/env-var-names.sh
+      - name: The off-host backup's path prefix
+        run: bash hosted/tests/backup-offhost-target.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
@@ -130,5 +180,7 @@ jobs:
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
+      - name: Bootstrap idempotency (a re-run applies nothing)
+        run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
