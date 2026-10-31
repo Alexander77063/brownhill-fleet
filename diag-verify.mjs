@@ -1,53 +1,97 @@
-// diag-verify.mjs — print every step of verifyPbkdf2 for one row, to find
-// why the bypass reports "Those details do not match." despite the row
-// having been just-written by the same pbkdf2Sync at iters=600000, keylen=64.
+// diag-verify.mjs — print every step of the password verifier for one row.
+//
+// It exists to answer one question: why did the standalone auth bypass
+// report "Those details do not match." for a row that had just been written
+// by the same pbkdf2 at iters=600000, keylen=64? The answer turned out to be
+// an encoding mismatch, and the fix is in the verifier (see eeaefe1). The
+// script is kept because the next encoding question deserves the same
+// instrument.
+//
+// Usage:  node diag-verify.mjs <email> <password>
+//
+// The password has NO default. It used to have one — a customer's password,
+// in plain text, in the repository — because a diagnostic that could be run
+// with no arguments was convenient for the person debugging at the time and
+// a permanent liability for everyone else. The database comes from
+// DATABASE_URL, which is not optional either; this script used to carry the
+// box's PostgreSQL superuser password as the literal fallback of that
+// lookup, and the password was committed to a public fork.
+//
+// On the box, the URL is in the app's own secrets file:
+//
+//   set -a; . /etc/brownhill/secrets/app.env; set +a
+//   node diag-verify.mjs you@example.co.uk 'the password'
 
-import { pbkdf2Sync, timingSafeEqual, randomBytes } from 'node:crypto';
-import postgres from '/opt/brownhill/repo/node_modules/postgres/src/index.js';
+import { pathToFileURL } from 'node:url';
+import postgres from 'postgres';
+import { diagnoseStoredHash } from './auth-crypt.mjs';
 
-const [, , emailRaw, passwordRaw] = process.argv;
-const email = String(emailRaw || 'info@brown-hillchauffeurs.co.uk');
-const password = String(passwordRaw || 'BH-Temp-7f3a9c-X7wQ');
+async function main() {
+  const [, , emailRaw, passwordRaw] = process.argv;
+  const email = String(emailRaw || '').trim().toLowerCase();
+  const password = String(passwordRaw || '');
 
-const sql = postgres(process.env.DATABASE_URL || 'postgresql://postgres:XrFssL91ILzMWPoAlpBO6wSij0M7v5Ej@127.0.0.1:55432/postgres');
+  if (!email || !password) {
+    console.error('usage: node diag-verify.mjs <email> <password>');
+    process.exit(2);
+  }
 
-const rows = await sql`select c.password_hash from auth.local_credentials c join auth.users u on u.id=c.user_id where u.email=${email}`;
-if (rows.length === 0) { console.log('NO ROW'); process.exit(0); }
-const stored = rows[0].password_hash;
-console.log('stored.length         =', stored.length);
-console.log('stored[0..40]          =', JSON.stringify(stored.slice(0,40)));
-console.log('stored[-20..]         =', JSON.stringify(stored.slice(-20)));
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('DATABASE_URL is not set, so there is nothing to connect to.');
+    console.error('On the box it is in the app\'s own secrets file:');
+    console.error('  set -a; . /etc/brownhill/secrets/app.env; set +a');
+    process.exit(2);
+  }
 
-const parts = stored.split('$');
-console.log('parts.length          =', parts.length);
-console.log('parts[1]              =', parts[1]);
-console.log('parts[2].length       =', parts[2].length);
-console.log('parts[3].length       =', parts[3].length);
-const salt = Buffer.from(parts[2], 'base64url');
-const expected = Buffer.from(parts[3], 'base64url');
-console.log('salt.byteLength       =', salt.length);
-console.log('expected.byteLength   =', expected.length);
-const iters = Number(parts[1]);
+  const sql = postgres(databaseUrl);
+  try {
+    const rows = await sql`select c.password_hash from auth.local_credentials c join auth.users u on u.id=c.user_id where u.email=${email}`;
+    if (rows.length === 0) {
+      console.log('NO ROW');
+      return;
+    }
+    printDiagnosis(password, rows[0].password_hash);
+  } finally {
+    await sql.end({ timeout: 2 });
+  }
+}
 
-// Reproduce EXACTLY what verifyPbkdf2 does.
-const t0 = Date.now();
-const derived = pbkdf2Sync(password, salt, expected.length, iters, 'sha256');
-console.log('derived.byteLength    =', derived.length);
-console.log('pbkdf2 elapsed_ms     =', Date.now() - t0);
-const eq = derived.length === expected.length && timingSafeEqual(derived, expected);
-console.log('timingSafeEqual       =', eq);
+/**
+ * Print the diagnosis. Split out from main() so a test can read the same
+ * lines an operator sees, and so the instrument itself is inspectable
+ * without a database.
+ */
+export function printDiagnosis(password, storedHash) {
+  const d = diagnoseStoredHash(password, storedHash);
 
-// Now test: is pbkdf2 output deterministic across two runs?
-const derived2 = pbkdf2Sync(password, salt, expected.length, iters, 'sha256');
-console.log('derived === derived2  =', derived.equals(derived2));
+  console.log('stored.length         =', d.storedLength);
+  console.log('stored[0..40]          =', JSON.stringify(d.stored.slice(0, 40)));
+  console.log('stored[-20..]         =', JSON.stringify(d.stored.slice(-20)));
+  console.log('parts.length          =', d.stored.split('$').length);
+  console.log('parts[1]              =', d.iterations);
+  console.log('parts[2].length       =', d.saltBytes);
+  console.log('parts[3].length       =', d.expectedBytes);
+  console.log('salt.byteLength       =', d.saltBytes);
+  console.log('expected.byteLength   =', d.expectedBytes);
+  console.log('derived.byteLength    =', d.derivedBytes);
+  console.log('timingSafeEqual       =', d.timingSafeEqual);
+  console.log('expected hex prefix   =', d.expected.subarray(0, 8).toString('hex'));
+  console.log('derived  hex prefix   =', d.derived.subarray(0, 8).toString('hex'));
 
-// What's in DB expected vs derived?
-console.log('expected hex prefix   =', expected.subarray(0,8).toString('hex'));
-console.log('derived  hex prefix   =', derived.subarray(0,8).toString('hex'));
+  if (d.malformed) {
+    console.log('');
+    console.log('This row is not a pbkdf2_sha256 row in the shape the app writes.');
+    console.log('Nothing was derived from it, so nothing above can say whether the');
+    console.log('password matches. Check the row against the format first:');
+    console.log('  pbkdf2_sha256$<iterations>$<salt-b64url>$<hash-b64url>');
+  }
 
-// Try to re-hash with a fresh salt, fresh iters 600000, keylen 64 — confirm our
-// reference implementation here produces a 64-byte output.
-const probe = pbkdf2Sync('test', randomBytes(16), 64, 600000, 'sha256');
-console.log('PROBE pbkdf2 600k/64  =', probe.length, 'bytes');
+  return d;
+}
 
-await sql.end({ timeout: 2 });
+// Only run the CLI when this file is the program being executed. Importing
+// it — from a test, or from another script — must not reach for a database.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
