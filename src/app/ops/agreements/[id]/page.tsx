@@ -8,6 +8,7 @@ import { formatDate, titleCase, agreementStatusTone, invoiceStatusTone } from '@
 import { listSigningSessions, sendForSignature } from '@/lib/actions/signing';
 import { completeAgreementAction } from '@/lib/actions/agreements';
 import { listHandoverPhotos } from '@/lib/queries-handover-photos';
+import { storageSignedUrl, HANDOVER_PHOTO_BUCKET } from '@/lib/storage';
 import { HANDOVER_PHOTO_LABELS, isValidHandoverPhotoKind, MIN_HANDOVER_PHOTOS } from '@/lib/sign/handover-photo';
 import { SigningPanel } from './SigningPanel';
 
@@ -36,6 +37,20 @@ export default async function AgreementDetailPage({ params }: { params: Promise<
     listSigningSessions(id),
     listHandoverPhotos(id),
   ]);
+
+  // Handover photos live in object storage, not under the app's public/
+  // folder. The URL this page used to build —
+  // `/api/storage/local/<path>` — is not a route this app serves: the local
+  // storage endpoint takes a SIGNED query string, not a path segment. So
+  // every handover photo on every agreement rendered as a broken image.
+  // Sign each one properly; a failed signature returns null and renders as
+  // "photo unavailable" rather than a broken image.
+  const photoUrls = await Promise.all(
+    handoverPhotos.map(async (p) => ({
+      photo: p,
+      url: await storageSignedUrl(HANDOVER_PHOTO_BUCKET, p.storagePath, 300),
+    })),
+  );
 
   // Which contract edition "Generate contract" will produce — derived from the
   // driver's insurance record (self-insured if they hold their own policy).
@@ -183,15 +198,21 @@ export default async function AgreementDetailPage({ params }: { params: Promise<
                 {handoverPhotos.length} recorded — baseline for damage-report comparison.
               </p>
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {handoverPhotos.map((p) => (
+                {photoUrls.map(({ photo: p, url }) => (
                   <figure key={p.id} className="overflow-hidden rounded-md border border-hair-soft bg-[var(--surface-soft)]">
                     <div className="aspect-video bg-[var(--surface-strong)]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={`/api/storage/local/${encodeURIComponent(p.storagePath)}`}
-                        alt={`Handover photo: ${HANDOVER_PHOTO_LABELS[isValidHandoverPhotoKind(p.kind) ? p.kind : 'other'] ?? 'Other'}`}
-                        className="h-full w-full object-cover"
-                      />
+                      {url ? (
+                        /* eslint-disable-next-line @next/next/no-img-element */
+                        <img
+                          src={url}
+                          alt={`Handover photo: ${HANDOVER_PHOTO_LABELS[isValidHandoverPhotoKind(p.kind) ? p.kind : 'other'] ?? 'Other'}`}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <p className="grid h-full place-items-center px-2 text-center text-xs text-muted">
+                          Photo unavailable
+                        </p>
+                      )}
                     </div>
                     <figcaption className="px-2 py-1 text-xs text-muted">
                       {HANDOVER_PHOTO_LABELS[isValidHandoverPhotoKind(p.kind) ? p.kind : 'other'] ?? 'Other'}

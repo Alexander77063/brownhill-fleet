@@ -149,7 +149,7 @@ describe('postReversalJournal (void + credit note)', () => {
 describe('postBankFeeJournal (provider-fee categorisation)', () => {
   it('posts Dr Bank Charges / Cr AR for categorised bank fees', () => {
     const input: BankFeeForPosting = {
-      paymentId: 'pay-fee-1',
+      bankTxId: 'bank-tx-fee-1',
       feeAmount: 160n,
       bankChargesAccountId: COA.bankCharges.id,
       arAccountId: COA.ar.id,
@@ -157,7 +157,11 @@ describe('postBankFeeJournal (provider-fee categorisation)', () => {
     const r = postBankFeeJournal(input);
     expect(r.lines.find(l => l.accountId === COA.bankCharges.id)?.debitPence).toBe(160n);
     expect(r.lines.find(l => l.accountId === COA.ar.id)?.creditPence).toBe(160n);
-    expect(r.sourceType).toBe('bank_transaction');
+    expect(r.sourceType).toBe('bank_fee');
+    // The journal is keyed on the BANK TRANSACTION, not on a payment — a bank
+    // charge is not a customer receipt, so there is no payment row behind it.
+    expect(r.sourceId).toBe('bank-tx-fee-1');
+    expect(r.lines.every(l => l.sourceBankTransactionId === 'bank-tx-fee-1')).toBe(true);
   });
 });
 
@@ -198,7 +202,7 @@ describe('every rule produces a balanced entry', () => {
   });
   it('bank fee', () => {
     const r = postBankFeeJournal({
-      paymentId: 'r', feeAmount: 5n, bankChargesAccountId: COA.bankCharges.id, arAccountId: COA.ar.id,
+      bankTxId: 'r', feeAmount: 5n, bankChargesAccountId: COA.bankCharges.id, arAccountId: COA.ar.id,
     });
     expect(r.sumDebits).toBe(r.sumCredits);
   });

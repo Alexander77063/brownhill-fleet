@@ -34,7 +34,7 @@ claim, so it is tested rather than asserted:
 bash standalone/scripts/verify-portability.sh
 ```
 
-This stands up a throwaway `postgres:16`, applies the shim and all 62
+This stands up a throwaway `postgres:16`, applies the shim and all 78
 migrations **unmodified** from empty, and then proves:
 
 | | Assertion |
@@ -50,6 +50,9 @@ migrations **unmodified** from empty, and then proves:
 | 7 | `service_role` **does** bypass RLS — otherwise every cron job silently returns nothing |
 | 8 | JWT claims flow through `auth.pre_request()` into the RLS GUCs |
 | 9 | End-to-end: a verified JWT scopes a real query to one tenant |
+| 10 | A driver reads their own damage report and none of the office's records |
+| 11 | Ops reads their own tenant's operator records — the fix does not close the office out |
+| 12 | Ops in another tenant sees none of it |
 
 ## Building the installer
 
@@ -150,7 +153,7 @@ Brownhill Fleet_0.1.1_x64-setup.exe
 ├─ bin/postgrest.exe PostgREST 12.2.3
 ├─ bin/node/node.exe Node 22.11
 ├─ app/              the Next.js standalone server
-├─ migrations/       all 62 .sql files, unmodified
+├─ migrations/       all 78 .sql files, unmodified
 └─ sql/              the Supabase shim
 ```
 
@@ -208,8 +211,9 @@ failure. Everything binds to loopback.
 | `scripts/package.ps1` | One command, from source to the NSIS installer |
 | `scripts/fetch-runtime.ps1` | Downloads the pinned third-party binaries |
 | `sql/0000_supabase_shim.sql` | Supplies what the migrations assume Supabase provides: the `anon`/`authenticated`/`service_role` roles, the `auth` schema (`users`, `uid()`, `role()`, `pre_request()`), the `storage` schema, and `auth.local_credentials` for local passwords. Runs once, before `0001`. |
-| `sql/portable-rls-proof.sql` | The eleven assertions above. |
-| `scripts/apply-migrations.sh` | Applies shim + every migration in order, each in its own transaction, halting at the first failure. This is the migration runner the installer uses. |
+| `sql/portable-rls-proof.sql` | The fourteen assertions above. |
+| `scripts/apply-migrations.sh` | Applies shim + every migration in order, each in its own transaction, halting at the first failure. This is the migration runner the installer uses. It keeps a ledger in `public.schema_migrations`, so running it again against the same database applies nothing — see `scripts/schema-ledger.sh`. |
+| `scripts/schema-ledger.sh` | The migration ledger: what has been applied, the checksum of each migration as applied, and the `--baseline-through` option that adopts a database provisioned before the ledger existed. |
 | `scripts/verify-portability.sh` | One-command end-to-end proof. |
 | `scripts/reset-test-db.sh` | Drops the schemas so a run starts from genuinely empty. |
 

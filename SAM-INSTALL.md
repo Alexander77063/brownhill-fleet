@@ -53,7 +53,7 @@ sudo tee /etc/brownhill/secrets/backup.env > /dev/null <<'EOF'
 BACKBLAZE_B2_KEY_ID=<your-b2-key-id>
 BACKBLAZE_B2_APPLICATION_KEY=<your-b2-application-key>
 BACKBLAZE_B2_BUCKET=brownhill-fleet-prod
-BROWNILL_FQDN=brownhill.example.co.uk
+BROWNHILL_FQDN=brownhill.example.co.uk
 EOF
 sudo chmod 0640 /etc/brownhill/secrets/backup.env
 ```
@@ -131,13 +131,15 @@ sudo systemctl status postgrest brownhill-next --no-pager
 
 Both should show `active (running)`. If they don't, `journalctl -u <service> -n 50`.
 
-## 10. Run the five-gate acceptance
+## 10. Run the acceptance bar
 
 ```bash
 sudo ./hosted/tests/acceptance.sh
 ```
 
-All five gates must return OK. Gate 5 (Sunday backup-verify) won't have a run on first deploy — touch the chain once manually to confirm it works:
+Five baseline gates always run, plus the accounting smoke and the
+no-credential scan when they apply. Every gate that runs must return OK.
+Gate 5 (Sunday backup-verify) won't have a run on first deploy — touch the chain once manually to confirm it works:
 
 ```bash
 sudo systemctl start brownhill-backup.service

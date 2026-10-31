@@ -28,3 +28,17 @@ POSTGREST_SHA256=9f71269e61ac3a940281e93ff415760f5957e430e475ba4c3889f3ede7d5527
 NODE_VERSION=v22.11.0
 NODE_URL=https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz
 NODE_SHA256=83bf07dd343002a26211cf1fcd46a9d9534219aad42ee02847816940bf610a72
+
+# Backblaze B2 command line tool v5.0.2 (Linux x64 standalone binary).
+#
+# The nightly backup copies its dump off the box with this tool. Nothing
+# installed it before — fetch-runtime.sh staged Postgres, PostgREST and Node
+# and no b2 — so the off-host copy could never run at all.
+#
+# URL: https://github.com/Backblaze/B2_Command_Line_Tool/releases/tag/v5.0.2
+#      asset `b2-linux` (a single self-contained executable, not an archive).
+# SHA256: from https://github.com/Backblaze/B2_Command_Line_Tool/releases/
+#         download/v5.0.2/b2-linux_hashes.txt
+B2_VERSION=v5.0.2
+B2_URL=https://github.com/Backblaze/B2_Command_Line_Tool/releases/download/v5.0.2/b2-linux
+B2_SHA256=8210f07b8d12363ef747847c4fcb04c60550909238177a1e5112abe4f204ca45

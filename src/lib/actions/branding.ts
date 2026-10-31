@@ -65,6 +65,10 @@ export async function saveBrandingAction(formData: FormData): Promise<void> {
     patch[f] = String(formData.get(f) ?? "");
   }
   await saveBranding(patch, ctx.tenantId);
-  revalidatePath("/ops/settings/branding");
+  // The branding form lives at /admin/branding. The path this used to
+  // revalidate — "/ops/settings/branding" — has never existed, so the
+  // revalidation was a silent no-op and the page the operator had just
+  // saved showed the old values until they hard-refreshed.
+  revalidatePath("/admin/branding");
   revalidatePath("/ops");
 }

@@ -85,7 +85,7 @@ export default async function AccountsFinancePage() {
         <Card>
           <CardTitle>Latest VAT-return boxes (accrual)</CardTitle>
           {vatBoxes.every((v) => !v.boxes) ? (
-            <EmptyState title="No VAT return built yet" hint="The operator runs the rollup at /ops/finance." />
+            <EmptyState title="No VAT return built yet" hint="The box figures are computed from issued invoices — open the VAT return page for a specific period." />
           ) : (
             <div className="space-y-3 text-sm">
               {vatBoxes.map((v) => (
@@ -142,7 +142,7 @@ export default async function AccountsFinancePage() {
           </Table>
         )}
         <p className="mt-3 text-xs text-muted">
-          Recording and editing lives at <a className="text-gold-bright hover:underline" href="/ops/finance">/ops/finance</a>.
+          Record a new finance agreement with the form below.
         </p>
       </section>
 

@@ -70,6 +70,11 @@ export default async function PlatformLayout({
           <Link href="/platform/subscribers" className="text-muted transition hover:text-cream">
             Subscribers
           </Link>
+          {/* The tenant↔plan management page existed but nothing in the console
+              linked to it — it was only reachable by typing the URL. */}
+          <Link href="/platform/tenants" className="text-muted transition hover:text-cream">
+            Tenants
+          </Link>
           <Link href="/platform/requests" className="text-muted transition hover:text-cream">
             Requests
           </Link>

@@ -159,10 +159,16 @@ type ButtonProps = {
   href?: string;
   /** For link buttons: open in a new tab (adds a safe rel). */
   target?: React.HTMLAttributeAnchorTarget;
+  /**
+   * For link buttons: whether Next may prefetch the destination. Turn it off
+   * for links that *download* — a prefetch would run the whole request and
+   * throw the result away.
+   */
+  prefetch?: boolean;
   className?: string;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>;
 
-export function Button({ children, variant = 'primary', size = 'md', href, target, className, ...rest }: ButtonProps) {
+export function Button({ children, variant = 'primary', size = 'md', href, target, prefetch, className, ...rest }: ButtonProps) {
   const base =
     'inline-flex items-center justify-center gap-2 rounded-[var(--radius)] font-semibold transition-all duration-200 focus-visible:outline-2';
   const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2.5 text-sm' }[size];
@@ -179,6 +185,7 @@ export function Button({ children, variant = 'primary', size = 'md', href, targe
         href={href}
         className={cls}
         target={target}
+        prefetch={prefetch}
         rel={target === '_blank' ? 'noopener noreferrer' : undefined}
       >
         {children}

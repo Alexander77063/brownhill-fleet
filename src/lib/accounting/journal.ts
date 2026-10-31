@@ -23,7 +23,15 @@ export interface PostResult {
   lines: JournalLine[];
   sumDebits: Pounds;
   sumCredits: Pounds;
-  sourceType: 'invoice' | 'payment' | 'vat_submission' | 'bank_transaction' | 'invoice_void' | 'credit_note';
+  sourceType:
+    | 'invoice'
+    | 'payment'
+    | 'vat_submission'
+    | 'bank_transaction'
+    | 'bank_receipt'
+    | 'bank_fee'
+    | 'invoice_void'
+    | 'credit_note';
   sourceId: string;
 }
 
@@ -103,10 +111,25 @@ export interface VatSubmissionForPosting {
 }
 
 export function postVatSubmissionJournal(input: VatSubmissionForPosting): PostResult {
-  const lines: JournalLine[] = [
-    { accountId: input.vatOutputAccountId,    debitPence: input.vatAmount, creditPence: 0n },
-    { accountId: input.vatPayableAccountId,  debitPence: 0n,             creditPence: input.vatAmount },
-  ];
+  // A net VAT position below zero is a REIMBURSEMENT: the mirror image of a
+  // payment. The original code posted a negative amount, which
+  // `journal_lines`' `check (debit_pence >= 0)` rejected, so every VAT
+  // reclaim — exactly the case a fleet operator hits after a bad quarter —
+  // failed to post.
+  const reclaim = input.vatAmount < 0n;
+  const amount = reclaim ? -input.vatAmount : input.vatAmount;
+  if (amount === 0n) {
+    throw new Error('Nothing to post: the VAT position for this period is zero.');
+  }
+  const lines: JournalLine[] = reclaim
+    ? [
+        { accountId: input.vatPayableAccountId,  debitPence: amount, creditPence: 0n },
+        { accountId: input.vatOutputAccountId,   debitPence: 0n,     creditPence: amount },
+      ]
+    : [
+        { accountId: input.vatOutputAccountId,   debitPence: amount, creditPence: 0n },
+        { accountId: input.vatPayableAccountId,  debitPence: 0n,     creditPence: amount },
+      ];
   return assertBalanced({
     lines,
     sumDebits: sum(lines.map(l => l.debitPence)),
@@ -168,9 +191,16 @@ export function postReversalJournal(input: ReversalForPosting): PostResult {
 
 // ── Payment-provider-fee categorisation ────────────────────────────────────
 // Dr Bank Charges (5910) / Cr Trade Debtors (1100) for the fee amount.
+//
+// The source is the BANK TRANSACTION, not a payment. The previous version
+// built a synthetic id — `bank-fee-<uuid>` — and used it as both the journal
+// source id and the source of `journal_lines.source_payment_id`. That string
+// is not a uuid, and `accounting.journal_entries.source_id` is a uuid column,
+// so every bank-fee posting died with 22P02 (invalid input syntax for type
+// uuid) before it ever reached the ledger.
 
 export interface BankFeeForPosting {
-  paymentId: string;
+  bankTxId: string;
   feeAmount: Pounds;
   bankChargesAccountId: string;
   arAccountId: string;
@@ -178,14 +208,48 @@ export interface BankFeeForPosting {
 
 export function postBankFeeJournal(input: BankFeeForPosting): PostResult {
   const lines: JournalLine[] = [
-    { accountId: input.bankChargesAccountId, debitPence: input.feeAmount, creditPence: 0n,     sourcePaymentId: input.paymentId },
-    { accountId: input.arAccountId,          debitPence: 0n,           creditPence: input.feeAmount, sourcePaymentId: input.paymentId },
+    { accountId: input.bankChargesAccountId, debitPence: input.feeAmount, creditPence: 0n,     sourceBankTransactionId: input.bankTxId },
+    { accountId: input.arAccountId,          debitPence: 0n,           creditPence: input.feeAmount, sourceBankTransactionId: input.bankTxId },
   ];
   return assertBalanced({
     lines,
     sumDebits: sum(lines.map(l => l.debitPence)),
     sumCredits: sum(lines.map(l => l.creditPence)),
-    sourceType: 'bank_transaction',
-    sourceId: input.paymentId,
+    sourceType: 'bank_fee',
+    sourceId: input.bankTxId,
+  });
+}
+
+// ── Bank receipt (auto-matched to an invoice) ───────────────────────────────
+// Dr Bank (the bank account's GL account) / Cr Trade Debtors (gross).
+//
+// Same shape as the payment posting, but the source is the bank transaction
+// that the CSV importer matched to an invoice — there is no `public.payments`
+// row behind it. Posting it as a `payment` put a bank-transaction id into
+// `journal_lines.source_payment_id` and left the bank transaction with no
+// pointer to the journal entry it produced.
+//
+// 'bank_receipt' is its own source type because the journal idempotency key
+// is (tenant_id, source_type, source_id) and one bank transaction can also
+// carry a VAT-payment or bank-fee posting.
+
+export interface BankReceiptForPosting {
+  bankTxId: string;
+  gross: Pounds;
+  bankAccountGlId: string;
+  arAccountId: string;
+}
+
+export function postBankReceiptJournal(input: BankReceiptForPosting): PostResult {
+  const lines: JournalLine[] = [
+    { accountId: input.bankAccountGlId, debitPence: input.gross, creditPence: 0n,    sourceBankTransactionId: input.bankTxId },
+    { accountId: input.arAccountId,     debitPence: 0n,        creditPence: input.gross, sourceBankTransactionId: input.bankTxId },
+  ];
+  return assertBalanced({
+    lines,
+    sumDebits: sum(lines.map(l => l.debitPence)),
+    sumCredits: sum(lines.map(l => l.creditPence)),
+    sourceType: 'bank_receipt',
+    sourceId: input.bankTxId,
   });
 }

@@ -41,12 +41,13 @@ const PORT = Number(process.env.AUTH_BYPASS_PORT || 55433);
 const SESSION_COOKIE = 'bf_session';
 const SESSION_SECONDS = 8 * 60 * 60;
 
-// 600k iterations matches the new (post-352bfe1) password.ts; legacy scrypt
-// rows would have to be handled here in a follow-up commit if any customer
-// still has one. The live customer's row is already `pbkdf2_sha256$600000$…`
-// per the 2026-10-14 row inspection in the runbook.
-const PBKDF2_ITERATIONS = 600_000;
-const PBKDF2_KEYLEN = 64;
+// The iteration count is READ FROM THE ROW rather than hard-coded here: the
+// stored format is self-describing (`pbkdf2_sha256$<iter>$…`), so reading it
+// means a row written with different parameters still verifies. 600k
+// iterations matches the new (post-352bfe1) password.ts; legacy scrypt rows
+// would have to be handled here in a follow-up commit if any customer still
+// has one. The live customer's row is already `pbkdf2_sha256$600000$…` per
+// the 2026-10-14 row inspection in the runbook.
 
 const JWT_SECRET = process.env.LOCAL_JWT_SECRET;
 const DB_URL = process.env.DATABASE_URL;
@@ -67,6 +68,21 @@ const sql = postgres(DB_URL, {
  * Verify a `pbkdf2_sha256$<iter>$<saltB64>$<hashB64>` hash against a
  * password. Returns false (does not throw) on a malformed/unknown hash, a
  * tampered row, or a wrong password.
+ *
+ * This file deliberately keeps its own copy of this maths instead of
+ * importing `auth-crypt.mjs`, and it deliberately keeps NO way to WRITE a
+ * password hash:
+ *
+ *   * It is copied to the box by hand, as a single file, and it is the
+ *     customer's way back in when Next.js is wedged. If it imported
+ *     something, a box updated with one file but not the other would have
+ *     no way to sign the customer in at all. A standalone file cannot fail
+ *     that way.
+ *   * Resetting a password is `set-customer-password.mjs`'s job — one
+ *     script, not two. A second writer here is a second chance to get the
+ *     arguments to pbkdf2Sync in the wrong order, and getting them wrong is
+ *     silent: it writes a ~800 KB row that nothing can verify against. (It
+ *     did, once. See HANDOFF-APPENDIX-C.md.)
  */
 function verifyPbkdf2(password, stored) {
   const parts = String(stored).split('$');
@@ -79,17 +95,11 @@ function verifyPbkdf2(password, stored) {
   if (salt.length === 0 || expected.length === 0) return false;
   let derived;
   try {
+    // pbkdf2Sync(password, salt, ITERATIONS, KEYLEN, digest) — iterations
+    // third, keylen fourth.
     derived = pbkdf2Sync(password, salt, iters, expected.length, 'sha256');
   } catch { return false; }
   return derived.length === expected.length && timingSafeEqual(derived, expected);
-}
-
-/** Hash a password the same way password.ts does — used to RESET the
- *  customer's password to a value we know. */
-function hashPbkdf2(password) {
-  const salt = require('node:crypto').randomBytes(16);
-  const hash = pbkdf2Sync(password, salt, PBKDF2_KEYLEN, PBKDF2_ITERATIONS, 'sha256');
-  return ['pbkdf2_sha256', PBKDF2_ITERATIONS, salt.toString('base64url'), hash.toString('base64url')].join('$');
 }
 
 // ----------------- HS256 JWT (mirrors src/lib/auth/jwt.ts) ------------------

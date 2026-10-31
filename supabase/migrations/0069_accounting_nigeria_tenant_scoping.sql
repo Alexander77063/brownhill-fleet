@@ -58,9 +58,20 @@ alter table accounting.bank_transactions
   add column if not exists tenant_id uuid references public.tenants(id);
 
 -- Rename mtd_credentials -> firs_credentials; add tenant_id + tin
+--
+-- Two defects in the original, both of which stopped this file from applying:
+--
+--   1. `relnamespace = 'accounting'` compares an oid column against a string.
+--      Postgres coerces the literal to oid and rejects it with
+--      "invalid input syntax for type oid: accounting". to_regclass() asks
+--      the catalog the question directly and needs no cast.
+--   2. `rename to accounting.firs_credentials` — the new name in a RENAME
+--      cannot be schema-qualified: "syntax error at or near '.'". The
+--      qualification belongs on the table being renamed, not on its new name.
 do $$ begin
-  if exists (select 1 from pg_class where relname = 'mtd_credentials' and relnamespace = 'accounting') then
-    alter table accounting.mtd_credentials rename to accounting.firs_credentials;
+  if to_regclass('accounting.mtd_credentials') is not null
+     and to_regclass('accounting.firs_credentials') is null then
+    alter table accounting.mtd_credentials rename to firs_credentials;
   end if;
 end $$;
 alter table accounting.firs_credentials

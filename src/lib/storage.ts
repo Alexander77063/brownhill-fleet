@@ -43,6 +43,16 @@ export const STORAGE_BUCKETS = [
 
 export type StorageBucket = (typeof STORAGE_BUCKETS)[number];
 
+/**
+ * The bucket vehicle-handover photos are written to and read back from.
+ *
+ * Named rather than spelled `STORAGE_BUCKETS[0]` at each end: the upload
+ * action and the ops agreement page have to agree on the bucket, and a
+ * signed read against the wrong bucket is a 404 that looks exactly like a
+ * missing photo.
+ */
+export const HANDOVER_PHOTO_BUCKET: StorageBucket = STORAGE_BUCKETS[0];
+
 /** True when Cloudflare R2 credentials are configured. */
 export function r2Configured(): boolean {
   return !!(

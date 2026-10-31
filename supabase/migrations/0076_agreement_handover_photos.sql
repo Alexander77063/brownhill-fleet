@@ -34,5 +34,9 @@ create index agreement_handover_photos_tenant_idx on agreement_handover_photos (
 
 alter table agreement_handover_photos enable row level security;
 
+-- is_tenant_member() comes from 0016_tenancy.sql -- the same tenant predicate
+-- 0017_tenant_scope.sql applies to every domain table. The file originally
+-- called current_tenant(), which no migration has ever defined, so this policy
+-- could not be created and this table never existed in any install.
 create policy tenant_select on agreement_handover_photos for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));

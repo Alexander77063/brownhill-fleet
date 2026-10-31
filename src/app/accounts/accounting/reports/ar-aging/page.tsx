@@ -25,7 +25,7 @@ export default async function ArAgingPage({ searchParams }: { searchParams: Prom
 
   const sp = await searchParams;
   const asOf = sp.asOf ? new Date(sp.asOf) : new Date();
-  const r = await renderArAging(asOf);
+  const r = await renderArAging(ctx.tenantId, asOf);
   return (
     <>
       <h1 className="text-2xl font-semibold mb-4">Aged Accounts Receivable</h1>

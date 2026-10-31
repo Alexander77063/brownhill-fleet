@@ -1,0 +1,20 @@
+[Unit]
+Description=Let's Encrypt renewal for the Brownhill FQDN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# `certbot renew` exits 0 whether or not anything was due, so the exit code
+# tells us nothing about whether the certificate on disk changed. The reload
+# is therefore unconditional: nginx is reloaded after every attempt, so a
+# renewal is picked up the moment it lands and a no-op attempt costs one
+# reload.
+#
+# The repository's own certbot.timer used to drive this, which was wrong
+# twice over. It overwrote the timer the certbot package installs (so a
+# package upgrade silently took the schedule back), and it had no Unit= line,
+# so it fired certbot.service — the package's unit — which renews without
+# reloading nginx. The certificate on disk was then newer than the one nginx
+# was serving, and the site broke on the day the certificate rolled over.
+ExecStart=/bin/sh -c '/usr/bin/certbot renew --quiet; systemctl reload nginx'

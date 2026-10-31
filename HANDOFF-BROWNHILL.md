@@ -6,6 +6,88 @@ If anything in here is unclear, push back; otherwise step through it in order.
 
 ---
 
+## Before you begin — two credentials must be rotated
+
+This repository is **public**. Two credentials were once committed to it, so
+both have to be treated as compromised and replaced before the customer uses
+the system. Removing them from the working tree did not remove them from the
+history, and the history is public — **rotation is the only fix.** Do this
+first; everything below works with the rotated values.
+
+| Credential | Where it was published | Rotate it |
+| --- | --- | --- |
+| The Postgres superuser password | `diag-verify.mjs` and `set-customer-password.mjs`, as a literal fallback for `DATABASE_URL` | Step 1 below |
+| The customer's temporary login password | `HANDOFF-APPENDIX-C.md`, in the clear | Step 2 below |
+
+### Step 1 — the database password
+
+`/etc/brownhill/secrets/pg.env` is the source of truth. The password is
+embedded in two more places that are rendered from it: `app.env`
+(`DATABASE_URL`) and `postgrest.conf` (`db-uri`). The installer rewrites
+both, so it does the whole rotation for you.
+
+```bash
+# 1. write the new password to the one file everything else is rendered from
+NEW_PW="$(openssl rand -hex 32)"
+echo "PG_SUPERUSER_PASSWORD=$NEW_PW" | sudo tee /etc/brownhill/secrets/pg.env >/dev/null
+sudo chown root:brownhill /etc/brownhill/secrets/pg.env
+sudo chmod 0640 /etc/brownhill/secrets/pg.env
+
+# 2. re-run the installer. It is idempotent, and it will NOT regenerate a
+#    secret file that already exists — so it picks up the new password and
+#    re-renders app.env, postgrest.conf, and the role's password from it.
+sudo ./hosted/bootstrap/install.sh
+
+# 3. restart the two services that were holding the old connection string
+sudo systemctl restart postgrest.service brownhill-next.service
+```
+
+The nightly backup and the boot-time schema bootstrap read the password from
+`pg.env` every time they run, so they need no separate step.
+
+Verify:
+
+```bash
+set -a; . /etc/brownhill/secrets/app.env; set +a
+psql "$DATABASE_URL" -c 'select 1'
+```
+
+### Step 2 — the customer's login password
+
+It was printed in `HANDOFF-APPENDIX-C.md`. The appendix says the customer has
+no in-app way to change it, so this is very likely still their live
+password. Reset it, and hand the new one over out of band.
+
+```bash
+# copy the operator scripts to the box — ALL THREE, together. They import
+# each other, and the password script fails immediately and loudly if its
+# import is missing.
+sudo mkdir -p /opt/brownhill/auth
+sudo cp auth-crypt.mjs set-customer-password.mjs diag-verify.mjs /opt/brownhill/auth/
+
+# then, as the operator, on the box:
+set -a; . /etc/brownhill/secrets/app.env; set +a
+SET_PASSWORD='<a new value — not written down anywhere in git>' \
+  node /opt/brownhill/auth/set-customer-password.mjs info@brown-hillchauffeurs.co.uk
+```
+
+`SET_PASSWORD` is preferred over a command-line argument: an argument is
+visible to every process on the machine through `ps`, and it lands in the
+shell's history. Give the new password to the customer **by phone**. Not by
+email, not in a ticket, not in this repository.
+
+Verify the new password against the row the app reads:
+
+```bash
+node /opt/brownhill/auth/diag-verify.mjs info@brown-hillchauffeurs.co.uk '<the new value>'
+```
+
+It must print `timingSafeEqual = true` and `derived.byteLength = 64`. If it
+prints `false`, or a derived key that is not 64 bytes, stop — the scripts and
+the app disagree about the row, and that is the first thing to look at.
+
+---
+
 ## 1. What you are receiving
 
 - A Next.js 15 application (`src/`) plus the Brownhill Fleet SQL schema (`supabase/migrations/` and `standalone/sql/0000_supabase_shim.sql`). The deployed binary lands under `/var/lib/brownhill/app/`.
@@ -13,7 +95,7 @@ If anything in here is unclear, push back; otherwise step through it in order.
 - A PostgREST 12.2.3 instance exposing the SQL data over HTTP on `127.0.0.1:55430` (the app talks to it on loopback only).
 - An HTTPS-only nginx reverse-proxy with HSTS, terminating on `:443`. TLS is by Let's Encrypt via `certbot`. There is no HTTP-only mode in production.
 - A backup / restore path that writes locally to `/var/backups/brownhill/` and off-hosts to Backblaze B2 (S3-compatible).
-- A 5-gate acceptance script (`hosted/tests/acceptance.sh`) that proves the system is healthy before you call it shippable.
+- An acceptance script (`hosted/tests/acceptance.sh`) that proves the system is healthy before you call it shippable: five baseline gates, plus the accounting smoke and the no-credential scan when they apply.
 
 The mainline product (Elite Fleet Management, multi-tenant SaaS) is in the same repo. **None of the SaaS-only code paths run on this deployment** — the `DEPLOYMENT_PROFILE=hosted` switch gates them out at compile time.
 
@@ -41,7 +123,7 @@ These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre
 | `jwt.env` | `JWT_SHARED_SECRET` | HS256 secret that signs the issued access/refresh JWTs **and** verifies them at PostgREST. Same value on both sides by design. |
 | `bootstrap.env` | `BOOTSTRAP_TOKEN` | HMAC key for the `/api/v1/bootstrap` first-run endpoint. Only used **once**, on the day the owner account is created. After that the row in `app_state` flips and the token is no longer accepted. |
 | `backup.env` | `BACKBLAZE_B2_KEY_ID`, `BACKBLAZE_B2_APPLICATION_KEY`, `BACKBLAZE_B2_BUCKET` | B2 credential for nightly off-host backups. |
-| `backup.env` (continued) | `BROWNILL_FQDN` | The FQDN above; used as the B2 path prefix. |
+| `backup.env` (continued) | `BROWNHILL_FQDN` | The FQDN above; used as the B2 path prefix. |
 
 `hosted/bootstrap/operator-secrets.example` is a template you can copy and fill in. Once filled, drop it onto the box at `/etc/brownhill/secrets/` (renamed to remove `.example`) before `install.sh`. The default behaviour is to **generate** secrets at install time if your file is absent.
 
@@ -112,7 +194,8 @@ The `brownhill-bootstrap.service` one-shot unit runs `/usr/local/bin/brownhill-b
 1. Waits for Postgres to answer a real query.
 2. Applies `standalone/sql/0000_supabase_shim.sql` (idempotent).
 3. Applies every migration under `supabase/migrations/*.sql` in order, each in its own transaction.
-4. Writes `app_state.bootstrap_pending='1'`.
+4. Records what it applied in `public.schema_migrations` — the ledger.
+5. Writes `app_state.bootstrap_pending='1'` **only if that row is not already there**.
 
 This runs on the systemd `After=postgresql.service` ordering. To run it now:
 
@@ -121,7 +204,44 @@ sudo systemctl start brownhill-bootstrap.service
 sudo journalctl -u brownhill-bootstrap.service --since '1 minute ago' --no-pager
 ```
 
-The last log line should be `INSERT INTO app_state … ` and `exit 0`. You can also re-run it manually — it is idempotent.
+The last log line should be `INSERT INTO app_state … ` and `exit 0`.
+
+**You can re-run it as often as you like.** It is a no-op against a database
+that is already provisioned: the ledger says what has been applied, and only
+what has not been applied is applied. Before the ledger existed, a second run
+died on migration `0001` — `create type user_role` has no guard — and the unit
+exited 3 on every boot after the first. That is fixed, and
+`hosted/tests/hosted-bootstrap-idempotency.sh` is the gate that proves it.
+
+Two things worth knowing:
+
+- **The first-run flag is a one-way door.** The bootstrap endpoint flips
+  `app_state.bootstrap_pending` to `'0'` when you complete first-run setup
+  (step H), and the bootstrap script does not set it back. Do not be surprised
+  that `bootstrap_pending` is `'0'` on a system that has been set up — that is
+  correct, and the first-run endpoint stays closed.
+- **A database that was provisioned before the ledger existed** has to be
+  adopted once, explicitly:
+
+  ```bash
+  sudo /usr/local/bin/brownhill-bootstrap.sh --baseline-through=<the last migration that HAS been applied>
+  ```
+
+  The option is inclusive: it claims the file you name **and** every
+  migration before it. The script checks the claim against the database — the
+  tables, enum types and functions those migrations create must actually be
+  there — and refuses if they are not. The check happens **before anything
+  is written**, so a refused baseline leaves the database exactly as it was:
+  it is safe to try a cut, read the refusal, and try another.
+  `brownhill-bootstrap.sh --status` reports every migration's state and the
+  file to use; it does not touch the application's schema.
+
+  The adoption is a **one-off**, not a setting. Once the ledger holds the
+  history, the cut is no longer needed, and leaving it in place would
+  re-assert the claim on every boot. The ledger records a baseline as
+  `source='baseline'`, so the record says plainly that it was the operator's
+  word rather than the script's work. The full procedure is in
+  [`docs/runbook/brownhill-namecheap-deploy-2026-10-07.md`](docs/runbook/brownhill-namecheap-deploy-2026-10-07.md).
 
 ### Step F — Issue the Let's Encrypt cert and substitute the FQDN
 
@@ -143,19 +263,38 @@ curl -I https://brownhill.example.co.uk/
 
 You should see HTTP 200 (the Next page returns a status) and `strict-transport-security` in the headers. If you see HTTP 302 to HTTPS, your Nginx `return 301 https://$host$request_uri;` is firing correctly — follow the redirect.
 
-### Step G — Run the five-gate acceptance
+### Step G — Run the acceptance bar
 
 ```bash
 sudo ./hosted/tests/acceptance.sh
 ```
 
-This is the shippable definition (Spec §4.5.7). All five must return 0:
+This is the shippable definition (Spec §4.5.7). Five baseline gates always
+run, and every gate that runs must return 0:
 
 1. `DEPLOYMENT_PROFILE=hosted pnpm test` — the test suite under `DEPLOYMENT_PROFILE=hosted`.
-2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–14 against the live stack.
+2. `hosted/tests/verify-hosted-portability.sh` — runs assertions 0–17 against the live stack.
 3. `hosted/tests/migrations-regression.sh` — replays the schema against a throwaway Postgres, replays portable RLS proof.
 4. `hosted/tests/smoke/hosted-smoke.sh` — round-trips one `.from()` per major resource.
 5. Sunday `brownhill-backup-verify.service` journal entry — restore from a fresh dump into a throwaway Postgres, row counts and RLS replay.
+
+Two further gates are conditional, and the script says which it ran and which
+it skipped:
+
+6. *(opt-in)* the accounting smoke, when `accounting.chart_of_accounts` has
+   rows — see Step A.5 below.
+7. *(opt-in)* the no-credential scan, when this is a git checkout — which is
+   what it scans. It checks that the tree you are handing over holds no
+   password in plain text, and it runs the scan against a probe as well, so
+   that you know the scan can fail. **This repository is public, and it has
+   already published two credentials in plain text** (the box's database
+   superuser password and the customer's login password). Both have been
+   removed from the tree and both must be rotated on the box — that is
+   **Before you begin**, at the top of this document, and it is not optional.
+
+The bar is the number of gates that ran, not the number that passed: a
+conditional gate that runs and fails raises the bar rather than quietly
+dropping it.
 
 Gate 5 won't have a journal entry on first deploy (no Sunday has passed). **Touch the service once manually to confirm the chain:**
 
@@ -193,7 +332,7 @@ After step H:
 
 - `app_state.bootstrap_pending='0'` — bootstrap endpoint will not serve any future request.
 - `app_state.app_draining='0'` — application is live.
-- The owner can sign in via the regular `/api/v1/auth/signin` endpoint from the same Pulse.
+- The owner can sign in via the regular `/api/auth/local/signin` endpoint from the same Pulse.
 
 ## 5. Ongoing operations
 
@@ -201,12 +340,28 @@ After step H:
 
 ```bash
 sudo bash -c 'cd /opt/brownhill/repo && git pull origin main \
-  && pnpm install --frozen-lockfile \
-  && pnpm build:icons \
-  && pnpm --filter @brownhill/webapp build:hosted \
-  && systemctl restart brownhill-next.service \
+  && ./hosted/scripts/deploy-app.sh \
   && systemctl restart postgrest.service'
 ```
+
+`deploy-app.sh` performs the whole application update: `pnpm install
+--frozen-lockfile`, the standalone hosted build, copying the output into
+`/var/lib/brownhill/app`, and restarting `brownhill-next.service`.
+
+Two things it does that a hand-run build does not, and that are why the
+hand-run sequence deployed nothing:
+
+- **The build must be standalone.** `output: 'standalone'` is what produces
+  the `server.js` the unit runs, and it is also what enables the
+  `/rest/v1 → PostgREST` rewrite every `.from()` call reads its data
+  through. Without it the app starts and then cannot reach its database.
+- **The output must be copied into `/var/lib/brownhill/app`.** Building in
+  the repository and restarting the service leaves the service running the
+  *previous* build.
+
+The previous build is kept at `/var/lib/brownhill/app.previous` until the new
+one is in place, and the script prints the rollback command if the restart
+fails.
 
 A future v2 will host an in-app "click to update" button (out of scope for this PR).
 
@@ -277,7 +432,7 @@ Log results in `hosted/tests/chaos/RUNS.md`. They are the proof the failure-mode
 If a deploy goes wrong:
 
 1. **Stop further failures.** `systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer` — this freezes the running state without disrupting the DB.
-2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, `pnpm --filter @brownhill/webapp build:hosted`, `systemctl start brownhill-next.service`.
+2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, then `./hosted/scripts/deploy-app.sh` — it builds, installs into `/var/lib/brownhill/app` and restarts the service. (The service runs `node server.js` from that directory, so a build without the copy leaves the old build in place.)
 3. **Only if the database is the problem**, use the UI at `/admin/restore` to replay the most recent good dump onto the live cluster. Take a fresh `pg_dump` first if you can (`pg_dump` through PostgREST works at `127.0.0.1:55430`).
 4. **Don't roll back the schema.** The 53 SQL migrations are content-versioned forward-only. Restoring an old application build against a current schema is safe; restoring an old schema build against the current application data is not.
 
@@ -291,7 +446,7 @@ There is no automatic revert button. The paths above are exhaustive on purpose.
 
 ## 10. What's not in this handoff
 
-- **Multi-instance / horizontally-scaled deployments.** Single-Pulsar is supported; multi-instance needs the operator to add a shared KV (Redis is the natural choice) for the `app_state.app_draining` signal. The middleware reads it through `localDb()` today; the abstraction is small.
+- **Multi-instance / horizontally-scaled deployments.** Single-Pulsar is supported; multi-instance needs the operator to add a shared KV (Redis is the natural choice) for the `app_state.app_draining` signal. The Edge middleware reads the flag over HTTP from PostgREST as `anon`, against a one-row RLS policy; a second instance would need that flag served from somewhere both can reach. The abstraction is small.
 - **External monitoring / paging.** Alert markers are written; the page-out (Pushover / email / SMS) is wired as an empty shim at `/usr/local/bin/brownhill-alert-forward.sh`. Wire that to your channel of choice.
 - **In-app update button.** v1 is SSH + git pull. v2 will surface this in the operator UI.
 - **Multi-tenant routing.** The hosted profile is single-tenant-by-deployment. A second Brownhill-style customer requires their own deploy.
@@ -352,9 +507,13 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
 3. The `/admin/accounting/banks/[id]/import` page reads the file, parses it, previews the rows with auto-match suggestions, and on commit runs the auto-matcher (90% threshold from spec §8 default 6).
 4. Unmatched transactions go to `/admin/accounting/reconcile` for manual categorisation.
 
-### Step A.5 — Verify the six-gate bar
+### Step A.5 — Verify the accounting gate
 
-The acceptance script at `hosted/tests/acceptance.sh` now has six gates (the original five + **Gate 6 — accounting smoke**). Gate 6 is opt-in by the presence of `accounting.chart_of_accounts` rows. When the accounting module is enabled, all six gates must return 0 for the deploy to be shippable.
+The acceptance script at `hosted/tests/acceptance.sh` runs **Gate 6 — the
+accounting smoke** when `accounting.chart_of_accounts` has rows. It is
+opt-in, so the bar is six gates with accounting enabled and seven with the
+no-credential scan as well (see Step G). Every gate that runs must return 0
+for the deploy to be shippable.
 
 Run the chaos drills monthly:
 

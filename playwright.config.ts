@@ -8,7 +8,7 @@ import { defineConfig, devices } from '@playwright/test';
  * Supabase, because every authenticated route is behind middleware.
  *
  *   supabase start
- *   node scripts/seed-auth.mjs
+ *   SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs
  *   pnpm build
  *   pnpm test:axe
  *

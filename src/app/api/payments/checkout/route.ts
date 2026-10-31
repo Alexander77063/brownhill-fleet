@@ -21,8 +21,16 @@ export async function GET(req: NextRequest) {
   const agreementId = searchParams.get('agreement');
   const providerKey = (searchParams.get('provider') ?? 'stripe').toLowerCase();
 
+  // The checkout is only ever started from the driver's own payments page, so
+  // that is where the driver has to land afterwards — whether the payment
+  // succeeded, was cancelled, or never started.
+  //
+  // These redirects used to point at `/billing`, which is not a route in this
+  // application: there is no root `/billing` page, only `/driver/billing`,
+  // `/ops/billing` and `/accounts/billing`. A driver whose payment SUCCEEDED
+  // was dropped onto a 404 by the payment provider's redirect.
   const back = (error: string) =>
-    NextResponse.redirect(new URL(`/billing?error=${encodeURIComponent(error)}`, origin));
+    NextResponse.redirect(new URL(`/driver/payments?error=${encodeURIComponent(error)}`, origin));
 
   // Driver-rent collection is the rental module. A tenant without it — every
   // Nigerian tier, and a UK tenant that did not buy rental — has nothing to
@@ -73,8 +81,8 @@ export async function GET(req: NextRequest) {
   );
   if (outstandingPence <= 0) return back('nothing_outstanding');
 
-  const successUrl = new URL(`/billing?paid=1&agreement=${agreementId}`, origin).toString();
-  const cancelUrl = new URL(`/billing?cancelled=1&agreement=${agreementId}`, origin).toString();
+  const successUrl = new URL(`/driver/payments?paid=1&agreement=${agreementId}`, origin).toString();
+  const cancelUrl = new URL(`/driver/payments?cancelled=1&agreement=${agreementId}`, origin).toString();
 
   try {
     const { url } = await provider.createCheckout(

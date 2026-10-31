@@ -32,6 +32,7 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/ops/drivers', label: 'Drivers', icon: 'users', primary: true },
     { href: '/ops/owners', label: 'Owners', icon: 'users' },
     { href: '/ops/agreements', label: 'Agreements', icon: 'signature', feature: 'rental.core' },
+    { href: '/ops/rtb-calculator', label: 'RTB calculator', icon: 'pound', feature: 'rental.core' },
     { href: '/ops/bookings', label: 'Dispatch', icon: 'car', primary: true, feature: 'rental.core' },
     { href: '/ops/tracking', label: 'Live tracking', icon: 'trending', feature: 'gps.phone' },
     { href: '/ops/billing', label: 'Billing', icon: 'receipt', primary: true },
@@ -62,6 +63,8 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/accounts/accounting', label: 'Accounting', icon: 'pound' },
     { href: '/accounts/accounting/banks', label: '  Banks', icon: 'wallet' },
     { href: '/accounts/accounting/reconcile', label: '  Reconcile', icon: 'check' },
+    { href: '/accounts/accounting/coa', label: '  Chart of accounts', icon: 'doc' },
+    { href: '/accounts/accounting/periods', label: '  Periods', icon: 'clock' },
     { href: '/accounts/accounting/reports/pnl', label: '  P&L', icon: 'trending' },
     { href: '/accounts/accounting/reports/balance-sheet', label: '  Balance sheet', icon: 'doc' },
     { href: '/accounts/accounting/reports/cashflow', label: '  Cashflow', icon: 'trending' },
@@ -93,9 +96,13 @@ export const NAV: Record<UserRole, NavItem[]> = {
     { href: '/owner/settings', label: 'Settings', icon: 'wrench' },
     { href: '/owner/settings/security', label: 'Security', icon: 'shield' },
   ],
-  // Investor is deprecated as a login role — investor updates are now generated
-  // on demand from the tenant's Reports page. Kept empty to satisfy the Record type.
-  investor: [],
+  // An investor: the rent-to-buy portfolio — what the business earns on the
+  // book and the rate the rentees pay on it. Figures, not names: the read
+  // goes through the PII-free investor views, so the database decides what an
+  // investor may see.
+  investor: [
+    { href: '/investor', label: 'Portfolio', icon: 'trending', primary: true, feature: 'reports.investor' },
+  ],
 };
 
 /** The items a tenant with `features` may see, in declared order. */

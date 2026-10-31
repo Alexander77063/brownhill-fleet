@@ -7,12 +7,36 @@ import { formatDate, titleCase, invoiceStatusTone } from '@/lib/display';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Why a checkout did not start, in the driver's own words.
+ *
+ * The checkout route redirects here with `?error=<code>` when it cannot
+ * begin a payment. Every code it can send has a line here, so the driver is
+ * never shown a bare query string.
+ */
+const CHECKOUT_ERRORS: Record<string, string> = {
+  not_in_plan: 'Online payment is not available on this account. Please use the bank transfer details below.',
+  missing_agreement: 'We could not tell which agreement this payment was for. Please try again from your payments page.',
+  unknown_provider: 'That payment method is not one we support. Please try again.',
+  agreement_not_found: 'We could not find that agreement. Please try again.',
+  payment_not_set_up: 'Online payment has not been set up yet. Please use the bank transfer details below.',
+  nothing_outstanding: 'There is nothing outstanding to pay on this agreement.',
+  checkout_failed: 'We could not start the payment. Please try again, or use the bank transfer details below.',
+};
+
 export default async function DriverPayments({
   searchParams,
 }: {
-  searchParams: Promise<{ agreement?: string; highlight?: string }>;
+  searchParams: Promise<{
+    agreement?: string;
+    highlight?: string;
+    error?: string;
+    paid?: string;
+    cancelled?: string;
+  }>;
 }) {
-  const { highlight } = await searchParams;
+  const { highlight, error, paid, cancelled } = await searchParams;
+  const errorMessage = error ? CHECKOUT_ERRORS[error] : undefined;
   const p = await getSessionProfile();
   if (!p?.driverId) {
     return (
@@ -38,6 +62,42 @@ export default async function DriverPayments({
 
   return (
     <>
+      {paid === '1' && (
+        <div
+          role="status"
+          className="mb-4 flex items-start gap-3 rounded-md border border-[var(--color-profit)] bg-[rgba(76,175,125,0.12)] px-4 py-3 text-sm"
+        >
+          <Icon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-profit" />
+          <p className="text-cream">
+            <strong>Thank you — your payment went through.</strong> The receipt will appear in your
+            payment history below as soon as the payment provider confirms it.
+          </p>
+        </div>
+      )}
+
+      {cancelled === '1' && (
+        <div
+          role="status"
+          className="mb-4 flex items-start gap-3 rounded-md border border-[var(--color-warn)] bg-[rgba(217,162,59,0.12)] px-4 py-3 text-sm"
+        >
+          <Icon name="alert" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warn)]" />
+          <p className="text-cream">
+            <strong>You cancelled the payment.</strong> Nothing has been charged. You can pay again
+            whenever you are ready.
+          </p>
+        </div>
+      )}
+
+      {errorMessage && (
+        <div
+          role="alert"
+          className="mb-4 flex items-start gap-3 rounded-md border border-[var(--color-loss)] bg-[rgba(214,88,79,0.10)] px-4 py-3 text-sm"
+        >
+          <Icon name="alert" className="mt-0.5 h-4 w-4 shrink-0 text-loss" />
+          <p className="text-cream">{errorMessage}</p>
+        </div>
+      )}
+
       {highlight === '1' && ag && (
         <div
           role="status"

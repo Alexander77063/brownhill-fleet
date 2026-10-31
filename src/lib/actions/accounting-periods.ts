@@ -29,8 +29,8 @@ export async function closePeriodAction(formData: FormData): Promise<void> {
   if (!ym) throw new Error('Invalid period (year / month).');
   // Ensure the period row exists before we try to close it — the journal
   // bridge is lazy about creating rows.
-  await ensurePeriod(ym.year, ym.month);
-  await closePeriod(ym.year, ym.month, ctx.userId);
+  await ensurePeriod(ctx.tenantId, ym.year, ym.month);
+  await closePeriod(ctx.tenantId, ym.year, ym.month, ctx.userId);
   revalidatePath('/accounts/accounting/periods');
   // /admin/accounting/periods is not built yet — revalidate when it lands.
   // Wrap in try so this code is forward-compatible.
@@ -41,7 +41,7 @@ export async function reopenPeriodAction(formData: FormData): Promise<void> {
   const ctx = await requirePermission('billing.write');
   const ym = readYearMonth(formData);
   if (!ym) throw new Error('Invalid period (year / month).');
-  await reopenPeriod(ym.year, ym.month, ctx.userId);
+  await reopenPeriod(ctx.tenantId, ym.year, ym.month, ctx.userId);
   revalidatePath('/accounts/accounting/periods');
   try { revalidatePath('/admin/accounting/periods'); } catch {}
 }

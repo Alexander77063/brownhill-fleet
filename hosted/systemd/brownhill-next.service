@@ -8,12 +8,28 @@ Type=simple
 User=brownhill
 Group=brownhill
 WorkingDirectory=/var/lib/brownhill/app
+# jwt.env   — JWT_SHARED_SECRET, the signing secret PostgREST verifies with.
+# app.env   — DATABASE_URL, BOOTSTRAP_TOKEN, POSTGREST_URL.
+#
+# The unit used to load jwt.env alone. The app also needs the database URL to
+# open its own connection (sign-in, the operator surfaces, first-run setup)
+# and the bootstrap token to verify the first-run signature — so on a real box
+# it started with neither, and nobody could sign in or create the first
+# account.
 EnvironmentFile=/etc/brownhill/secrets/jwt.env
+EnvironmentFile=/etc/brownhill/secrets/app.env
 Environment=DEPLOYMENT_PROFILE=hosted
 Environment=NODE_ENV=production
 Environment=PORT=55431
 Environment=HOST=127.0.0.1
-ExecStart=/usr/bin/node server.js
+# The pinned runtime that hosted/scripts/fetch-runtime.sh installs, not
+# whatever node the distribution happens to ship. The unit pointed at
+# /usr/bin/node, which the box does not necessarily have — the runtime
+# installer puts Node 22.11 under /opt/brownhill/node — so on a freshly
+# provisioned box the unit failed with "status=203/EXEC" before it ever
+# reached the application.
+Environment=PATH=/opt/brownhill/node/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/brownhill/node/bin/node server.js
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=2
