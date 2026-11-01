@@ -79,6 +79,7 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 ALLOWED_URL_PASSWORDS=(
   "postgres"          # the stock Postgres password, in .env.example
   "fixture-pg-pw"     # the fixture password in hosted/tests/test-install-postgrest-conf.sh
+  "aaaabbbbcccc"      # the fixture password in hosted/tests/mtd-env-wiring.sh
 )
 ALLOWED_FALLBACKS=(
   "local-proof-secret"  # the proof's own stand-in, in hosted/tests/auth/mint-test-jwt.mjs

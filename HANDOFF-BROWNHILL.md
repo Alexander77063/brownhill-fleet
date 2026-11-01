@@ -115,7 +115,7 @@ You do **not** need Docker, a database server of your own, or any external monit
 
 ## 3. Five secrets you will own and seed into the box
 
-These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre-fill them, but production operations prefer a human-owned value. The files are at `/etc/brownhill/secrets/` with mode `0640` and the corresponding service user as the owner. The format is the Linux convention `KEY=value` (one per file, since `set -a; source /etc/brownhill/secrets/*.env; set +a` is the standard way to load them).
+These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre-fill them, but production operations prefer a human-owned value. The files are at `/etc/brownhill/secrets/` with mode `0640`, owned `root:brownhill` — the `postgres`, `postgrest` and `brownhill` service accounts are all members of the `brownhill` group, which is how they read the files without any of them owning a credential. The format is the Linux convention `KEY=value` (one per file, since `set -a; source /etc/brownhill/secrets/*.env; set +a` is the standard way to load them).
 
 | File | Variable | Use |
 | --- | --- | --- |
@@ -543,7 +543,7 @@ Log results in `hosted/tests/chaos/RUNS.md`. They are the proof the failure-mode
 
 ## 7. Files and paths the operator owns
 
-- `/etc/brownhill/secrets/{pg,jwt,bootstrap,backup}.env` — mode 0640, owned by `postgres`/`root` per file. Source of truth for runtime secrets.
+- `/etc/brownhill/secrets/{pg,jwt,bootstrap,backup}.env` — mode 0640, owned `root:brownhill` (the shared service group). Source of truth for runtime secrets.
 - `/etc/brownhill/postgrest.conf` — rendered from `hosted/bootstrap/postgrest.conf.template`. Re-runnable.
 - `/etc/nginx/nginx.conf` — overlay on top of `hosted/nginx/brownhill.conf`. The `substitute-fqdn.sh` script writes to the in-repo copy, which `install.sh` copies into `/etc/nginx/`. To customise beyond FQDN-cosmetic, edit the in-repo source and re-run the install.
 - `/etc/systemd/system/{postgresql.service, postgresql.service.d/override.conf, brownhill-bootstrap.service, brownhill-next.service, postgrest.service, brownhill-backup.{service,timer}, brownhill-backup-verify.{service,timer}, alert-watch.{path,service}}` — managed by `install.sh` and the helper scripts.

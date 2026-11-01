@@ -105,6 +105,26 @@ jobs:
         # exists to catch, and requires it to fail on the right check each
         # time.
         run: bash hosted/tests/mtd-env-wiring-negative.sh
+      - name: The credential files are never readable by anybody else
+        # The installer writes the box's credentials: the database superuser
+        # password, the JWT signing secret, the HMAC key the first-run setup
+        # verifies against, the HMRC client secret and the off-host backup
+        # credentials.
+        #
+        # They were written straight to their final path, so for the length
+        # of the write each of them existed there — empty, and readable by
+        # every account on the box, because the redirect creates a file with
+        # the process umask and only the chmod afterwards narrows it.
+        #
+        # The writer now goes through a temporary file and a rename, and this
+        # gate watches the target path while the write is in progress, to
+        # prove it never holds an incomplete file.
+        run: bash hosted/tests/secret-file-permissions.sh
+      - name: The credential-file gate can fail
+        # A gate that cannot fail is not a gate. This runs it against a copy
+        # of the tree that writes the credential straight to its final path
+        # again, and requires it to fail on the check that watches for it.
+        run: bash hosted/tests/secret-file-permissions-negative.sh
       - name: The acceptance bar's own arithmetic
         # hosted/tests/acceptance.sh decides whether a deployment is fit to
         # hand over, and that decision is arithmetic. The arithmetic asked

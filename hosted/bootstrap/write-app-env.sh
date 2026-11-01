@@ -105,19 +105,52 @@ fi
 
 # ── write it ────────────────────────────────────────────────────────────────
 target="$SECRETS_DIR/app.env"
+
+# The file holds the database password and the bootstrap token, so it must
+# never be readable by anybody else — not even for the moment it takes to
+# write it.
+#
+# Writing straight to the target creates it with the process umask, which
+# is 0644 on most systems: world-readable, until a chmod narrows it
+# afterwards. For the length of that window the database password was
+# readable by every account on the box.
+#
+# So the contents go into a temporary file that is created with restrictive
+# permissions, and that file is MOVED into place. A rename is atomic, so
+# the target path only ever holds a file that already has the permissions
+# it should have. The file is REPLACED rather than rewritten in place,
+# which also means a reader never sees a half-written file.
+#
+# The temporary file is created in the secrets directory itself, so the
+# move is a rename within one file system. That means this script needs
+# write permission on the DIRECTORY, not just on the file — which is what
+# it needs anyway to put a file there.
+umask 077
+tmp="$(mktemp "$SECRETS_DIR/.app.env.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+# The connection string is built first, and the file is printed from it. It
+# reads the same either way; what changes is that the URL is one value in
+# one place, with the password substituted into it, rather than a format
+# string with a hole in the middle of a connection string.
+db_url="postgresql://postgres:${pg_pw}@127.0.0.1:55432/postgres"
+
 {
-  printf 'DATABASE_URL=postgresql://postgres:%s@127.0.0.1:55432/postgres\n' "$pg_pw"
+  printf 'DATABASE_URL=%s\n' "$db_url"
   printf 'BOOTSTRAP_TOKEN=%s\n' "$bootstrap_token"
   printf 'POSTGREST_URL=http://127.0.0.1:55430\n'
   printf 'NEXT_PUBLIC_APP_URL=https://%s\n' "$fqdn"
-} > "$target"
+} > "$tmp"
 
-# The file holds the database password, so it is group-readable by the
-# services that need it and unreadable by anybody else. The owner is root
-# because the operator edits it with root and the application only reads it.
-chmod 0640 "$target"
+# The file is group-readable by the services that need it and unreadable by
+# anybody else. The owner is root because the operator edits it with root
+# and the application only reads it.
 if [[ "$(id -u)" -eq 0 ]] && getent group brownhill >/dev/null 2>&1; then
-  chown root:brownhill "$target"
+  chown root:brownhill "$tmp"
 fi
+chmod 0640 "$tmp"
+
+mv -f -- "$tmp" "$target"
+trap - EXIT
 
 echo "wrote $target"

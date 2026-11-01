@@ -117,11 +117,55 @@ chmod 0750 /var/backups/brownhill
 
 # ── secrets ──────────────────────────────────────────────────────────────────
 # Only written if absent, so a pre-generated value always wins.
+#
+# A temporary credential file that has been written but not yet moved into
+# place. If this script dies between the two, it goes with it: it holds a
+# secret, and it must not be left lying in the secrets directory under a
+# name nobody will recognise.
+SECRET_TMP=""
+cleanup_secret_tmp() {
+  if [[ -n "$SECRET_TMP" ]]; then
+    rm -f "$SECRET_TMP"
+  fi
+}
+trap cleanup_secret_tmp EXIT
+
+# The file holds a credential — the database superuser password, the JWT
+# signing secret, the HMAC key the first-run setup verifies against, the
+# HMRC client secret — so it must never be readable by anybody else, not
+# even for the length of the write.
+#
+# Writing straight to the target creates the file with the process umask,
+# which is 0644 on most systems: world-readable, until a chmod narrows it
+# afterwards. For the length of that window the credential was readable by
+# every account on the box, and the file was there EMPTY, before the first
+# byte had been written.
+#
+# So the contents go into a temporary file that is created with restrictive
+# permissions, and that file is MOVED into place. A rename is atomic, so
+# the target path only ever holds a file that already has the permissions
+# it should have and already holds the whole secret.
+#
+# The temporary file is created in the same directory as the target, so the
+# move is a rename within one file system.
 write_secret() {
   local path="$1"
   shift
   if [[ ! -f "$path" ]]; then
-    printf '%s\n' "$@" > "$path"
+    local tmp
+    tmp="$(mktemp "$(dirname "$path")/.secret.XXXXXX")"
+    SECRET_TMP="$tmp"
+    # mktemp creates the file 0600. Stated rather than assumed, so the
+    # property does not rest on a default nobody has to read.
+    chmod 0600 "$tmp"
+    printf '%s\n' "$@" > "$tmp"
+    # The file is group-readable by the services that need it and unreadable
+    # by anybody else. The owner is root because the operator edits it with
+    # root and the services only read it.
+    chown root:brownhill "$tmp"
+    chmod 0640 "$tmp"
+    mv -f -- "$tmp" "$path"
+    SECRET_TMP=""
   fi
   chown root:brownhill "$path"
   chmod 0640 "$path"

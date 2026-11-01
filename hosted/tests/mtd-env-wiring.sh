@@ -54,8 +54,37 @@ cd "$REPO"
 
 PASS=0
 FAIL=0
-ok()  { echo "  ok: $1"; PASS=$((PASS + 1)); }
-bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+SKIP=0
+ok()   { echo "  ok: $1"; PASS=$((PASS + 1)); }
+bad()  { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
+skip() { echo "  skip: $1"; SKIP=$((SKIP + 1)); }
+
+# The mode of a file, and its inode. `stat` spells these differently on GNU
+# and BSD, so both are tried.
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo ""
+}
+
+file_inode() {
+  stat -c '%i' "$1" 2>/dev/null || stat -f '%i' "$1" 2>/dev/null || echo ""
+}
+
+# Does this file system honour permissions at all?
+#
+# Git Bash on Windows mounts NTFS with `noacl`, where `chmod` is a no-op and
+# every file reads as 644 however it was chmodded. A mode check there would
+# report a failure that is about the file system rather than about the
+# script, and a check that cannot distinguish the two is not a check.
+#
+# So the probe asks the file system itself. Where permissions are honoured —
+# the box, and CI — the check runs and must pass. Where they are not, the
+# check says so, out loud, rather than passing quietly.
+modes_are_honoured() {
+  local probe="$TMP/mode-probe"
+  : > "$probe"
+  chmod 0600 "$probe" 2>/dev/null
+  [[ "$(file_mode "$probe")" == "600" ]]
+}
 
 INSTALL=hosted/bootstrap/install.sh
 APP_ENV_WRITER=hosted/bootstrap/write-app-env.sh
@@ -275,6 +304,46 @@ if [[ -f "$APP_ENV_WRITER" ]]; then
   else
     bad "backup.env's FQDN and app.env's address can now disagree"
   fi
+
+  # ── the credential file is never readable by anybody else ───────────────
+  #
+  # app.env carries the database password and the bootstrap token. Writing
+  # straight to it creates the file with the process umask — 0644 on most
+  # systems, world-readable — and only narrows it to 0640 afterwards. For
+  # the length of that window the database password was readable by every
+  # account on the box.
+  #
+  # The file is therefore written through a temporary file and MOVED into
+  # place. A rename is atomic, so the target path only ever holds a file
+  # that already has the right permissions.
+  #
+  # Two things are checked, and together they are the property: the file
+  # ends at 0640, and it is REPLACED rather than rewritten in place. A file
+  # rewritten in place keeps the permissions it had before the write, and
+  # its contents change under every other account's eyes.
+
+  mode="$(file_mode "$SECRETS/app.env")"
+  if modes_are_honoured; then
+    if [[ "$mode" == "640" ]]; then
+      ok "app.env is mode 0640 — the service group may read it, nobody else may"
+    else
+      bad "app.env is mode ${mode:-unknown}, not 0640"
+    fi
+  else
+    skip "app.env's mode cannot be checked here — this file system does not honour permissions, so chmod is a no-op. The check runs on the box and in CI, where it must pass"
+  fi
+
+  before_inode="$(file_inode "$SECRETS/app.env")"
+  bash "$APP_ENV_WRITER" "$SECRETS" >"$TMP/mode.out" 2>&1
+  after_inode="$(file_inode "$SECRETS/app.env")"
+
+  if [[ -z "$before_inode" || -z "$after_inode" ]]; then
+    bad "the file system does not report an inode, so it could not be checked whether app.env is replaced rather than rewritten in place"
+  elif [[ "$before_inode" != "$after_inode" ]]; then
+    ok "app.env is replaced rather than rewritten in place — it is never briefly world-readable"
+  else
+    bad "app.env is rewritten in place — the database password is world-readable while it is being written"
+  fi
 else
   bad "$APP_ENV_WRITER does not exist — nothing writes the application's environment"
 fi
@@ -330,5 +399,5 @@ else
 fi
 
 echo
-echo "Result: $PASS passed, $FAIL failed"
+echo "Result: $PASS passed, $FAIL failed, $SKIP skipped"
 [[ "$FAIL" -eq 0 ]]
