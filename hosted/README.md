@@ -222,6 +222,66 @@ bash hosted/tests/bootstrap-wait.sh
 bash hosted/tests/acceptance.sh
 ```
 
+### The database-backed suites
+
+Two suites need a real postgres. Both check for `DATABASE_URL` and **skip out
+loud** when it is absent — a skipped check and a passing check look the same in
+a build log, and these are worth knowing about.
+
+```bash
+# The stack's own postgres, published on the loopback. It authenticates with
+# trust, so the URL carries no password.
+export DATABASE_URL=postgres://postgres@127.0.0.1:55432/postgres
+
+# The ledger's atomicity, against the real schema. A balanced entry commits
+# with every one of its lines and its audit row; an unbalanced one commits
+# NOTHING — no entry, no lines, no audit row; and the same unbalanced entry
+# written WITHOUT a transaction really does leave an orphan entry behind.
+#
+# That third case is the one that keeps the other two honest: it reproduces
+# the old behaviour on purpose and asserts the orphan appears, so the first
+# two cannot be passing for the wrong reason.
+#
+# It exists because `accounting.journal_lines` carries a DEFERRED balance
+# trigger, which only means anything at COMMIT. The bridge used to write its
+# entry, its lines and its audit row as three separate autocommitted
+# statements, so the trigger fired after the first line, judged it alone, and
+# rejected the entry — while the entry row, already committed, stayed behind
+# as an orphan. The reconciliation queue's "mark as a VAT payment" and "mark
+# as a bank fee" buttons both failed that way, and the MTD VAT return never
+# reached the ledger at all.
+pnpm test:integration
+
+# The accounting schema's tenant isolation. No browser-facing role can reach
+# the schema at all; row-level security is enabled on every tenant-scoped
+# table; every one of them carries the restrictive `tenant_isolation` policy
+# and the two sets are exactly the same set; the audit log has no permissive
+# policy that could rewrite it; and a member of one tenant sees none of
+# another's ledger, while a caller with no identity at all sees nothing.
+#
+# The last two checks are the negative controls. They drop the restrictive
+# policy — inside a transaction, so it comes back with the rollback — and
+# require the isolation to leak, and they add a permissive DELETE policy and
+# require the audit trail to go. Without them the checks above could pass
+# against policies that do nothing, which is exactly what migrations 0068 and
+# 0069 shipped.
+pnpm test:rls
+```
+
+Both suites create their own tenants, users and rows and remove them
+afterwards. `pnpm test` includes them too, so with `DATABASE_URL` set the whole
+suite runs against the database.
+
+**In CI they run in the `hosted-smoke` job, not the `unit-tests` job.** The
+`unit-tests` job has no database, so there they skip. The `hosted-smoke` job
+brings the compose stack up, so its test step is given the stack's own
+`DATABASE_URL` and the two suites really execute. That job's `paths` filter
+used to name the schema, the scripts and the hosted box — and nothing under
+`src/` — so a change to the ledger's own code never brought the job up, and
+the database-backed tests never ran in CI at all. The filter now names the
+accounting module, the API routes under it, the database helper and the two
+test directories.
+
 ## Backup adapter
 
 Off-host backups default to Backblaze B2 (S3-compatible, ~$0.005/GB/month, no egress fees within NA/EU). The adapter interface lives at `src/lib/backup/managed.ts`:

@@ -362,6 +362,21 @@ business paid.
 | `accounting.audit_log` | The accounting module's own append-only audit trail — read and appended to, never edited or removed |
 | `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window |
 
+**The balance is checked at COMMIT, not at INSERT.** `accounting.journal_lines`
+carries a deferred constraint trigger — `trg_journal_lines_balanced`,
+`AFTER INSERT OR UPDATE … DEFERRABLE INITIALLY DEFERRED` — because an entry's
+balance can only be judged once every one of its lines is present. The trigger
+therefore fires at the end of the **enclosing transaction**, and under
+autocommit that is the end of each individual statement, which is the wrong
+moment: the first line of a two-line entry is judged on its own and the entry
+is rejected with `journal <id> unbalanced: debits=120 credits=0`.
+
+**Every posting must therefore be written inside one transaction.**
+`src/lib/accounting/journal-bridge.ts` takes a transaction handle as a
+**required first argument** for exactly this reason, so a call site that
+forgets one does not compile. The behaviour is proved against a real postgres
+by `tests/integration/accounting/journal-atomicity.test.ts`.
+
 ### 5.4 How the accounting schema is tenant-scoped
 
 The accounting schema is the one part of the product that **does not** follow
@@ -392,6 +407,41 @@ another's ledger. `tests/unit/accounting/sql-contract.test.ts` holds every
 statement that touches a tenant-scoped accounting table to containing
 `tenant_id`; the policy is the second line of defence for any connection that
 is *not* the superuser.
+
+**And no such connection exists today.** The accounting schema carries **no
+privileges at all** for any role other than the owner: `anon` and
+`authenticated` — the two roles PostgREST uses — have neither USAGE on the
+schema nor SELECT on a single table in it. That is deliberate, and it is the
+stronger guarantee: the ledger cannot be served over HTTP even by accident,
+because there is no grant for it to be served through. It also means the
+policies are currently **unreachable** — the only connection that can read the
+ledger is the superuser one, which bypasses them. So today the SQL contract is
+the only active defence, and the policies are what would hold if a
+non-superuser connection ever reached the schema.
+
+Both halves of that are proved rather than asserted, by
+`tests/rls/accounting-rls.test.ts` (`pnpm test:rls`), against a real
+postgres:
+
+- no browser-facing role has USAGE on the accounting schema or SELECT on
+  `accounting.journal_lines`;
+- row-level security is enabled on every tenant-scoped accounting table, and
+  every one of them carries the restrictive `tenant_isolation` policy — the
+  two sets are exactly the same set, so no table can be quietly left out;
+- the audit log has no **permissive** policy that could rewrite it. A
+  restrictive policy narrows and never grants, so the absence of a permissive
+  UPDATE/DELETE policy is the protection, and a role holding every privilege
+  still cannot update or delete a row;
+- a member of one tenant sees none of another's ledger, and a caller with no
+  identity at all sees nothing — proved by switching to the `authenticated`
+  role inside a transaction, because a table's owner bypasses RLS and a proof
+  run as `postgres` passes against policies that do nothing;
+- and the checks are load-bearing: with the restrictive policy dropped the
+  isolation really does leak, and with a permissive DELETE policy added the
+  audit trail really does go.
+
+The temporary grants the behavioural checks need are made inside a transaction
+that is rolled back, so the deployed database is left exactly as it was found.
 
 Two other things 0081 fixes that the code had been working around:
 

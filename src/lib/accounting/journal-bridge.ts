@@ -1,9 +1,37 @@
 // src/lib/accounting/journal-bridge.ts
-// Writes a journal_entry + journal_lines + audit_log row in a single DB transaction
-// and updates the source row's posted_journal_id. The transaction wrapper is
-// what makes "the trial balance is always zero" provable: the trigger
-// journal_balanced() runs at COMMIT time (deferred), and the transaction rolls
-// back if the trigger raises.
+// Writes a journal_entry + journal_lines + audit_log row in ONE database
+// transaction, and updates the source row's posted_journal_id inside that same
+// transaction. The transaction is what makes "the trial balance is always
+// zero" provable: the trigger journal_balanced() runs at COMMIT time
+// (deferred), and the transaction rolls back if the trigger raises.
+//
+// THE TRANSACTION IS THE CALLER'S TO PROVIDE
+// ------------------------------------------
+// Every commit function below takes a transaction handle as its FIRST
+// argument, and none of them opens a transaction of its own. That is not a
+// stylistic choice — it is the fix for a bug that made the ledger unusable.
+//
+// `accounting.journal_lines` carries a deferred balance trigger, so the
+// balance is checked at COMMIT. The bridge used to write its entry, its lines
+// and its audit row as three separate autocommitted statements on a pooled
+// connection, which meant the trigger fired at the end of EACH line insert
+// and saw one line at a time. Measured against a real postgres:
+//
+//   insert the first line of a two-line entry on a pooled connection
+//     → ERROR: journal <id> unbalanced: debits=120 credits=0
+//     → and the journal_entries row, committed before the lines were
+//       attempted, stays behind as an ORPHAN with no lines.
+//
+// The same writes inside one transaction commit cleanly.
+//
+// Three call sites took that path — the reconciliation queue's "mark as a VAT
+// payment" and "mark as a bank fee" buttons, and the MTD VAT submission — and
+// all three failed with a 500 while leaving an orphan entry behind.
+//
+// So the shape is now: the caller opens the transaction (with `withJournalTx`,
+// or its own `sql.begin` when it has other writes to make atomic with the
+// posting) and hands the handle in. A call site that forgets to does not
+// compile: the handle is a required first argument.
 //
 // Every entry point is async and idempotent: re-running with the same
 // (source_type, source_id) is a no-op (we look up the existing journal_entry
@@ -29,13 +57,14 @@ import type { PostResult } from './journal';
 import type { ISql } from 'postgres';
 
 /**
- * Either a pooled connection (`localDb()`) or a transaction-scoped one
- * (the handle `sql.begin()` hands to its callback). Both expose the same
- * query interface, so a caller that needs its journal entry to commit
- * atomically with its own writes can pass the transaction handle instead of
- * letting the bridge open a second connection.
+ * A transaction-scoped connection: the handle `begin()` hands to its callback.
+ *
+ * This is `ISql` rather than postgres.js's concrete `Sql` on purpose. The
+ * concrete interface is the one that carries `begin()`, so a transaction
+ * handle — typed as `ISql` — has no `begin` at all. Nesting a transaction
+ * inside a transaction is therefore a type error, not a runtime surprise.
  */
-type Sql = ISql;
+export type Sql = ISql;
 
 interface UserCtx {
   userId: string;
@@ -49,9 +78,34 @@ export interface JournalPeriod {
 }
 
 /**
+ * Run `fn` inside one transaction, on the pooled connection.
+ *
+ * This is the way to get a transaction handle for the commit functions below.
+ * If the caller has other writes that must land atomically with the posting,
+ * it opens its own transaction and passes that handle down instead — the
+ * commit functions never open one, so there is exactly one transaction either
+ * way.
+ *
+ * `fn` throwing rolls the transaction back; the error reaches the caller
+ * unchanged.
+ */
+export async function withJournalTx<T>(fn: (tx: Sql) => Promise<T>): Promise<T> {
+  const conn = await localDb();
+  // The cast is postgres.js's own conditional return type: `begin` resolves to
+  // `UnwrapPromiseArray<T>`, which for a plain promise is `T` — but the
+  // compiler cannot see that for an unresolved generic, so it reports the
+  // unwrapped type instead. The runtime behaviour is the one we want: the
+  // callback's value, resolved, after the COMMIT succeeded.
+  return conn.begin((tx) => fn(tx)) as unknown as Promise<T>;
+}
+
+/**
  * Internal: writes the journal entry + lines + audit log atomically.
  * Returns the new journal_entry.id, or the existing id if one already exists
  * for this (tenant, source_type, source_id).
+ *
+ * `sql` is a transaction handle. The caller owns the transaction; this
+ * function only writes through it.
  *
  * `period` overrides the month the entry lands in. Most postings belong to
  * the month they are made. A VAT return filed on the 3rd for last month
@@ -112,7 +166,7 @@ async function persistJournal(
   `) as Array<{ id: string }>;
   const journalId = entryRows[0].id;
 
-  // 5. Insert each journal_line. The deferred trigger journal_balanced() runs
+  // 6. Insert each journal_line. The deferred trigger journal_balanced() runs
   //    at COMMIT time. If the lines are unbalanced, the whole transaction
   //    rolls back and we throw.
   for (const line of result.lines) {
@@ -129,7 +183,7 @@ async function persistJournal(
     `;
   }
 
-  // 6. Audit log entry. Append-only.
+  // 7. Audit log entry. Append-only.
   await sql`
     insert into accounting.audit_log (user_id, action, entity, entity_id, after, tenant_id)
     values (${ctx.userId}::uuid, 'journal_posted', 'journal_entry', ${journalId}::uuid,
@@ -141,22 +195,20 @@ async function persistJournal(
 }
 
 /**
- * Public: commit a journal result for an invoice. Called from the existing
- * `local-store.ts` invoice creation path.
+ * Public: commit a journal result for an invoice.
  *
- * `sql` lets a caller pass a transaction-scoped connection so the journal and
- * whatever created the source row commit together. Without it the bridge opens
- * its own connection and the two writes are not atomic.
+ * `tx` is a transaction handle — see the note at the top of this file. The
+ * invoice's own `posted_journal_id` is set inside the same transaction, so a
+ * posting and the pointer to it either both land or neither does.
  */
 export async function commitJournalForInvoice(
+  tx: Sql,
   ctx: UserCtx,
   result: PostResult,
   invoiceId: string,
-  sql?: Sql,
 ): Promise<string> {
-  const conn = sql ?? await localDb();
-  const journalId = await persistJournal(conn, ctx, result, `Invoice ${invoiceId} issued`);
-  await conn`
+  const journalId = await persistJournal(tx, ctx, result, `Invoice ${invoiceId} issued`);
+  await tx`
     update public.invoices
     set posted_journal_id = ${journalId}::uuid
     where id = ${invoiceId}::uuid
@@ -169,14 +221,13 @@ export async function commitJournalForInvoice(
  * `local-store.ts` payment confirmation path.
  */
 export async function commitJournalForPayment(
+  tx: Sql,
   ctx: UserCtx,
   result: PostResult,
   paymentId: string,
-  sql?: Sql,
 ): Promise<string> {
-  const conn = sql ?? await localDb();
-  const journalId = await persistJournal(conn, ctx, result, `Payment ${paymentId} confirmed`);
-  await conn`
+  const journalId = await persistJournal(tx, ctx, result, `Payment ${paymentId} confirmed`);
+  await tx`
     update public.payments
     set posted_journal_id = ${journalId}::uuid
     where id = ${paymentId}::uuid
@@ -193,14 +244,13 @@ export async function commitJournalForPayment(
  * in `accounting.journal_entries`, keyed by (tenant, source_type, source_id).
  */
 export async function commitJournalForBankTransaction(
+  tx: Sql,
   ctx: UserCtx,
   result: PostResult,
   bankTxId: string,
-  sql?: Sql,
 ): Promise<string> {
-  const conn = sql ?? await localDb();
-  const journalId = await persistJournal(conn, ctx, result, `Bank transaction ${bankTxId} posted`);
-  await conn`
+  const journalId = await persistJournal(tx, ctx, result, `Bank transaction ${bankTxId} posted`);
+  await tx`
     update accounting.bank_transactions
     set posted_journal_id = ${journalId}::uuid
     where id = ${bankTxId}::uuid
@@ -219,15 +269,14 @@ export async function commitJournalForBankTransaction(
  * VAT return.
  */
 export async function commitJournalForVatSubmission(
+  tx: Sql,
   ctx: UserCtx,
   result: PostResult,
   submissionId: string,
   period?: JournalPeriod,
-  sql?: Sql,
 ): Promise<string> {
-  const conn = sql ?? await localDb();
-  const journalId = await persistJournal(conn, ctx, result, `VAT submission ${submissionId} posted`, period);
-  await conn`
+  const journalId = await persistJournal(tx, ctx, result, `VAT submission ${submissionId} posted`, period);
+  await tx`
     update accounting.vat_submissions
     set posted_journal_id = ${journalId}::uuid
     where id = ${submissionId}::uuid

@@ -35,6 +35,20 @@ on:
       - 'hosted/**'
       - 'package.json'
       - '.github/workflows/hosted-smoke.yml'
+      # The accounting module and the tests that need a real postgres.
+      #
+      # The filter used to name the schema, the scripts and the hosted box —
+      # and nothing under src/. So a change to the ledger's own code never
+      # brought this job up, and the database-backed tests never ran in CI at
+      # all. The accounting module is where the money is, so it is the last
+      # thing that should be left out of a job that exists to prove the
+      # deployment works.
+      - 'src/lib/accounting/**'
+      - 'src/app/api/v1/accounting/**'
+      - 'src/lib/db/**'
+      - 'src/lib/auth/local-store.ts'
+      - 'tests/integration/**'
+      - 'tests/rls/**'
   workflow_dispatch:
     inputs:
       production:
@@ -195,6 +209,20 @@ jobs:
         # code, so the wait is exactly as long as the bootstrap takes.
         run: bash hosted/scripts/wait-for-bootstrap.sh --compose-file hosted/dev/docker-compose.yml
       - name: Run the integration suite (DEPLOYMENT_PROFILE=hosted)
+        # DATABASE_URL is what turns the database-backed tests ON.
+        #
+        # They check for it and SKIP when it is absent — out loud, because a
+        # skipped check and a passing check look the same in a build log. So
+        # without this line the job went green while the ledger's atomicity
+        # and the accounting schema's tenant isolation were never executed
+        # anywhere in CI.
+        #
+        # The address is the compose stack's own published port: the postgres
+        # service publishes 55432 on the runner's loopback, and it authenticates
+        # with trust, so the URL carries no password. The application inside
+        # the compose network reaches the same database as `postgres:5432`.
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:55432/postgres
         run: DEPLOYMENT_PROFILE=hosted pnpm test
       - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh

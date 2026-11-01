@@ -318,7 +318,7 @@ export async function POST(req: NextRequest) {
           bankAccountGlId: bankGlId,
           arAccountId,
         });
-        const journalId = await commitJournalForBankTransaction(ctx, result, bankTxId, tx);
+        const journalId = await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
 
         // 4. Point the bank line at the invoice it was matched to and at the
         //    journal it produced.

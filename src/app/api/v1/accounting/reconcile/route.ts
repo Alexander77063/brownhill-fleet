@@ -43,8 +43,10 @@ import {
 import {
   commitJournalForBankTransaction,
   commitJournalForPayment,
+  withJournalTx,
 } from '@/lib/accounting/journal-bridge';
 import { invoiceAllocationRejection } from '@/lib/accounting/invoice-eligibility';
+import type { ISql } from 'postgres';
 
 const ALLOWED = new Set(['match', 'vat', 'fee', 'ignore']);
 
@@ -143,8 +145,18 @@ export async function POST(req: NextRequest) {
       vatPayableAccountId: vatPayableRows[0].id,
       bankGlAccountId: bankGlId,
     });
-    await commitJournalForBankTransaction(ctx, result, bankTxId);
-    await categorise(sql, ctx.tenantId, bankTxId, 'manually_matched', null);
+    // The posting and the categorisation are ONE transaction.
+    //
+    // The posting has to be inside a transaction at all. The ledger's balance
+    // trigger is deferred and fires at COMMIT, so on a pooled connection the
+    // FIRST line of the entry is checked on its own, rejected as unbalanced
+    // ("journal <id> unbalanced: debits=120 credits=0"), and left behind as an
+    // orphan entry with no lines — and the categorisation below never ran.
+    // That is what this button did for every operator who pressed it.
+    await withJournalTx(async (tx) => {
+      await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+      await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+    });
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
@@ -165,8 +177,12 @@ export async function POST(req: NextRequest) {
       bankChargesAccountId: chargesRows[0].id,
       arAccountId: arRows[0].id,
     });
-    await commitJournalForBankTransaction(ctx, result, bankTxId);
-    await categorise(sql, ctx.tenantId, bankTxId, 'manually_matched', null);
+    // One transaction, for the same reason as the VAT payment above: a
+    // posting outside a transaction is an orphan entry plus a failed button.
+    await withJournalTx(async (tx) => {
+      await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+      await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+    });
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
@@ -301,7 +317,7 @@ export async function POST(req: NextRequest) {
         bankAccountGlId: bankGlId,
         arAccountId: arRows[0].id,
       });
-      const journalId = await commitJournalForPayment(ctx, result, paymentId, tx);
+      const journalId = await commitJournalForPayment(tx, ctx, result, paymentId);
 
       // 5. Point the bank line at the invoice it was matched to and at the
       //    journal it produced.
@@ -344,7 +360,7 @@ export async function POST(req: NextRequest) {
  * references public.invoices(id), so it must never be given a payment id.
  */
 async function categorise(
-  sql: Awaited<ReturnType<typeof localDb>>,
+  sql: ISql,
   tenantId: string,
   bankTxId: string,
   status: 'manually_matched' | 'ignored',

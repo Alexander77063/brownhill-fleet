@@ -343,16 +343,25 @@ export async function submitVatReturn(args: SubmitArgs, hmtrCall: (payload: obje
         vatOutputAccountId: vatOutputId,
         vatPayableAccountId: vatPayableId,
       });
-      const { commitJournalForVatSubmission } = await import('./journal-bridge');
+      const { commitJournalForVatSubmission, withJournalTx } = await import('./journal-bridge');
       // The entry belongs to the period being submitted, not to the month the
       // submission happens to be made in — a return filed on the 3rd for last
       // month must not land in this month's ledger.
-      await commitJournalForVatSubmission(
-        { userId: args.userId, tenantId: args.tenantId },
-        postResult,
-        submissionId,
-        { year: args.year, month: args.month },
-      );
+      //
+      // The posting runs inside a transaction. The ledger's balance trigger is
+      // deferred and fires at COMMIT, so a posting made straight onto a pooled
+      // connection has its FIRST line checked on its own, fails as unbalanced,
+      // and leaves an orphan entry behind — and a VAT return HMRC had already
+      // accepted never reached the ledger at all.
+      await withJournalTx(async (tx) => {
+        await commitJournalForVatSubmission(
+          tx,
+          { userId: args.userId, tenantId: args.tenantId },
+          postResult,
+          submissionId,
+          { year: args.year, month: args.month },
+        );
+      });
     }
     await upsertSubmission(args, 'submitted', result.hmtrCorrelationId, null);
   } else {
