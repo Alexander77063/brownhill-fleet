@@ -113,6 +113,29 @@ function makeStore(tenantId: string): PasswordResetStore {
       return localHasPassword(userId);
     },
 
+    async findMemberships(userId) {
+      // Every tenant this person belongs to, not just this one.
+      //
+      // The password row is keyed by user id, so the credential is shared
+      // across every tenant they hold. The guard needs the whole list to
+      // know whether the caller has authority everywhere the reset lands.
+      const sb = createServiceClient();
+      const { data } = await sb
+        .from('tenant_memberships')
+        .select('tenant_id, role, status')
+        .eq('user_id', userId);
+      const rows = (data ?? []) as Array<{
+        tenant_id: string;
+        role: string;
+        status: string;
+      }>;
+      return rows.map((m) => ({
+        tenantId: m.tenant_id,
+        role: m.role,
+        status: m.status,
+      }));
+    },
+
     async setPassword(userId, password) {
       // setLocalPassword also clears `failed_attempts` and `locked_until`, so a
       // reset un-locks an account that was locked out for too many attempts.
@@ -196,10 +219,23 @@ export async function resetMemberPasswordAction(
     };
   }
 
+  // The caller's role in every tenant they belong to.
+  //
+  // The reset writes one credential for the user, and that credential opens
+  // their accounts in every tenant they hold. So the authority to reset has
+  // to exist in each of them, not only in the one being viewed. `ctx.memberships`
+  // is already filtered to active memberships, which is exactly the set that
+  // can grant authority.
+  const callerRoles: Record<string, string> = {};
+  for (const m of ctx.memberships) {
+    if (m.tenant_id && m.role) callerRoles[m.tenant_id] = m.role;
+  }
+
   const outcome = await resetMemberPassword({
     tenantId: ctx.tenantId,
     userId,
     callerRole: ctx.role,
+    callerRoles,
     store: makeStore(ctx.tenantId),
   });
 

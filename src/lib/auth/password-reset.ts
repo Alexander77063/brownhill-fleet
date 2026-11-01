@@ -23,9 +23,11 @@
  * ----------------------
  * It is read out over the telephone, so the alphabet avoids the characters
  * people confuse when reading them aloud: no 1, i, l, O or o. Zero is kept,
- * because capital O and lowercase o are not. 32 characters x 5 bits = 160 bits
- * of entropy, which cannot be guessed and does not need to be short-lived for
- * its own sake — the account owner is told to change it once they are in.
+ * because capital O and lowercase o are not. The alphabet has 32 characters,
+ * so each position carries exactly 5 bits, and the 32-character password
+ * carries 160 of them. That cannot be guessed, and it does not need to be
+ * short-lived for its own sake — the account owner is told to change it once
+ * they are in.
  */
 import { randomBytes } from 'node:crypto';
 import { assertCanResetPassword } from '@/lib/iam';
@@ -38,7 +40,7 @@ import { assertCanResetPassword } from '@/lib/iam';
 export const READABLE_ALPHABET = '023456789abcdefghjkmnpqrstuvwxyz';
 
 /** How long a temporary password is. */
-export const TEMP_PASSWORD_LENGTH = 20;
+export const TEMP_PASSWORD_LENGTH = 32;
 
 /**
  * A temporary password, from the system CSPRNG.
@@ -80,6 +82,18 @@ export interface PasswordResetStore {
   /** The member, if they belong to this tenant. */
   findMember(tenantId: string, userId: string): Promise<ResetMember | null>;
   /**
+   * Every membership this user holds, in every tenant.
+   *
+   * This one is deliberately NOT tenant-scoped. The password is a single
+   * credential for the whole user — `auth.local_credentials` is keyed by user
+   * id — so a reset is not confined to the tenant the operator happens to be
+   * looking at. It changes the credential that opens every account the person
+   * has. The guard therefore has to see the other tenants too.
+   */
+  findMemberships(
+    userId: string,
+  ): Promise<Array<{ tenantId: string; role: string; status: string }>>;
+  /**
    * Does this account hold a password at all?
    *
    * False for an account that signs in with a code sent to their phone — the
@@ -117,7 +131,9 @@ export type PasswordResetOutcome =
  * caller's tenant** first, so a user id from another tenant is simply not
  * found; the escalation guard comes next, because resetting somebody's
  * password is signing in as them and must not be a way around the role
- * guard; and only then is a password written.
+ * guard; then the SAME guard is applied to every OTHER tenant the target
+ * belongs to, because the credential is one credential for the whole user;
+ * and only then is a password written.
  *
  * A failure to email is not a failure of the reset — the password has already
  * been changed by then, and the operator can read it off the screen.
@@ -127,6 +143,13 @@ export async function resetMemberPassword(args: {
   userId: string;
   /** The caller's tenant role — the escalation guard is measured against it. */
   callerRole: string | null;
+  /**
+   * The caller's role in each tenant they belong to, keyed by tenant id.
+   *
+   * Used to authorise the reset in the target's OTHER tenants. The caller's
+   * own tenant is covered by `callerRole`; this is the rest of them.
+   */
+  callerRoles?: Readonly<Record<string, string>>;
   store: PasswordResetStore;
   /** Injected in tests; the CSPRNG in production. */
   generate?: () => string;
@@ -151,6 +174,43 @@ export async function resetMemberPassword(args: {
       reason: 'forbidden',
       message: err instanceof Error ? err.message : 'You cannot reset that account.',
     };
+  }
+
+  // The same guard, for every other tenant the target belongs to.
+  //
+  // `auth.local_credentials` is keyed by user id. There is one password for
+  // a person and it opens every account they hold, so a reset authorised
+  // only in the caller's own tenant is a reset that also lands in every
+  // other one. The caller must be authorised to reset the target's role in
+  // each of those too.
+  //
+  // On the single-tenant profiles — standalone, hosted, managed — there is no
+  // other tenant, so this loop is empty and nothing changes. It matters on
+  // `managed-shared`, which is multi-tenant and uses these local credentials.
+  const memberships = await store.findMemberships(userId);
+  for (const other of memberships) {
+    if (other.tenantId === tenantId) continue; // already guarded above
+    if (other.status !== 'active') continue; // grants nothing, so withholds nothing
+
+    const callerRoleThere = args.callerRoles?.[other.tenantId];
+    if (!callerRoleThere) {
+      return {
+        ok: false,
+        reason: 'forbidden',
+        message:
+          'That account is also used in another organisation, and you have no authority there. Ask that organisation to reset it instead.',
+      };
+    }
+
+    try {
+      assertCanResetPassword(other.role, callerRoleThere);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'forbidden',
+        message: err instanceof Error ? err.message : 'You cannot reset that account.',
+      };
+    }
   }
 
   if (!(await store.hasPassword(userId))) {

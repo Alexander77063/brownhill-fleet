@@ -101,7 +101,11 @@ export function PasswordResetPanel({
           <p className="font-medium text-[var(--color-profit)]">Password reset</p>
           <p className="mt-2 text-cream">Temporary password for {who}:</p>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <code className="select-all rounded bg-[rgba(0,0,0,0.35)] px-2 py-1 font-mono text-cream">
+            {/* `min-w-0` lets the flex item shrink below its content width, and
+                `break-all` lets the password wrap inside it. Without both, a
+                32-character password is one unbreakable run wider than a
+                phone, and the page scrolls sideways. */}
+            <code className="min-w-0 select-all break-all rounded bg-[rgba(0,0,0,0.35)] px-2 py-1 font-mono text-cream">
               {state.temporaryPassword}
             </code>
             <Button type="button" variant="ghost" size="sm" onClick={copy}>

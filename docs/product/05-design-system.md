@@ -272,7 +272,9 @@ rules.
 
 The alphabet of a spoken secret is part of the voice: the temporary password
 avoids `1 i l O o`, because it is read out over the telephone and those are
-the characters people confuse.
+the characters people confuse. It is 32 characters from that 32-character
+alphabet — 160 bits — so it is short enough to read out and strong enough
+that it does not need to expire on its own account.
 
 ## 7. The printable document
 

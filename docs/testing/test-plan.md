@@ -164,6 +164,8 @@ driver, agreement, charge, expense and document.
 | TC-AUTH-13 | On the code screen, press **"Didn't get a code? Send another"** | A second code is requested and sent; the screen says so. The old screen offered no way back from a code that never arrived |
 | TC-AUTH-14 | As an operator, open **Drivers → a driver → Sign-in → Reset password** | A temporary password is issued and shown **once**, with a Copy button; the driver can sign in with it and change it from their profile page. The reset also clears a lockout |
 | TC-AUTH-15 | As an operator, try to reset a password for somebody in **another organisation** | Refused — "That person is not a member of this organisation", and nothing changes. Same for an owner account when the caller is not an owner |
+| TC-AUTH-16 | Reset a password for somebody who **also belongs to a second organisation** the operator has no authority in | Refused — the credential is one credential for the whole user, so authority has to exist in every tenant the reset lands in. Nothing changes |
+| TC-AUTH-17 | Read the temporary password on a **phone-sized screen** | The 32-character password wraps inside its box; the page does not scroll sideways |
 
 ---
 
@@ -702,7 +704,7 @@ Raise **S1 immediately**, do not batch it to the end of the run.
 |---|---|---|---|---|---|---|
 | 2. Legal consent | 6 | | | | | |
 | 3. Multi-tenant isolation | 8 | | | | | |
-| 4. Authentication | 15 | | | | | |
+| 4. Authentication | 17 | | | | | |
 | 5. Onboarding | 6 | | | | | |
 | 6.1–6.3 Fleet, drivers, documents | 29 | | | | | |
 | 6.4 Agreements & signing | 23 | | | | | |

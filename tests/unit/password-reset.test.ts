@@ -40,6 +40,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   generateTemporaryPassword,
+  READABLE_ALPHABET,
   resetMemberPassword,
   TEMP_PASSWORD_LENGTH,
   type PasswordResetStore,
@@ -61,6 +62,7 @@ const MEMBER: ResetMember = {
 function makeStore(over: Partial<PasswordResetStore> = {}) {
   const calls = {
     findMember: [] as Array<[string, string]>,
+    findMemberships: [] as string[],
     hasPassword: [] as string[],
     setPassword: [] as Array<[string, string]>,
     deliver: [] as Array<[string, string]>,
@@ -69,6 +71,12 @@ function makeStore(over: Partial<PasswordResetStore> = {}) {
     async findMember(tenantId, userId) {
       calls.findMember.push([tenantId, userId]);
       return MEMBER;
+    },
+    async findMemberships(userId) {
+      calls.findMemberships.push(userId);
+      // One tenant, by default: the caller's own. The cross-tenant cases
+      // below override this.
+      return [{ tenantId: 'tenant-a', role: 'driver', status: 'active' }];
     },
     async hasPassword(userId) {
       calls.hasPassword.push(userId);
@@ -118,6 +126,18 @@ describe('generateTemporaryPassword', () => {
       Array.from({ length: 200 }, () => generateTemporaryPassword()[0]),
     );
     expect(firsts.size).toBeGreaterThan(8);
+  });
+
+  it('carries at least 160 bits of entropy', () => {
+    // The alphabet has 32 characters, so each position is worth exactly 5
+    // bits and the whole password is worth length x 5.
+    //
+    // This is the figure the module documents, and it is the figure the
+    // security review asked for. It used to claim 160 bits while issuing
+    // 20 characters — 100 bits — so the documentation and the code
+    // disagreed, and the weaker of the two is what a reader would get.
+    const bits = TEMP_PASSWORD_LENGTH * Math.log2(READABLE_ALPHABET.length);
+    expect(bits).toBeGreaterThanOrEqual(160);
   });
 });
 
@@ -321,6 +341,132 @@ describe('resetting a password does not escalate privilege', () => {
   it('leaves ordinary members alone', async () => {
     const result = await attempt('ops', 'driver');
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('the password is one credential for the whole user', () => {
+  // `auth.local_credentials` is keyed by user id, not by (tenant, user). There
+  // is one password for a person, and it opens every account they hold.
+  //
+  // That makes a reset NOT a tenant-scoped act. The lookup was tenant-scoped
+  // and the guard was tenant-scoped, so an owner of tenant A could reset the
+  // password of somebody who is an admin in tenant B — and then sign in as
+  // that admin, in tenant B, with a password nobody in B ever chose. On the
+  // single-tenant profiles (standalone, hosted, managed) there is no second
+  // tenant, so nothing changes; on `managed-shared` — multi-tenant, local
+  // credentials — it is a way into another organisation's books.
+  //
+  // The rule the fix enforces: the caller must be authorised to reset the
+  // target's role in EVERY tenant where the target is an active member.
+
+  const member = (tenantId: string, role: string, status = 'active') => ({
+    tenantId,
+    role,
+    status,
+  });
+
+  async function attempt(over: {
+    memberships: Array<{ tenantId: string; role: string; status: string }>;
+    callerRole: string;
+    callerRoles?: Record<string, string>;
+  }) {
+    const { store, calls } = makeStore({
+      async findMemberships() {
+        return over.memberships;
+      },
+    });
+    const result = await resetMemberPassword({
+      tenantId: 'tenant-a',
+      userId: MEMBER.userId,
+      callerRole: over.callerRole,
+      callerRoles: over.callerRoles,
+      store,
+    });
+    return { result, calls };
+  }
+
+  it('refuses when the target belongs to another tenant the caller does not', async () => {
+    const { result, calls } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'driver')],
+      callerRole: 'ops',
+      callerRoles: { 'tenant-a': 'ops' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('forbidden');
+    // Nothing was touched.
+    expect(calls.setPassword).toEqual([]);
+    expect(calls.deliver).toEqual([]);
+  });
+
+  it('refuses when the caller is weaker in the other tenant than the target is there', async () => {
+    // The target is an admin in tenant B. The caller is an owner in tenant A
+    // and a driver in tenant B. Resetting the shared password would let the
+    // owner of A walk into tenant B as its admin.
+    const { result, calls } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'tenant_admin')],
+      callerRole: 'owner',
+      callerRoles: { 'tenant-a': 'owner', 'tenant-b': 'driver' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('forbidden');
+    expect(calls.setPassword).toEqual([]);
+  });
+
+  it('refuses when the caller is not a member of the other tenant at all', async () => {
+    // Failing closed: an unknown role in the other tenant is no authority.
+    const { result } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'tenant_admin')],
+      callerRole: 'owner',
+      callerRoles: { 'tenant-a': 'owner' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('forbidden');
+  });
+
+  it('allows it when the caller holds an authorised role in the other tenant', async () => {
+    // The caller is an owner in both. Resetting a driver who belongs to two
+    // of the caller's own organisations is legitimate, and must not be
+    // blocked by the wider guard.
+    const { result, calls } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'driver')],
+      callerRole: 'owner',
+      callerRoles: { 'tenant-a': 'owner', 'tenant-b': 'owner' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls.setPassword).toHaveLength(1);
+  });
+
+  it('ignores an inactive membership in another tenant', async () => {
+    // A disabled membership grants nothing, so it cannot grant or withhold
+    // authority. Only an ACTIVE membership is a place the credential opens.
+    const { result, calls } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'tenant_admin', 'disabled')],
+      callerRole: 'ops',
+      callerRoles: { 'tenant-a': 'ops' },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls.setPassword).toHaveLength(1);
+  });
+
+  it('does not let a caller with no role in the other tenant through', async () => {
+    const { result } = await attempt({
+      memberships: [member('tenant-a', 'driver'), member('tenant-b', 'driver')],
+      callerRole: 'ops',
+      // The caller is a member of tenant B, but with no role there.
+      callerRoles: { 'tenant-a': 'ops', 'tenant-b': '' },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('forbidden');
   });
 });
 
