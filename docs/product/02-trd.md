@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Tests | Vitest | 2.1.9 | `pnpm test` — 626 passing, 2 skipped, 50 files. The database-backed ones need `DATABASE_URL` |
+| Tests | Vitest | 2.1.9 | `pnpm test` — 644 passing, 2 skipped, 51 files. The database-backed ones need `DATABASE_URL` |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -401,6 +401,71 @@ fails when it cannot do its job, and the deploy checks the staged tree
 again, independently, before installing it. A deployment that cannot be made
 self-contained is not deployed; the previous build keeps running.
 
+### D16 — A close is one transaction, and an acknowledgement carries the figures
+
+**Decision.** Closing an accounting period takes a per-(tenant, period)
+Postgres **advisory lock**, and the lock, the re-read of the warnings, the
+period row and its audit row all happen in **one transaction**
+(`src/lib/accounting/close.ts`, `src/lib/accounting/period-lock.ts`). Every
+write that can change what the close warns about takes the same lock — the
+bank import (`src/lib/accounting/bank-import.ts`) and the journal posting
+(`src/lib/accounting/journal-bridge.ts`) — and each of those takes the lock
+on a **transaction handle** it owns, so a caller cannot supply a
+transaction and forget the lock.
+
+The operator's acknowledgement carries the warning's **count and amount**,
+not only its name. The wire format is
+`{ code, count, amountPence }`, and the server compares all three.
+
+**Why.** The close used to be three transactions with nothing between them:
+read the preflight, create the period row if it did not exist, close the
+period. A bank line dated in the month that landed in that window was never
+shown to the operator, never acknowledged, and the month closed over it
+anyway. The ledger was not corrupted — the posting guard still refuses a
+posting into a closed period — but the **confirmation was a lie**: the
+operator was asked to acknowledge what was outstanding, and the system shut a
+month over something they had not seen.
+
+The lock is the ordering; the figures are what was acknowledged. Both are
+needed, and neither is enough alone. A lock alone stops a line landing
+*during* the close but does nothing about a line that landed between the
+operator reading the dialog and the operator pressing confirm. A
+figure-carrying acknowledgement alone stops that, but not a line that lands
+while the close is running.
+
+**Why the figures.** The warning's *code* does not change when a fourth bank
+line arrives — it is still `open_bank_items`. So an acknowledgement carrying
+only the code would still match, and the month would close over a line the
+operator had never seen. "I have seen that there is something outstanding" is
+not "I have seen *that much* outstanding", and only the second one is worth
+acting on.
+
+**Why an advisory lock and not a row lock.** A month with no postings has no
+period row — the journal bridge creates rows lazily — so a row-lock
+protocol would have to create the rows it locks, which is a lock protocol
+with a surprise in it. An advisory lock needs no row, creates nothing, and is
+scoped exactly to (tenant, period), so two tenants or two months never wait
+on each other. `pg_advisory_xact_lock` is released when the transaction ends,
+so a crash cannot leave one held.
+
+**Why not SERIALIZABLE.** Postgres's serialisable snapshot isolation needs two
+rw-conflict edges forming a cycle before it aborts a transaction. A single
+serialisable reader against a non-serialisable writer does not reliably
+produce that cycle, so the guarantee would be intermittent. The advisory lock
+forces the ordering in both directions and is reliable.
+
+**Why the transaction is not the route's.** A transaction that can only be
+exercised through HTTP is a transaction nobody tests directly. The
+transaction lives in `src/lib/accounting/close.ts` and is called by the
+route, so it can be tested against a real postgres.
+
+Proved by `tests/integration/accounting/close-race.test.ts`: a close whose
+acknowledgement no longer matches the figures is refused; a close with an
+unacknowledged new line is refused; and a bank import is shown to be
+**blocked on the lock**, checked in `pg_locks` so that a writer queued for a
+connection cannot be mistaken for a writer waiting on the lock. The gate was
+watched failing with the lock removed from the writer.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -482,8 +547,8 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Tests | `pnpm test` | 626 passing, 2 skipped, 50 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset), the accounting module against a real postgres, and the accounting schema's tenant isolation |
-| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 40 tests across 5 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close and its preflight, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
+| Tests | `pnpm test` | 644 passing, 2 skipped, 51 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 44 tests across 6 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |

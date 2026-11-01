@@ -53,6 +53,7 @@
 
 import { localDb } from '@/lib/auth/local-store';
 import { assertPeriodOpenForPosting, ensurePeriodRow } from './periods';
+import { takePeriodLock } from './period-lock';
 import type { PostResult } from './journal';
 import type { ISql } from 'postgres';
 
@@ -128,6 +129,14 @@ async function persistJournal(
   // 2. Hard period-lock guard. If the period is closed or locked, this throws
   //    and the transaction rolls back; no journal entry is written. Spec §5
   //    "Per-period safety."
+  //
+  //    The advisory lock goes on FIRST. The guard reads the period row, and
+  //    a read is a snapshot: without the lock, a close could commit between
+  //    that read and the insert below, and the posting would land in a month
+  //    that had been shut in the meantime. With the lock, the posting and
+  //    the close are ordered — either this posting is counted by the close,
+  //    or the close has already happened and this guard refuses.
+  await takePeriodLock(sql, ctx.tenantId, year, month);
   await assertPeriodOpenForPosting(ctx.tenantId, year, month, sql);
 
   // 3. Look up or create the period for the current month.

@@ -7,7 +7,7 @@
 // ---------------
 // The Close button closed a month with one click and no warning. The spec
 // asks for "Close period (warns: locks all postings; shows affected counts;
-// confirm modal)" — nothing warned, nothing counted, and nothing confirmed,
+// confirm modal)" — nothing warned, nothing counted, nothing confirmed,
 // so an operator closing October with uncategorised bank lines and an unfiled
 // VAT return found out afterwards, when a posting came back 409 and the
 // month was already shut.
@@ -20,20 +20,30 @@
 // 2. The operator reads the warnings and ticks each one. A warning they have
 //    not seen is a warning they have not acknowledged.
 // 3. The operator confirms. The server closes the period, or answers 428
-//    again — because a bank line landed while the dialog was open and there
-//    is now a warning that was not on screen when they ticked the boxes.
-//    That warning is shown, unticked, and the confirm button stays disabled
+//    again — because a bank line landed while the dialog was open and the
+//    warning now covers a different number of lines than the operator saw.
+//    That warning is shown unticked, and the confirm button stays disabled
 //    until it is acknowledged.
 //
+// The tick carries the FIGURES the operator saw. That is the whole point of
+// the acknowledgement: "I have seen THREE open bank transactions worth
+// £450" is not "I have seen FOUR worth £500". If the second line arrives
+// while the dialog is open, the operator is asked about it.
+//
 // The server is the authority on all of this. The disabled button is a
-// courtesy, not the gate: the route refuses a close whose warning list is
-// not fully acknowledged, so a client that lies about it gains nothing.
+// courtesy, not the gate: the route refuses a close whose warnings are not
+// fully acknowledged with the figures it now reports, so a client that
+// lies about it gains nothing.
 
 import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button, Dialog } from '@/components/ui';
 import { formatGBP } from '@/lib/money';
-import type { ClosePreflight, CloseWarningCode } from '@/lib/accounting/close-preflight';
+import type {
+  CloseAcknowledgement,
+  ClosePreflight,
+  CloseWarningCode,
+} from '@/lib/accounting/close-preflight';
 import {
   closeConfirmRequest,
   closePreflightRequest,
@@ -49,6 +59,29 @@ export interface ClosePeriodButtonProps {
 /** What the dialog is doing. */
 type Phase = 'idle' | 'loading' | 'ready' | 'closing' | 'failed';
 
+/**
+ * Keep the acknowledgements that still describe the warnings on screen.
+ *
+ * A warning whose figures have changed is dropped, because the operator
+ * acknowledged a DIFFERENT warning: three lines became four, and the tick
+ * they gave was for three. The warning is still on screen (unticked), so
+ * they can see what changed and tick it again.
+ *
+ * A warning that has gone away is dropped too — it no longer exists, and
+ * keeping a tick for it would send something the server does not recognise.
+ */
+function carryOverAcknowledgements(
+  previous: CloseAcknowledgement[],
+  preflight: ClosePreflight | null,
+): CloseAcknowledgement[] {
+  if (!preflight) return [];
+  return previous.filter((ack) => {
+    const warning = preflight.warnings.find((w) => w.code === ack.code);
+    if (!warning) return false;
+    return warning.count === ack.count && warning.amountPence === ack.amountPence;
+  });
+}
+
 export function ClosePeriodButton({ year, month }: ClosePeriodButtonProps) {
   const router = useRouter();
   const period = `${year}-${String(month).padStart(2, '0')}`;
@@ -56,7 +89,7 @@ export function ClosePeriodButton({ year, month }: ClosePeriodButtonProps) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [preflight, setPreflight] = useState<ClosePreflight | null>(null);
-  const [acknowledged, setAcknowledged] = useState<CloseWarningCode[]>([]);
+  const [acknowledged, setAcknowledged] = useState<CloseAcknowledgement[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const post = useCallback(async (body: ClosePreflightRequest | CloseConfirmRequest) => {
@@ -116,9 +149,11 @@ export function ClosePeriodButton({ year, month }: ClosePeriodButtonProps) {
       return;
     }
     if (res.status === 428 && json.preflight) {
-      // Something changed while the dialog was open — a bank line landed.
-      // The new warning is shown unticked; the ones already ticked stay
-      // ticked, because the operator has seen those.
+      // Something changed while the dialog was open — a bank line landed, so
+      // the warning covers a different number of lines than the operator
+      // ticked. The acknowledgements that still describe what is on screen
+      // are kept; the one that changed is shown unticked.
+      setAcknowledged((current) => carryOverAcknowledgements(current, json.preflight ?? null));
       setPreflight(json.preflight);
       setPhase('ready');
       return;
@@ -127,14 +162,31 @@ export function ClosePeriodButton({ year, month }: ClosePeriodButtonProps) {
     setPhase('failed');
   }, [period, acknowledged, post, router]);
 
-  const toggleAcknowledged = (code: CloseWarningCode, on: boolean) => {
-    setAcknowledged((current) =>
-      on ? (current.includes(code) ? current : [...current, code]) : current.filter((c) => c !== code),
+  const isAcknowledged = (warning: { code: CloseWarningCode; count: number; amountPence: number }) =>
+    acknowledged.some(
+      (a) =>
+        a.code === warning.code &&
+        a.count === warning.count &&
+        a.amountPence === warning.amountPence,
     );
+
+  const toggleAcknowledged = (
+    warning: { code: CloseWarningCode; count: number; amountPence: number },
+    on: boolean,
+  ) => {
+    setAcknowledged((current) => {
+      const without = current.filter((a) => a.code !== warning.code);
+      if (!on) return without;
+      return [
+        ...without,
+        { code: warning.code, count: warning.count, amountPence: warning.amountPence },
+      ];
+    });
   };
 
   const counts = preflight?.counts ?? null;
-  const outstanding = preflight?.warnings.filter((w) => !acknowledged.includes(w.code)) ?? [];
+  const outstanding =
+    preflight?.warnings.filter((warning) => !isAcknowledged(warning)) ?? [];
   const canConfirm = phase === 'ready' && outstanding.length === 0;
 
   return (
@@ -205,8 +257,8 @@ export function ClosePeriodButton({ year, month }: ClosePeriodButtonProps) {
                   <input
                     type="checkbox"
                     className="mt-0.5"
-                    checked={acknowledged.includes(warning.code)}
-                    onChange={(event) => toggleAcknowledged(warning.code, event.target.checked)}
+                    checked={isAcknowledged(warning)}
+                    onChange={(event) => toggleAcknowledged(warning, event.target.checked)}
                   />
                   <span>I have read this and still want to close the period.</span>
                 </label>

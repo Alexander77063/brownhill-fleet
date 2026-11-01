@@ -6,7 +6,7 @@
 // --------------------
 // The Close button closed a month with one click and no warning. The spec
 // asks for "Close period (warns: locks all postings; shows affected counts;
-// confirm modal)". Nothing warned, nothing counted, and nothing confirmed,
+// confirm modal)". Nothing warned, nothing counted, nothing confirmed,
 // so an operator closing October with uncategorised bank lines and an unfiled
 // VAT return found out afterwards, when a posting came back 409 and the
 // month was already shut.
@@ -24,6 +24,11 @@
 //     answers with (tests/unit/accounting/reconcile-period-refusal.test.ts).
 //   * A caller without `billing.write` must get 403, not a close.
 //
+// The transaction — the lock, the re-read of the warnings, the close — is
+// in `src/lib/accounting/close.ts`, and it is tested against a real
+// database in tests/integration/accounting/period-close.test.ts. What is
+// under test HERE is the route's answer to each outcome.
+//
 // The database is faked: what is under test is the route's answer, not the
 // ledger. The counts themselves are read from a real database in
 // tests/integration/accounting/close-preflight.test.ts.
@@ -32,6 +37,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 import { AccountingPeriodError } from '@/lib/accounting/periods';
 import type { ClosePreflight } from '@/lib/accounting/close-preflight';
+import type { CloseOutcome } from '@/lib/accounting/close';
 
 const TENANT_ID = '33333333-3333-3333-3333-333333333333';
 const USER_ID = '44444444-4444-4444-4444-444444333333';
@@ -69,6 +75,9 @@ const PREFLIGHT: ClosePreflight = {
   },
 };
 
+/** The acknowledgement the operator made against that preflight. */
+const ACKNOWLEDGED = [{ code: 'open_bank_items' as const, count: 3, amountPence: 45_000 }];
+
 // ── the fakes ──────────────────────────────────────────────────────────────
 //
 // The argument lists are spelled out so the fakes have the same shape as the
@@ -76,10 +85,14 @@ const PREFLIGHT: ClosePreflight = {
 // zero-argument function, so calling it with the real arguments would be a
 // type error — which is how a fake quietly stops matching the code.
 
-const closePeriod =
-  vi.fn<(tenantId: string, year: number, month: number, userId: string) => Promise<unknown>>();
-const ensurePeriod =
-  vi.fn<(tenantId: string, year: number, month: number, userId: string | null) => Promise<unknown>>();
+const closePeriodConfirmed =
+  vi.fn<(args: {
+    tenantId: string;
+    year: number;
+    month: number;
+    userId: string;
+    acknowledge: unknown[];
+  }) => Promise<CloseOutcome>>();
 const preflightPeriodClose =
   vi.fn<(tenantId: string, year: number, month: number) => Promise<ClosePreflight>>();
 const requirePermission =
@@ -97,24 +110,14 @@ vi.mock('@/lib/accounting/close-preflight', () => ({
     preflightPeriodClose(tenantId, year, month),
 }));
 
+vi.mock('@/lib/accounting/close', () => ({
+  closePeriodConfirmed: (args: Parameters<typeof closePeriodConfirmed>[0]) =>
+    closePeriodConfirmed(args),
+}));
+
 // `periodRefusal` and `AccountingPeriodError` stay REAL — the route's job is
 // to turn the typed refusal into the right answer, and a faked refusal would
 // only prove the route can format a mock.
-vi.mock('@/lib/accounting/periods', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/accounting/periods')>();
-  return {
-    ...actual,
-    ensurePeriod: (
-      tenantId: string,
-      year: number,
-      month: number,
-      userId: string | null = null,
-    ) => ensurePeriod(tenantId, year, month, userId),
-    closePeriod: (tenantId: string, year: number, month: number, userId: string) =>
-      closePeriod(tenantId, year, month, userId),
-  };
-});
-
 import { POST } from '@/app/api/v1/accounting/periods/close/route';
 
 function closeRequest(body: Record<string, unknown>): NextRequest {
@@ -125,20 +128,26 @@ function closeRequest(body: Record<string, unknown>): NextRequest {
   });
 }
 
+/** The outcome of a close that succeeded. */
+const CLOSED: CloseOutcome = {
+  outcome: 'closed',
+  period: {
+    id: 'p1',
+    year: 2026,
+    month: 10,
+    closedAt: new Date('2026-11-01T09:00:00.000Z'),
+    closedByUserId: USER_ID,
+    lockedAt: null,
+  },
+  preflight: PREFLIGHT,
+};
+
 describe('the period-close route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     requirePermission.mockResolvedValue({ userId: USER_ID, tenantId: TENANT_ID });
     preflightPeriodClose.mockResolvedValue(PREFLIGHT);
-    ensurePeriod.mockResolvedValue({ id: 'p1', year: 2026, month: 10 });
-    closePeriod.mockResolvedValue({
-      id: 'p1',
-      year: 2026,
-      month: 10,
-      closedAt: new Date('2026-11-01T09:00:00.000Z'),
-      closedByUserId: USER_ID,
-      lockedAt: null,
-    });
+    closePeriodConfirmed.mockResolvedValue(CLOSED);
   });
 
   // ── the gate ─────────────────────────────────────────────────────────────
@@ -154,19 +163,24 @@ describe('the period-close route', () => {
     expect(body.preflight.counts.openBankItems).toBe(3);
     expect(body.preflight.warnings[0].message).toContain('open bank transactions');
     // And nothing was closed.
-    expect(closePeriod).not.toHaveBeenCalled();
+    expect(closePeriodConfirmed).not.toHaveBeenCalled();
   });
 
   it('refuses a close whose warnings have not been acknowledged', async () => {
     // The operator confirmed — but a bank line landed while the dialog was
     // open, so there is now a warning they have not seen.
+    closePeriodConfirmed.mockResolvedValue({
+      outcome: 'needs_confirmation',
+      preflight: PREFLIGHT,
+      outstanding: [PREFLIGHT.warnings[0]],
+    });
+
     const res = await POST(closeRequest({ period: '2026-10', confirm: true }));
 
     expect(res.status).toBe(428);
     const body = await res.json();
     expect(body.code).toBe('confirmation_required');
     expect(body.preflight.warnings[0].code).toBe('open_bank_items');
-    expect(closePeriod).not.toHaveBeenCalled();
   });
 
   it('closes the period once the warnings are acknowledged', async () => {
@@ -174,7 +188,7 @@ describe('the period-close route', () => {
       closeRequest({
         period: '2026-10',
         confirm: true,
-        acknowledge: ['open_bank_items'],
+        acknowledge: ACKNOWLEDGED,
       }),
     );
 
@@ -184,12 +198,19 @@ describe('the period-close route', () => {
     expect(body.closed).toBe(true);
     expect(body.period).toBe('2026-10');
     expect(body.closedByUserId).toBe(USER_ID);
-    // The close is made against the caller's tenant and the caller's user.
-    expect(closePeriod).toHaveBeenCalledWith(TENANT_ID, 2026, 10, USER_ID);
+    // The close is made against the caller's tenant and the caller's user,
+    // with the figures the operator was shown.
+    expect(closePeriodConfirmed).toHaveBeenCalledWith({
+      tenantId: TENANT_ID,
+      year: 2026,
+      month: 10,
+      userId: USER_ID,
+      acknowledge: ACKNOWLEDGED,
+    });
   });
 
   it('answers 409 with the period and its closer when the period is already closed', async () => {
-    closePeriod.mockRejectedValue(
+    closePeriodConfirmed.mockRejectedValue(
       new AccountingPeriodError(
         'period_already_closed',
         2026,
@@ -200,12 +221,35 @@ describe('the period-close route', () => {
     );
 
     const res = await POST(
-      closeRequest({ period: '2026-10', confirm: true, acknowledge: ['open_bank_items'] }),
+      closeRequest({ period: '2026-10', confirm: true, acknowledge: ACKNOWLEDGED }),
     );
 
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('period_already_closed');
+    expect(body.period).toBe('2026-10');
+    expect(body.closedByUserId).toBe(CLOSER_ID);
+  });
+
+  it('answers 409 when the preflight says the period cannot be closed', async () => {
+    // The close module refused before writing anything.
+    closePeriodConfirmed.mockResolvedValue({
+      outcome: 'not_closeable',
+      refusal: {
+        error: 'Period 2026-10 is already closed.',
+        code: 'period_already_closed',
+        period: '2026-10',
+        closedAt: '2026-11-01T09:00:00.000Z',
+        closedByUserId: CLOSER_ID,
+      },
+    });
+
+    const res = await POST(
+      closeRequest({ period: '2026-10', confirm: true, acknowledge: ACKNOWLEDGED }),
+    );
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
     expect(body.period).toBe('2026-10');
     expect(body.closedByUserId).toBe(CLOSER_ID);
   });
@@ -217,7 +261,7 @@ describe('the period-close route', () => {
       const res = await POST(closeRequest({ period, confirm: true }));
       expect(res.status, `period ${JSON.stringify(period)} should be refused`).toBe(400);
     }
-    expect(closePeriod).not.toHaveBeenCalled();
+    expect(closePeriodConfirmed).not.toHaveBeenCalled();
   });
 
   it('answers 403 for a caller without billing.write', async () => {
@@ -226,11 +270,11 @@ describe('the period-close route', () => {
     );
 
     const res = await POST(
-      closeRequest({ period: '2026-10', confirm: true, acknowledge: ['open_bank_items'] }),
+      closeRequest({ period: '2026-10', confirm: true, acknowledge: ACKNOWLEDGED }),
     );
 
     expect(res.status).toBe(403);
-    expect(closePeriod).not.toHaveBeenCalled();
+    expect(closePeriodConfirmed).not.toHaveBeenCalled();
   });
 
   it('answers 409 when the period cannot be closed at all', async () => {
@@ -242,13 +286,24 @@ describe('the period-close route', () => {
       blockedBy: 'Period 2026-10 is already closed.',
     });
 
-    const res = await POST(
-      closeRequest({ period: '2026-10', confirm: true, acknowledge: ['open_bank_items'] }),
-    );
+    const res = await POST(closeRequest({ period: '2026-10' }));
 
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.period).toBe('2026-10');
-    expect(closePeriod).not.toHaveBeenCalled();
+    expect(closePeriodConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('drops a malformed acknowledgement rather than acting on it', async () => {
+    // A body that says nothing recognisable is not an acknowledgement. The
+    // close module is still called — with an empty list — so the server
+    // refuses rather than the route guessing.
+    await POST(
+      closeRequest({ period: '2026-10', confirm: true, acknowledge: ['open_bank_items'] }),
+    );
+
+    expect(closePeriodConfirmed).toHaveBeenCalledWith(
+      expect.objectContaining({ acknowledge: [] }),
+    );
   });
 });

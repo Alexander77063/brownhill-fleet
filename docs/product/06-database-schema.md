@@ -425,6 +425,75 @@ is rejected with `journal <id> unbalanced: debits=120 credits=0`.
 forgets one does not compile. The behaviour is proved against a real postgres
 by `tests/integration/accounting/journal-atomicity.test.ts`.
 
+**A closed period and a bank line must not race.** The close reads the
+warnings the operator has to acknowledge, and then closes the month. Between
+those two acts there used to be no ordering at all — the read was one
+transaction and the close another. A bank line dated in the month that landed
+in that window was never shown to the operator, never acknowledged, and the
+month closed over it anyway. The ledger was not corrupted (the posting guard
+still refuses a posting into a closed period, so the line simply stays
+uncategorised until the month is reopened), but the **confirmation was a
+lie**: the operator was asked to acknowledge what was outstanding, and the
+system shut a month over something they had not seen.
+
+The close and the writes that change what it warns about are therefore
+ordered by a **Postgres advisory lock**, one per (tenant, year, month):
+
+```sql
+select pg_advisory_xact_lock(hashtextextended('<tenant-id>:<year>:<month>', 0));
+```
+
+`pg_advisory_xact_lock` is released when the transaction ends — commit or
+rollback — so a crash cannot leave a lock held and there is nothing to clean
+up. It is re-entrant within a session, so the close can take it and the
+re-read of the warnings can take it again.
+
+| Who takes it | When |
+| --- | --- |
+| `src/lib/accounting/close.ts` | The whole close — the lock, the re-read of the warnings, the period row and its audit row — in **one transaction** |
+| `src/lib/accounting/bank-import.ts` | A bank import, for **every month the statement touches**, before the first insert. The module owns the transaction, so a caller cannot supply one and forget the lock |
+| `src/lib/accounting/journal-bridge.ts` | A journal posting, **before** the guard that refuses a posting into a closed period — the same ordering requirement, one line |
+| `src/lib/accounting/periods.ts` | Opening, closing or reopening a period, so a period row cannot be created in the middle of somebody else's close |
+
+Why an advisory lock and not `SELECT … FOR UPDATE`: a row lock needs a row.
+A month with no postings has no period row yet — the journal bridge creates
+rows lazily — so a bank import that had to lock the period row would have to
+create it as a side effect, and a lock protocol that creates the rows it
+locks is a lock protocol with a surprise in it. An advisory lock needs no
+row, creates nothing, and is scoped exactly to (tenant, period): two
+tenants, or two months of one tenant, never wait on each other.
+
+Two rules the protocol depends on:
+
+- **The lock must be taken on a transaction handle.** A lock taken on a
+  pooled connection outside a transaction is released at the end of that
+  statement and orders nothing at all. The application's pool is
+  `max: 2`, so every statement inside a lock-holding transaction has to run
+  on that transaction's handle — a second pooled statement while a
+  transaction is open can exhaust the pool.
+- **The months come from `posted_at`, in UTC.** A bank line posts into the
+  month the bank posted it, and that is the clock the close preflight counts
+  on. `bank_imports.period_id` is a different thing — the tenant's most
+  recent **open** period, which is where the file is filed — and locking
+  that month would order nothing.
+
+Deadlock is avoided by taking multiple locks in a sorted `(year, month)`
+order. A transaction that needs one month takes exactly one, so no cycle can
+form.
+
+The lock is the *ordering*; the *figures* are what the operator acknowledged.
+An acknowledgement carries the warning's count and amount, not only its
+name, because the warning's name does not change when a fourth bank line
+lands — an acknowledgement that carried only the name would still match, and
+the month would close over a line nobody saw.
+
+Both halves are proved against a real postgres by
+`tests/integration/accounting/close-race.test.ts`: a close whose
+acknowledgement no longer matches the figures is refused, and a bank import
+is shown to be **blocked on the lock** — checked in `pg_locks`, so a writer
+queued for a connection cannot be mistaken for a writer waiting on the lock.
+The gate was watched failing with the lock removed from the writer.
+
 **The chart of accounts is a contract, and it was broken.** The ledger posts to
 accounts by CODE — `1100` trade debtors, `2210` VAT payable to HMRC, `2200`
 VAT output. Those codes are the only thing joining the journal to the schema,

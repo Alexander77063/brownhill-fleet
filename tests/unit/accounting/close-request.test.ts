@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   closeConfirmRequest,
   closePreflightRequest,
+  parseAcknowledgements,
 } from '@/lib/accounting/close-request';
 
 describe('the close request bodies', () => {
@@ -18,8 +19,12 @@ describe('the close request bodies', () => {
     // `acknowledged`, and a shorthand `{ acknowledge }` sends
     // `acknowledge: undefined` — which the route reads as "nothing was
     // acknowledged" and refuses the close for ever.
-    const body = closeConfirmRequest('2026-10', ['open_bank_items']);
-    expect(body.acknowledge).toEqual(['open_bank_items']);
+    const body = closeConfirmRequest('2026-10', [
+      { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+    ]);
+    expect(body.acknowledge).toEqual([
+      { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+    ]);
     expect(Object.keys(body)).toContain('acknowledge');
     expect(Object.keys(body)).not.toContain('acknowledged');
   });
@@ -42,5 +47,60 @@ describe('the close request bodies', () => {
     // body built from a Date or a localised string would be a 400.
     expect(closeConfirmRequest('2026-10', []).period).toBe('2026-10');
     expect(closePreflightRequest('2026-01').period).toBe('2026-01');
+  });
+});
+
+describe('reading the acknowledgements out of an untrusted body', () => {
+  it('accepts a well-formed acknowledgement', () => {
+    expect(
+      parseAcknowledgements([
+        { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+      ]),
+    ).toEqual([{ code: 'open_bank_items', count: 3, amountPence: 45_000 }]);
+  });
+
+  it('drops anything that is not an acknowledgement of a known warning', () => {
+    // The body is JSON from a browser. A dropped acknowledgement makes the
+    // close refuse, which is the safe direction; a coerced one would let a
+    // malformed body acknowledge something the operator never saw.
+    expect(parseAcknowledgements('open_bank_items')).toEqual([]);
+    expect(parseAcknowledgements(null)).toEqual([]);
+    expect(parseAcknowledgements(undefined)).toEqual([]);
+    expect(parseAcknowledgements([null])).toEqual([]);
+    expect(parseAcknowledgements(['open_bank_items'])).toEqual([]);
+    expect(parseAcknowledgements([{ code: 'made_up_warning', count: 1, amountPence: 1 }])).toEqual([]);
+  });
+
+  it('drops an acknowledgement whose figures are not numbers', () => {
+    expect(
+      parseAcknowledgements([{ code: 'open_bank_items', count: 'three', amountPence: 45_000 }]),
+    ).toEqual([]);
+    expect(
+      parseAcknowledgements([{ code: 'open_bank_items', count: 3, amountPence: null }]),
+    ).toEqual([]);
+    expect(
+      parseAcknowledgements([{ code: 'open_bank_items', count: Number.NaN, amountPence: 1 }]),
+    ).toEqual([]);
+  });
+
+  it('drops an acknowledgement with negative figures', () => {
+    // No real warning has a negative count or a negative amount. One that
+    // did could be "acknowledged" by a figure that was never on screen.
+    expect(
+      parseAcknowledgements([{ code: 'open_bank_items', count: -1, amountPence: 45_000 }]),
+    ).toEqual([]);
+    expect(
+      parseAcknowledgements([{ code: 'open_bank_items', count: 3, amountPence: -1 }]),
+    ).toEqual([]);
+  });
+
+  it('keeps the good entries and drops the bad ones', () => {
+    expect(
+      parseAcknowledgements([
+        { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+        { code: 'vat_not_filed', count: 'one', amountPence: 1 },
+        'nonsense',
+      ]),
+    ).toEqual([{ code: 'open_bank_items', count: 3, amountPence: 45_000 }]);
   });
 });

@@ -47,6 +47,7 @@
 import { localDb } from '@/lib/auth/local-store';
 import { formatGBP } from '@/lib/money';
 import { aggregateVatReturn } from './mtd-box';
+import type { ISql } from 'postgres';
 
 /** What the VAT submission for a period is doing. */
 export type VatSubmissionState = 'none' | 'pending_submission' | 'submitted' | 'rejected';
@@ -61,6 +62,33 @@ export interface CloseWarning {
   amountPence: number;
   /** The sentence the operator reads. */
   message: string;
+}
+
+/**
+ * What the operator ticked, with the figures they ticked it against.
+ *
+ * THE FIGURES ARE THE POINT
+ * -------------------------
+ * An acknowledgement that carries only the warning's CODE says "I have seen
+ * that there is something outstanding". It does not say "I have seen THAT
+ * much outstanding", and the difference is the whole race this module
+ * exists to close.
+ *
+ * The close re-reads the warnings immediately before it acts on them. If the
+ * operator ticked "3 open bank transactions" and a fourth landed while the
+ * dialog was open, a code-only acknowledgement still matches — the code is
+ * still `open_bank_items` — and the month would close over four lines when
+ * the operator had seen three.
+ *
+ * So the acknowledgement carries the count and the amount the operator was
+ * shown. A fresh warning whose figures differ from what was acknowledged is
+ * NOT acknowledged, and the close waits. The operator is asked again, with
+ * the new figures.
+ */
+export interface CloseAcknowledgement {
+  code: CloseWarningCode;
+  count: number;
+  amountPence: number;
 }
 
 /** The figures the warnings are built from. */
@@ -121,6 +149,34 @@ export function closeWarnings(counts: PreflightCounts, period: string): CloseWar
   return warnings;
 }
 
+/**
+ * The warnings the operator has NOT acknowledged.
+ *
+ * A warning counts as acknowledged only when the acknowledgement names the
+ * same warning AND the same figures. The code alone is not enough — see
+ * `CloseAcknowledgement`.
+ *
+ * The comparison is a subset, not an equality: an acknowledgement for a
+ * warning that no longer exists is harmless (the situation improved — a bank
+ * line was categorised while the dialog was open), and refusing the close
+ * over it would strand the operator in a loop they cannot get out of.
+ * But a warning the operator never saw, or saw with different figures, is
+ * NOT acknowledged.
+ *
+ * Pure: the warnings come in, the outstanding ones come out. That is what
+ * makes it assertable without a database.
+ */
+export function unacknowledgedWarnings(
+  warnings: ReadonlyArray<CloseWarning>,
+  acknowledged: ReadonlyArray<CloseAcknowledgement>,
+): CloseWarning[] {
+  return warnings.filter((warning) => {
+    const match = acknowledged.find((a) => a.code === warning.code);
+    if (!match) return true;
+    return match.count !== warning.count || match.amountPence !== warning.amountPence;
+  });
+}
+
 export interface ClosePreflight {
   /** '2026-10' */
   period: string;
@@ -147,13 +203,20 @@ export interface ClosePreflight {
  * Tenant-scoped in SQL rather than by policy: the accounting schema is not
  * exposed by PostgREST and the application connects as a superuser, which
  * bypasses RLS, so the tenant has to be named in the statements.
+ *
+ * `tx` is an optional transaction handle. The close passes one, and that is
+ * the point: the warnings the operator acknowledges and the close that acts
+ * on them have to be read and written in ONE transaction, under the period
+ * lock, or a bank line can land between them and the month closes over
+ * something the operator never saw. See `./period-lock.ts`.
  */
 export async function preflightPeriodClose(
   tenantId: string,
   year: number,
   month: number,
+  tx?: ISql,
 ): Promise<ClosePreflight> {
-  const sql = await localDb();
+  const sql = tx ?? (await localDb());
   const period = `${year}-${String(month).padStart(2, '0')}`;
 
   const periodRows = (await sql`
@@ -247,7 +310,12 @@ export async function preflightPeriodClose(
 
   // Box 7 is the net VAT for the period. It is what a return would have to
   // declare, so it is what decides whether there is a return to file at all.
-  const boxes = await aggregateVatReturn(tenantId, year, month);
+  //
+  // It is read through the SAME handle as everything else, so the whole
+  // preflight is one snapshot. Reading it on a second connection would mix
+  // two points in time into one set of figures, and the figures are what the
+  // operator acknowledges.
+  const boxes = await aggregateVatReturn(tenantId, year, month, tx);
 
   const counts: PreflightCounts = {
     journalEntries: journalRows[0]?.n ?? 0,

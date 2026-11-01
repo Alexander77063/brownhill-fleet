@@ -23,7 +23,7 @@
 // unit test can pin the wire format without needing a DOM. This module
 // imports nothing but a type, so it is safe in a client bundle.
 
-import type { CloseWarningCode } from './close-preflight';
+import type { CloseAcknowledgement, CloseWarningCode } from './close-preflight';
 
 /** The body of the first request: "what would closing this period do?" */
 export interface ClosePreflightRequest {
@@ -36,11 +36,16 @@ export interface ClosePreflightRequest {
  * The key is `acknowledge` because that is what the route reads. It is
  * NOT `acknowledged` — that is the name of the client's state, and the two
  * being different is how the mismatch happened in the first place.
+ *
+ * The list carries the FIGURES the operator ticked against, not just the
+ * warning's code. See `CloseAcknowledgement`: an acknowledgement of "3 open
+ * bank transactions" is not an acknowledgement of "4 open bank
+ * transactions", and the difference is the race the close has to refuse.
  */
 export interface CloseConfirmRequest {
   period: string;
   confirm: true;
-  acknowledge: CloseWarningCode[];
+  acknowledge: CloseAcknowledgement[];
 }
 
 /**
@@ -73,7 +78,41 @@ export function closePreflightRequest(period: string): ClosePreflightRequest {
  */
 export function closeConfirmRequest(
   period: string,
-  acknowledge: CloseWarningCode[],
+  acknowledge: CloseAcknowledgement[],
 ): CloseConfirmRequest {
   return { period, confirm: true, acknowledge };
+}
+
+/** The warning codes the product knows about. */
+const WARNING_CODES: readonly CloseWarningCode[] = ['open_bank_items', 'vat_not_filed'];
+
+/**
+ * Read the acknowledgements out of an untrusted body.
+ *
+ * EVERY field is checked. The body is JSON that arrived from a browser, so
+ * `acknowledge` might be a string, an array of strings, an array of objects
+ * with the wrong fields, or an array of objects whose `count` is
+ * "three". Anything that is not an acknowledgement of a known warning with
+ * a finite count and a finite amount is DROPPED, not coerced — a dropped
+ * acknowledgement makes the close refuse, which is the safe direction. A
+ * coerced one would let a malformed body acknowledge something the
+ * operator never saw.
+ *
+ * A negative count, or a negative amount, is dropped too: those are not
+ * figures any real warning has, and a warning with a negative count would
+ * otherwise be "acknowledged" by a figure that could never have been shown.
+ */
+export function parseAcknowledgements(raw: unknown): CloseAcknowledgement[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CloseAcknowledgement[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const { code, count, amountPence } = item as Record<string, unknown>;
+    if (typeof code !== 'string') continue;
+    if (!WARNING_CODES.includes(code as CloseWarningCode)) continue;
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) continue;
+    if (typeof amountPence !== 'number' || !Number.isFinite(amountPence) || amountPence < 0) continue;
+    out.push({ code: code as CloseWarningCode, count, amountPence });
+  }
+  return out;
 }

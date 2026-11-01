@@ -27,6 +27,7 @@ import { commitJournalForBankTransaction } from '@/lib/accounting/journal-bridge
 import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import { postBankReceiptJournal } from '@/lib/accounting/journal';
 import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
+import { insertBankLines } from '@/lib/accounting/bank-import';
 
 export const runtime = 'nodejs';
 
@@ -162,37 +163,34 @@ export async function POST(req: NextRequest) {
     bankImportId = insertRows[0].id;
   }
 
-  // Insert each parsed row. The unique constraint on
-  // (bank_import_id, posted_at, amount_pence, description, counterparty)
-  // makes a second upload of the same file a no-op without an ON CONFLICT
-  // dance — we just ignore the unique-violation error.
+  // Insert each parsed row.
   //
-  // The id is kept against the PARSED ROW INDEX, not appended to a list: a
-  // re-upload that skips a duplicate would otherwise shift every later id
-  // by one, and the auto-matcher would then attach a match to the wrong bank
-  // line.
-  const insertedByIndex = new Map<number, string>();
-  for (let i = 0; i < parsed.transactions.length; i++) {
-    const tx = parsed.transactions[i];
-    const txRows = (await sql`
-      insert into accounting.bank_transactions
-        (bank_import_id, bank_account_id, posted_at, amount_pence,
-         description, counterparty, tenant_id)
-      values (
-        ${bankImportId}::uuid,
-        ${bankAccountId}::uuid,
-        ${tx.postedAt.toISOString()},
-        ${tx.amountPence.toString()}::bigint,
-        ${tx.description},
-        ${tx.counterparty},
-        ${tenantId}::uuid
-      )
-      on conflict (bank_import_id, posted_at, amount_pence, description, counterparty)
-      do nothing
-      returning id
-    `) as Array<{ id: string }>;
-    if (txRows.length) insertedByIndex.set(i, txRows[0].id);
-  }
+  // THE PERIOD LOCK, AND WHY THE WRITER IS A MODULE
+  // -------------------------------------------------
+  // A new bank line is the ONLY thing in the product that can CREATE a close
+  // warning: the row lands with status 'unmatched', and the close preflight
+  // counts unmatched lines dated in the month. So an import that lands in the
+  // middle of somebody's close would close a month over a line the operator
+  // never saw — the exact thing the close's confirmation is supposed to
+  // prevent.
+  //
+  // So the import takes the SAME advisory lock the close takes, for every
+  // month the statement touches, and holds it for the whole batch. The lock
+  // is transaction-scoped, so the inserts have to happen inside a
+  // transaction with it — a lock taken on a pooled connection outside a
+  // transaction is released at the end of that statement and orders nothing.
+  //
+  // That is why the write lives in @/lib/accounting/bank-import rather than
+  // here: the transaction and the lock have to be one thing, and a
+  // caller-supplied transaction is a caller-supplied chance to forget the
+  // lock. See src/lib/accounting/bank-import.ts.
+  const insertedByIndex = await insertBankLines({
+    sql,
+    tenantId,
+    bankImportId,
+    bankAccountId,
+    lines: parsed.transactions,
+  });
 
   // Build candidate list from the invoices that still owe money and haven't
   // already been matched. An invoice that has been voided is never a

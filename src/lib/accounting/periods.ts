@@ -26,6 +26,7 @@
 //     into the SQL here. It is not inherited from the policy layer.
 
 import { localDb } from '@/lib/auth/local-store';
+import { takePeriodLock } from './period-lock';
 import type { ISql } from 'postgres';
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
@@ -278,8 +279,8 @@ export async function ensurePeriodRow(
  * the accounting settings page still gets a row, and the column is honoured
  * from the first close onwards.
  */
-export async function reopenWindowDays(tenantId: string): Promise<number> {
-  const sql = await localDb();
+export async function reopenWindowDays(tenantId: string, tx?: ISql): Promise<number> {
+  const sql = tx ?? (await localDb());
   const rows = (await sql`
     insert into accounting.tenant_accounting_settings (tenant_id)
     values (${tenantId}::uuid)
@@ -296,19 +297,35 @@ export async function reopenWindowDays(tenantId: string): Promise<number> {
  * `userId` names the operator the 'period_opened' audit row is written
  * against. It is optional because a period can also be created by a journal
  * posting, which has no person behind it — and a null is honest there.
+ *
+ * `tx` lets the caller supply the transaction it already holds. The close
+ * does: it needs the period row and the close that acts on it to be one
+ * unit, under one lock, in one transaction. When the caller supplies no
+ * handle this opens its own transaction and takes the period lock itself —
+ * so the period row can never be created in the middle of somebody else's
+ * close.
  */
 export async function openPeriod(
   tenantId: string,
   year: number,
   month: number,
   userId: string | null = null,
+  tx?: ISql,
 ): Promise<Period> {
+  if (tx) {
+    const row = await ensurePeriodRow(tx, tenantId, year, month, userId);
+    return toPeriod(row);
+  }
   const sql = await localDb();
   // One transaction: the period row and its audit row land together. A
   // period with no audit row is a hole in the trail, and a hole that opens
   // exactly when the process dies mid-statement is the worst place for one.
-  return sql.begin(async (tx) => {
-    const row = await ensurePeriodRow(tx, tenantId, year, month, userId);
+  //
+  // The period lock goes on first, so creating a month and closing a month
+  // are ordered against each other rather than interleaved.
+  return sql.begin(async (t) => {
+    await takePeriodLock(t, tenantId, year, month);
+    const row = await ensurePeriodRow(t, tenantId, year, month, userId);
     return toPeriod(row);
   }) as unknown as Promise<Period>;
 }
@@ -331,75 +348,129 @@ export async function openPeriod(
  * measured from the later timestamp, and the row claimed the period had been
  * closed by whoever pressed the button last.
  */
-export async function closePeriod(tenantId: string, year: number, month: number, userId: string): Promise<Period> {
+export async function closePeriod(
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string,
+  tx?: ISql,
+): Promise<Period> {
+  if (tx) {
+    // The caller owns the transaction AND the period lock. It has already
+    // re-read the preflight under that lock, which is the whole point.
+    return closePeriodIn(tx, tenantId, year, month, userId);
+  }
   const sql = await localDb();
   // One transaction: the compare-and-set and the audit row that records it.
   // A month that closed with no record of who closed it is exactly the hole
   // this closes, so the two cannot be allowed to come apart.
-  return sql.begin(async (tx) => {
-    const rows = (await tx`
-      update accounting.periods
-      set closed_at = now(), closed_by_user_id = ${userId}::uuid
-      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-        and closed_at is null
-        and locked_at is null
-      returning id, year, month, closed_at, closed_by_user_id, locked_at
-    `) as PeriodRow[];
+  //
+  // The period lock goes on first, so this close is ordered against every
+  // other write into the same month. See ./period-lock.ts.
+  return sql.begin(async (t) => {
+    await takePeriodLock(t, tenantId, year, month);
+    return closePeriodIn(t, tenantId, year, month, userId);
+  }) as unknown as Promise<Period>;
+}
 
-    if (rows.length) {
-      const closed = toPeriod(rows[0]);
-      await writePeriodAudit(
-        tx,
-        tenantId,
-        userId,
-        'period_closed',
-        closed.id,
-        { closed_at: null, closed_by_user_id: null },
-        {
-          closed_at: closed.closedAt ? closed.closedAt.toISOString() : null,
-          closed_by_user_id: closed.closedByUserId,
-        },
-      );
-      return closed;
-    }
+/**
+ * The compare-and-set itself, for a caller that already holds the
+ * transaction and the lock.
+ */
+async function closePeriodIn(
+  tx: ISql,
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string,
+): Promise<Period> {
+  const rows = (await tx`
+    update accounting.periods
+    set closed_at = now(), closed_by_user_id = ${userId}::uuid
+    where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+      and closed_at is null
+      and locked_at is null
+    returning id, year, month, closed_at, closed_by_user_id, locked_at
+  `) as PeriodRow[];
 
-    // The update matched no row. Either there is no such period, or somebody
-    // else got there first. Read the row to say which — and to say WHO.
-    const current = (await tx`
-      select id, year, month, closed_at, closed_by_user_id, locked_at
-        from accounting.periods
-       where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-    `) as PeriodRow[];
-    if (!current.length) throw new Error(`Period ${year}-${month} does not exist`);
-    const p = current[0];
-    if (p.locked_at) {
-      throw new AccountingPeriodError(
-        'period_locked',
-        year,
-        month,
-        p.closed_at ? new Date(p.closed_at) : null,
-        p.closed_by_user_id,
-        new Date(p.locked_at),
-      );
-    }
+  if (rows.length) {
+    const closed = toPeriod(rows[0]);
+    await writePeriodAudit(
+      tx,
+      tenantId,
+      userId,
+      'period_closed',
+      closed.id,
+      { closed_at: null, closed_by_user_id: null },
+      {
+        closed_at: closed.closedAt ? closed.closedAt.toISOString() : null,
+        closed_by_user_id: closed.closedByUserId,
+      },
+    );
+    return closed;
+  }
+
+  // The update matched no row. Either there is no such period, or somebody
+  // else got there first. Read the row to say which — and to say WHO.
+  const current = (await tx`
+    select id, year, month, closed_at, closed_by_user_id, locked_at
+      from accounting.periods
+     where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+  `) as PeriodRow[];
+  if (!current.length) throw new Error(`Period ${year}-${month} does not exist`);
+  const p = current[0];
+  if (p.locked_at) {
     throw new AccountingPeriodError(
-      'period_already_closed',
+      'period_locked',
       year,
       month,
       p.closed_at ? new Date(p.closed_at) : null,
       p.closed_by_user_id,
-      null,
+      new Date(p.locked_at),
     );
-  }) as unknown as Promise<Period>;
+  }
+  throw new AccountingPeriodError(
+    'period_already_closed',
+    year,
+    month,
+    p.closed_at ? new Date(p.closed_at) : null,
+    p.closed_by_user_id,
+    null,
+  );
 }
 
 /**
  * Reopen a previously-closed period. Refuses if the period was closed more than
  * the tenant's reopen window ago OR if it's already locked.
+ *
+ * The read of the period and the reopen that acts on it are ONE transaction,
+ * under the period lock. They used to be two transactions with nothing
+ * between them, so the window check could be made against a period that
+ * somebody else reopened in the meantime.
  */
-export async function reopenPeriod(tenantId: string, year: number, month: number, userId: string): Promise<Period> {
+export async function reopenPeriod(
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string,
+  tx?: ISql,
+): Promise<Period> {
+  if (tx) return reopenPeriodIn(tx, tenantId, year, month, userId);
   const sql = await localDb();
-  const current = (await sql`
+  return sql.begin(async (t) => {
+    await takePeriodLock(t, tenantId, year, month);
+    return reopenPeriodIn(t, tenantId, year, month, userId);
+  }) as unknown as Promise<Period>;
+}
+
+async function reopenPeriodIn(
+  tx: ISql,
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string,
+): Promise<Period> {
+  const current = (await tx`
     select id, year, month, closed_at, closed_by_user_id, locked_at
       from accounting.periods
      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
@@ -408,7 +479,7 @@ export async function reopenPeriod(tenantId: string, year: number, month: number
   const p = current[0];
   if (p.locked_at) throw new Error(`Period ${year}-${month} is locked and cannot be reopened`);
   if (!p.closed_at) return toPeriod(p);
-  const windowDays = await reopenWindowDays(tenantId);
+  const windowDays = await reopenWindowDays(tenantId, tx);
   const closedAtMs = new Date(p.closed_at).getTime();
   const ageMs = Date.now() - closedAtMs;
   const ageDays = ageMs / (24 * 3600 * 1000);
@@ -420,37 +491,35 @@ export async function reopenPeriod(tenantId: string, year: number, month: number
   // compare-and-set (`closed_at is not null`): if somebody else reopened the
   // period between the read above and this statement, the update matches no
   // row, and no audit row is written for a reopen that did not happen.
-  return sql.begin(async (tx) => {
-    const rows = (await tx`
-      update accounting.periods
-      set closed_at = null, closed_by_user_id = null
-      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-        and closed_at is not null
-      returning id, year, month, closed_at, closed_by_user_id, locked_at
+  const rows = (await tx`
+    update accounting.periods
+    set closed_at = null, closed_by_user_id = null
+    where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+      and closed_at is not null
+    returning id, year, month, closed_at, closed_by_user_id, locked_at
+  `) as PeriodRow[];
+
+  if (!rows.length) {
+    const stillThere = (await tx`
+      select id, year, month, closed_at, closed_by_user_id, locked_at
+        from accounting.periods
+       where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
     `) as PeriodRow[];
+    if (!stillThere.length) throw new Error(`Period ${year}-${month} does not exist`);
+    return toPeriod(stillThere[0]);
+  }
 
-    if (!rows.length) {
-      const stillThere = (await tx`
-        select id, year, month, closed_at, closed_by_user_id, locked_at
-          from accounting.periods
-         where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-      `) as PeriodRow[];
-      if (!stillThere.length) throw new Error(`Period ${year}-${month} does not exist`);
-      return toPeriod(stillThere[0]);
-    }
-
-    const reopened = toPeriod(rows[0]);
-    await writePeriodAudit(
-      tx,
-      tenantId,
-      userId,
-      'period_reopened',
-      reopened.id,
-      { closed_at: p.closed_at, closed_by_user_id: p.closed_by_user_id },
-      { closed_at: null, closed_by_user_id: null },
-    );
-    return reopened;
-  }) as unknown as Promise<Period>;
+  const reopened = toPeriod(rows[0]);
+  await writePeriodAudit(
+    tx,
+    tenantId,
+    userId,
+    'period_reopened',
+    reopened.id,
+    { closed_at: p.closed_at, closed_by_user_id: p.closed_by_user_id },
+    { closed_at: null, closed_by_user_id: null },
+  );
+  return reopened;
 }
 
 /**
@@ -458,14 +527,22 @@ export async function reopenPeriod(tenantId: string, year: number, month: number
  * journal-bridge refuses to post to them. The intended usage is to call
  * `lockPeriod` after the period is closed AND any post-close corrections
  * are done (typically after monthly close).
+ *
+ * It takes the period advisory lock, like every other writer into a period,
+ * so a permanent lock and a close are ordered against each other: a close
+ * that is already running finishes first, and this one then seals the month
+ * it closed.
  */
 export async function lockPeriod(tenantId: string, year: number, month: number, userId: string): Promise<void> {
   const sql = await localDb();
-  await sql`
-    update accounting.periods
-    set locked_at = now(), closed_by_user_id = coalesce(closed_by_user_id, ${userId}::uuid)
-    where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-  `;
+  await sql.begin(async (tx) => {
+    await takePeriodLock(tx, tenantId, year, month);
+    await tx`
+      update accounting.periods
+      set locked_at = now(), closed_by_user_id = coalesce(closed_by_user_id, ${userId}::uuid)
+      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+    `;
+  });
 }
 
 /** All known periods for one tenant, newest first. Used by the period pages. */
@@ -491,8 +568,9 @@ export async function ensurePeriod(
   year: number,
   month: number,
   userId: string | null = null,
+  tx?: ISql,
 ): Promise<Period> {
-  return openPeriod(tenantId, year, month, userId);
+  return openPeriod(tenantId, year, month, userId, tx);
 }
 
 /**

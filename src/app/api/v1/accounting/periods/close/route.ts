@@ -22,19 +22,30 @@
 //     → 428 with the counts and the warnings. Nothing was closed. This is
 //       what the confirm dialog is built from.
 //
-//   POST { period: '2026-10', confirm: true, acknowledge: ['open_bank_items'] }
+//   POST { period: '2026-10', confirm: true, acknowledge: [...] }
 //     → 200 and the period is closed.
 //
-// The `acknowledge` list is the operator saying "I have seen this". Every
-// warning the preflight reports has to be in it. If a bank line lands while
-// the dialog is open, the close is refused again and the dialog shows the
-// new warning — so the operator cannot shut a month while something they
-// have not seen is outstanding.
+// The `acknowledge` list is the operator saying "I have seen this", with the
+// FIGURES they saw: how many open bank items, worth how much. Every warning
+// the server reports must be in it, with the same figures. So if a bank line
+// lands while the dialog is open, the close is refused again and the dialog
+// shows the new figures — the operator cannot shut a month over something
+// they have not seen.
 //
 // 428 is Precondition Required (RFC 6585): the request was understood, and
 // the precondition it was missing is the confirmation. It is not a 400 —
 // nothing about the request was malformed — and it is not a 409 — nothing
 // conflicts with the server's state.
+//
+// THE CLOSE IS ONE TRANSACTION
+// ----------------------------
+// The read of the warnings and the close that acts on them used to be two
+// separate transactions, with nothing between them. A bank line landing in
+// that window was closed over unseen. They are now one transaction under
+// the period's advisory lock, so the counts the operator acknowledged and
+// the counts the close acts on are the same counts. The transaction lives
+// in `src/lib/accounting/close.ts`, because a transaction that can only be
+// exercised through HTTP is a transaction nobody tests directly.
 //
 // WHAT THE CONFIRMATION IS AND IS NOT
 // -----------------------------------
@@ -51,13 +62,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requirePermission } from '@/lib/auth/context';
 import { preflightPeriodClose } from '@/lib/accounting/close-preflight';
-import type { UntrustedCloseRequestBody } from '@/lib/accounting/close-request';
-import {
-  AccountingPeriodError,
-  closePeriod,
-  ensurePeriod,
-  periodRefusal,
-} from '@/lib/accounting/periods';
+import { closePeriodConfirmed } from '@/lib/accounting/close';
+import { parseAcknowledgements, type UntrustedCloseRequestBody } from '@/lib/accounting/close-request';
+import { AccountingPeriodError, periodRefusal } from '@/lib/accounting/periods';
 
 export const runtime = 'nodejs';
 
@@ -96,12 +103,6 @@ function parsePeriod(raw: unknown): { year: number; month: number } | null {
   return { year, month };
 }
 
-/** The warning codes the operator acknowledged, as a set. */
-function acknowledgedCodes(raw: unknown): Set<string> {
-  if (!Array.isArray(raw)) return new Set();
-  return new Set(raw.filter((c): c is string => typeof c === 'string'));
-}
-
 export async function POST(req: NextRequest) {
   // C1: gate. The close is a ledger mutation, so it takes the same
   // `billing.write` permission as the postings it locks.
@@ -130,31 +131,30 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // What closing this period would do. Read BEFORE anything is written, and
-  // read again on the confirmed path is not needed: the close itself is the
-  // compare-and-set, and it refuses if the period is not open.
-  const preflight = await preflightPeriodClose(ctx.tenantId, ym.year, ym.month);
-
-  // A period that cannot be closed is a conflict, and it says which one and
-  // who closed it. The refusal is built by the same helper the reconcile
-  // route uses, so the two answers have the same shape.
-  if (!preflight.canClose) {
-    const refusal = periodRefusal(
-      new AccountingPeriodError(
-        preflight.status === 'locked' ? 'period_locked' : 'period_already_closed',
-        ym.year,
-        ym.month,
-        preflight.closedAt ? new Date(preflight.closedAt) : null,
-        preflight.closedByUserId,
-        preflight.lockedAt ? new Date(preflight.lockedAt) : null,
-      ),
-    );
-    return NextResponse.json(refusal!.body, { status: refusal!.status });
-  }
-
-  // The confirmation. Without it, nothing is closed and the counts travel
-  // back with the refusal so the dialog can be built from them.
+  // ── the first request: "what would closing this do?" ────────────────────
+  //
+  // Nothing is written, so nothing needs to be locked. The counts here are
+  // what the dialog is built from; the close re-reads them itself, under
+  // the lock, and compares.
   if (body.confirm !== true) {
+    const preflight = await preflightPeriodClose(ctx.tenantId, ym.year, ym.month);
+
+    // A period that cannot be closed is a conflict, and it says which one
+    // and who closed it.
+    if (!preflight.canClose) {
+      const refusal = periodRefusal(
+        new AccountingPeriodError(
+          preflight.status === 'locked' ? 'period_locked' : 'period_already_closed',
+          ym.year,
+          ym.month,
+          preflight.closedAt ? new Date(preflight.closedAt) : null,
+          preflight.closedByUserId,
+          preflight.lockedAt ? new Date(preflight.lockedAt) : null,
+        ),
+      );
+      return NextResponse.json(refusal!.body, { status: refusal!.status });
+    }
+
     return NextResponse.json(
       {
         error: 'Closing a period must be confirmed.',
@@ -165,44 +165,50 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Every warning the preflight reports has to be acknowledged. A warning
-  // that appeared while the dialog was open is a warning the operator has
-  // not seen, so the close waits.
-  const acknowledged = acknowledgedCodes(body.acknowledge);
-  const outstanding = preflight.warnings.filter((w) => !acknowledged.has(w.code));
-  if (outstanding.length) {
-    return NextResponse.json(
-      {
-        error:
-          'These warnings have not been acknowledged: ' +
-          outstanding.map((w) => w.code).join(', '),
-        code: 'confirmation_required',
-        preflight,
-      },
-      { status: 428 },
-    );
-  }
-
-  // The period row has to exist before it can be closed — the journal bridge
-  // creates rows lazily, so a month with no postings has no row yet. The
-  // operator's id goes with it: if this call is what brings the month into
-  // existence, the 'period_opened' audit row names them.
-  await ensurePeriod(ctx.tenantId, ym.year, ym.month, ctx.userId);
-
+  // ── the confirmed request ───────────────────────────────────────────────
+  //
   // The handle that ties an operator's "it said it failed" to the detail on
   // the server. Only handed out when something unexpected goes wrong.
   const requestId = crypto.randomUUID();
 
   try {
-    const closed = await closePeriod(ctx.tenantId, ym.year, ym.month, ctx.userId);
-    return NextResponse.json({
-      ok: true,
-      closed: true,
-      period: preflight.period,
-      closedAt: closed.closedAt ? closed.closedAt.toISOString() : null,
-      closedByUserId: closed.closedByUserId,
-      warnings: preflight.warnings,
+    const result = await closePeriodConfirmed({
+      tenantId: ctx.tenantId,
+      year: ym.year,
+      month: ym.month,
+      userId: ctx.userId,
+      acknowledge: parseAcknowledgements(body.acknowledge),
     });
+
+    if (result.outcome === 'closed') {
+      return NextResponse.json({
+        ok: true,
+        closed: true,
+        period: result.preflight.period,
+        closedAt: result.period.closedAt ? result.period.closedAt.toISOString() : null,
+        closedByUserId: result.period.closedByUserId,
+        warnings: result.preflight.warnings,
+      });
+    }
+
+    if (result.outcome === 'not_closeable') {
+      return NextResponse.json(result.refusal, { status: 409 });
+    }
+
+    // Something the operator has not acknowledged: either a warning they
+    // never saw, or one whose figures changed while the dialog was open.
+    // The fresh preflight travels with the refusal so the dialog can show
+    // them what it is now.
+    return NextResponse.json(
+      {
+        error:
+          'These warnings have not been acknowledged: ' +
+          result.outstanding.map((w) => w.code).join(', '),
+        code: 'confirmation_required',
+        preflight: result.preflight,
+      },
+      { status: 428 },
+    );
   } catch (e) {
     // Somebody else closed it between the preflight and the close. The
     // refusal names the period and its closer.

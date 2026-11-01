@@ -20,6 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   closeWarnings,
+  unacknowledgedWarnings,
   type CloseWarning,
   type PreflightCounts,
 } from '@/lib/accounting/close-preflight';
@@ -141,5 +142,74 @@ describe('the warnings a period close carries', () => {
     );
 
     expect(warnings.map((w) => w.code)).toEqual(['vat_not_filed', 'open_bank_items']);
+  });
+});
+
+describe('the warnings an acknowledgement does not cover', () => {
+  const BANK = {
+    code: 'open_bank_items' as const,
+    count: 3,
+    amountPence: 45_000,
+    message: 'There are 3 open bank transactions dated in 2026-10.',
+  };
+
+  it('covers a warning that was acknowledged with the same figures', () => {
+    expect(
+      unacknowledgedWarnings([BANK], [{ code: 'open_bank_items', count: 3, amountPence: 45_000 }]),
+    ).toEqual([]);
+  });
+
+  it('does not cover a warning that was never acknowledged', () => {
+    expect(unacknowledgedWarnings([BANK], [])).toEqual([BANK]);
+  });
+
+  it('does not cover a warning whose count has changed', () => {
+    // THE case this module exists for. The operator ticked "3 open bank
+    // transactions"; a fourth landed while the dialog was open. The code is
+    // the same, so a code-only acknowledgement would still match — and the
+    // month would close over a line the operator never saw.
+    const outstanding = unacknowledgedWarnings([BANK], [
+      { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+    ]);
+    expect(outstanding).toEqual([]);
+    expect(
+      unacknowledgedWarnings([{ ...BANK, count: 4 }], [
+        { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+      ]),
+    ).toEqual([{ ...BANK, count: 4 }]);
+  });
+
+  it('does not cover a warning whose amount has changed', () => {
+    // Same number of lines, but one of them was edited. The operator saw
+    // £450; the close would strand £500.
+    expect(
+      unacknowledgedWarnings([{ ...BANK, amountPence: 50_000 }], [
+        { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it('does not hold against an acknowledgement for a warning that has gone away', () => {
+    // The situation IMPROVED — a bank line was categorised while the dialog
+    // was open. Refusing the close over that would strand the operator in a
+    // loop they cannot get out of.
+    expect(
+      unacknowledgedWarnings([], [{ code: 'open_bank_items', count: 3, amountPence: 45_000 }]),
+    ).toEqual([]);
+  });
+
+  it('ignores an acknowledgement for a warning the server did not report', () => {
+    expect(
+      unacknowledgedWarnings([BANK], [
+        { code: 'open_bank_items', count: 3, amountPence: 45_000 },
+        { code: 'vat_not_filed', count: 1, amountPence: 20_000 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('catches a warning the operator acknowledged with the wrong code', () => {
+    expect(
+      unacknowledgedWarnings([BANK], [{ code: 'vat_not_filed', count: 3, amountPence: 45_000 }]),
+    ).toEqual([BANK]);
   });
 });

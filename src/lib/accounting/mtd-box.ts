@@ -6,8 +6,7 @@
 // All amounts are in pence (bigint). Box 7 = box 1 - box 6.
 
 import { localDb } from '@/lib/auth/local-store';
-
-type Sql = Awaited<ReturnType<typeof localDb>>;
+import type { ISql } from 'postgres';
 
 export type Pounds = bigint;
 
@@ -23,8 +22,21 @@ export interface VatReturnBoxes {
   box9_totalPurchases: Pounds;         // box 5 + box 6 (gross-of-VAT)
 }
 
-export async function aggregateVatReturn(tenantId: string, year: number, month: number): Promise<VatReturnBoxes> {
-  const sql = await localDb();
+/**
+ * The nine boxes for a period.
+ *
+ * `tx` is an optional transaction handle. The close reads the boxes through
+ * the same handle as the rest of its preflight, so that the whole preflight
+ * is ONE snapshot: the counts the operator acknowledges and the counts the
+ * close acts on cannot come from two different points in time.
+ */
+export async function aggregateVatReturn(
+  tenantId: string,
+  year: number,
+  month: number,
+  tx?: ISql,
+): Promise<VatReturnBoxes> {
+  const sql: ISql = tx ?? (await localDb());
   // Pull net + VAT totals per vat_code for invoices issued in the period.
   // (Box 1 = T1 net; Box 2 = T0 net; Box 3 = T9 net; Box 4 base = all net;
   // Box 5 base + Box 6 base = 0 in v1; Box 5/6 don't apply since no supplier bills.)
