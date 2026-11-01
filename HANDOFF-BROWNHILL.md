@@ -142,7 +142,7 @@ written for you, one is optional:
 | File | Written by | Use |
 | --- | --- | --- |
 | `app.env` | `install.sh`, and again by `substitute-fqdn.sh` | The application's own run-time environment: `DATABASE_URL`, `BOOTSTRAP_TOKEN`, `POSTGREST_URL` and `NEXT_PUBLIC_APP_URL`. **Rewritten on every `install.sh` run**, so a rotated database password takes effect on the next install rather than needing a hand edit. `NEXT_PUBLIC_APP_URL` follows `BROWNHILL_FQDN`. |
-| `mtd.env` | `install.sh` creates it empty; you fill it in | The HMRC Making Tax Digital credentials — `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`, `HMRC_ENV`. Optional: without it the application starts and the HMRC page says the connection is not configured. See Appendix A, Step A.1. |
+| `mtd.env` | `install.sh` creates it empty; you fill it in | The HMRC Making Tax Digital credentials — `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`, `HMRC_ENV`, `HMRC_MTD_VRN`, `HMRC_MTD_BASE_URL`. Optional: without it the application starts and the HMRC page says the connection is not configured. See Appendix A, Step A.1. |
 
 `hosted/bootstrap/operator-secrets.example` is a template you can copy and fill in. Once filled, drop it onto the box at `/etc/brownhill/secrets/` (renamed to remove `.example`) before `install.sh`. The default behaviour is to **generate** secrets at install time if your file is absent.
 
@@ -635,12 +635,25 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
    HMRC_MTD_CLIENT_SECRET=<client_secret>
    HMRC_MTD_REDIRECT_URI=https://<your-host>/api/v1/accounting/mtd/callback
    HMRC_ENV=sandbox
+   HMRC_MTD_VRN=<vat_registration_number>
+   HMRC_MTD_BASE_URL=
    ```
    - `HMRC_MTD_REDIRECT_URI` may be left **empty**: the application then
      derives it from the deployment's own address, which is the same URL.
    - `HMRC_ENV` is `sandbox` while you are testing against HMRC's sandbox,
      and `production` once you are filing live returns. Set it explicitly
      rather than relying on the default.
+   - `HMRC_MTD_VRN` is the **VAT registration number** — the number HMRC
+     issued, 3 to 15 digits. It matters because HMRC files a return at
+     `POST /organisations/vat/{vrn}/returns`: the number is in the path, so
+     it decides which organisation the return belongs to. Leave it empty if
+     you are unsure — the application then refuses to file rather than filing
+     against the wrong organisation, and you can set it on
+     `/admin/accounting/mtd` once the tenant is connected. It is **not** the
+     Nigerian FIRS tax identification number that the same table also carries.
+   - `HMRC_MTD_BASE_URL` may be left **empty**: the application then uses
+     HMRC's own address for the environment named by `HMRC_ENV`. The chaos
+     drills set it, briefly, to point the application at a stub.
    - The file is optional. Without it the application starts, and the HMRC
      settings page says the connection is not configured.
 4. Restart the application so it picks the file up:
@@ -648,18 +661,44 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
    sudo systemctl restart brownhill-next.service
    ```
 
-### Step A.2 — Complete the OAuth consent (operator-paste-the-code in v1)
+### Step A.2 — Complete the OAuth consent
 
 1. In the Brownhill app, navigate to `/admin/accounting/mtd` and click **Connect to HMRC**.
 2. The consent screen redirects to HMRC; the operator signs in with their Government Gateway credentials and grants the app access to VAT filings.
-3. On the consent screen's "code" parameter URL, copy the `code` value.
-4. The app's callback handler — `src/app/api/v1/accounting/mtd/[action]/route.ts`, the `callback` action — accepts the code and exchanges it for tokens via `submitVatReturn`'s `exchangeCodeForTokens`. Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in `src/lib/accounting/mtd.ts`. This handler ships in this repository; nothing further has to be wired.
+3. HMRC sends the browser back to
+   `https://<your-host>/api/v1/accounting/mtd/callback?code=…&state=…`. The
+   app's callback handler — `src/app/api/v1/accounting/mtd/[action]/route.ts`,
+   the `callback` action — reads that code itself and exchanges it for tokens
+   via `exchangeCodeForTokens`. **There is nothing to copy and paste**: the
+   handler ships in this repository and does the exchange on the round trip.
+   Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in
+   `src/lib/accounting/mtd.ts`.
+4. You land back on `/admin/accounting/mtd` with a green **Connected to HMRC**
+   message and the token expiry time. If you refused consent, or the state
+   could not be verified, the page says so and nothing was saved.
 
-### Step A.3 — Submit a VAT return
+### Step A.3 — Set the VAT registration number, then submit a VAT return
 
-1. Navigate to `/admin/accounting/reports/vat-return?period=YYYY-MM`.
-2. Review the box figures; if correct, click **Submit to HMRC**.
-3. The submit handler calls `aggregateVatReturn` + `submitVatReturn` (the fail-safe flow): only on HMRC success is the §2 Rule #5 journal entry posted; on rejection or token expiry, no journal entry is written and the operator gets an inline error.
+1. On `/admin/accounting/mtd`, set the **VAT registration number** — the
+   number HMRC issued, 3 to 15 digits. HMRC files a return at
+   `POST /organisations/vat/{vrn}/returns`, so the number is in the path: it
+   decides which organisation the return belongs to. It is stored against the
+   tenant's HMRC connection and overrides the installation-wide
+   `HMRC_MTD_VRN`.
+2. Navigate to `/admin/accounting/reports/vat-return?period=YYYY-MM`.
+3. Review the box figures; if correct, click **Submit to HMRC**.
+4. The submit handler calls `aggregateVatReturn` + `submitVatReturn` (the fail-safe flow): only on HMRC success is the §2 Rule #5 journal entry posted; on rejection or token expiry, no journal entry is written and the operator gets an inline error.
+5. Read what the page says:
+   - **Accepted** — the page shows HMRC's own reference (the correlation id).
+     Quote it in any correspondence with HMRC.
+   - **Refused** — the page shows HMRC's own words, and nothing was posted to
+     the ledger. Fix what HMRC objected to and file again; the submission row
+     keeps the reason.
+   - **Cannot file yet** — the page says whether the tenant has no HMRC
+     connection, no VAT registration number, or a token that needs
+     reconnecting.
+   - **HMRC could not be reached** — nothing was sent and nothing was posted.
+     Filing again is safe.
 
 ### Step A.4 — Reconcile bank statements
 

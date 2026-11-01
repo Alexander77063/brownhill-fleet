@@ -37,7 +37,9 @@ export default async function VatReturnPage({
         year={year}
         month={month}
         connectHref="/accounts/accounting/mtd"
-        status={sp.status ?? null}
+        // Filing a return is what the MTD route is gated on, so the button
+        // is offered to exactly the people who can use it.
+        canSubmit={contextCan(ctx, 'tenant.settings')}
       />
     </>
   );

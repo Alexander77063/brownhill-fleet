@@ -357,7 +357,7 @@ business paid.
 | `accounting.vat_codes` | `code ~ '^T[0-9]$'`, `vat_t1_rate_pct between 0 and 100`, `vat_treatment in ('standard','zero','exempt','outside')` |
 | `accounting.vat_submissions` | UK VAT return; `box_number between 1 and 6` (the nine boxes are spread across six box numbers with sub-boxes) |
 | `accounting.filing_artifacts` | What was filed, when, and the MTD response |
-| `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4 |
+| `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4. `vrn` is the tenant's VAT registration number (migration 0084) |
 | `accounting.vat_return_lines` | The lines of a VAT return. Keyed on `vat_submission_id`; its tenancy is its submission's |
 | `accounting.audit_log` | The accounting module's own append-only audit trail — read and appended to, never edited or removed |
 | `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window: `reopen_window_days between 1 and 90` (migration 0070, default 7) |
@@ -627,6 +627,27 @@ Two other things 0081 fixes that the code had been working around:
   `bank_fee` are separate source types — one bank transaction can produce more
   than one posting.
 
+### 5.5 The VAT registration number (migration 0084)
+
+`accounting.firs_credentials.vrn text` is the tenant's **VAT registration
+number**, with a check constraint `vrn ~ '^[0-9]{3,15}$'`.
+
+It had to be added: HMRC files a return at
+`POST /organisations/vat/{vrn}/returns`, so the number is **in the path** —
+it decides which organisation the return belongs to — and there was nowhere
+to keep one. No column, no setting, no field on any screen. A submission
+therefore had nothing to file against.
+
+**It is not the `tin`.** The same table carries `tin`, which is the Nigerian
+FIRS Tax Identification Number: a different country's identifier, on a table
+that was renamed for the Nigerian programme. Filing a UK return against the
+`tin` would file it against the wrong organisation, which is why the number
+has its own column and its own field.
+
+The number is per tenant, because a tenant is the thing that files returns.
+The installation-wide `HMRC_MTD_VRN` is only the fallback for a box serving
+one tenant, and the tenant's own value wins.
+
 ## 6. Other invariants worth knowing
 
 | Constraint | Table | What it forbids |
@@ -642,6 +663,7 @@ Two other things 0081 fixes that the code had been working around:
 | `state in ('in_stock','allocated','fitted','faulty','returned','retired','lost')` | `device_units` | An unknown device state |
 | `kind ~ '^[a-z][a-z0-9_]{1,40}$'` | `plan_features` | A malformed feature key |
 | `reopen_window_days between 1 and 90` | accounting settings | A reopen window of zero or two years |
+| `vrn ~ '^[0-9]{3,15}$'` | `accounting.firs_credentials` | A VAT registration number that is not 3 to 15 digits — the number goes in a URL path, so anything else is a wrong-organisation filing or a broken path |
 | `bank_statement_max_bytes between 1024 and 1073741824` | tenant settings | A nonsensical import cap |
 | allocation targets a non-void invoice (trigger `check_allocation()`) | `payment_allocations` | Money landing on a voided invoice |
 

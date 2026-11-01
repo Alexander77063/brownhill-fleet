@@ -85,7 +85,9 @@ Secrets live on the VM at `/etc/brownhill/secrets/`, mode `0640`, owned `root:br
   rotated database password takes effect on the next one.
 - `mtd.env` — the HMRC Making Tax Digital credentials
   (`HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`,
-  `HMRC_ENV`). Created empty by `install.sh`; the operator fills it in.
+  `HMRC_ENV`), the VAT registration number a return is filed against
+  (`HMRC_MTD_VRN`), and the endpoint (`HMRC_MTD_BASE_URL`, empty = HMRC's own).
+  Created empty by `install.sh`; the operator fills it in.
   Optional — without it the application starts and the HMRC page says the
   connection is not configured.
 

@@ -25,7 +25,18 @@ services:
       PGRST_DB_URI: postgresql://postgres@postgres:5432/postgres
       PGRST_DB_ANON_ROLE: anon
       PGRST_DB_PRE_REQUEST: auth.pre_request
-      PGRST_JWT_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
+      # AT LEAST 32 BYTES. PostgREST v12 refuses to verify a session token
+      # signed with a shorter secret, and it says so in the least helpful way
+      # it can: every signed-in user gets `JWSError JWSInvalidSignature` from
+      # PostgREST, which the application turns into "User is not a member of
+      # any tenant" — as though the user had no membership, rather than as
+      # though the secret were too short. The signature was perfectly valid.
+      #
+      # The default here was 31 bytes, one short of the limit, so the whole
+      # local stack could not authenticate anybody and nothing said so: the
+      # hosted smoke test only ever probes unauthenticated routes. The value
+      # is the same one the CI workflow uses, so the two stacks cannot drift.
+      PGRST_JWT_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only-do-not-reuse}
     # The app's own origin rewrites /rest/v1 to this server, and the hosted
     # smoke test curls it directly. Both need it reachable from outside the
     # compose network.
@@ -83,9 +94,28 @@ services:
       # The per-install signing secret. The app accepts this name and
       # LOCAL_JWT_SECRET alike; PostgREST is configured with this one, so the
       # two must agree or PostgREST rejects every session the app mints.
-      JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
+      #
+      # At least 32 bytes — see the note on PGRST_JWT_SECRET above for what a
+      # shorter one does. It has to be the SAME value as PostgREST's.
+      JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only-do-not-reuse}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-ci-bootstrap-token}
       BROWNHILL_FQDN: brownhill.localhost
+      # The HMRC settings.
+      #
+      # They are here, empty, so the chaos drills can point the application
+      # at a stub without editing a systemd unit or a compose file: the drill
+      # recreates this service with HMRC_MTD_BASE_URL set, and recreates it
+      # again without it to put it back.
+      #
+      # Empty means "not configured", which is exactly what the application
+      # makes of an unset variable — so a plain stack behaves exactly as it
+      # did before these lines existed.
+      HMRC_MTD_CLIENT_ID: ${HMRC_MTD_CLIENT_ID:-}
+      HMRC_MTD_CLIENT_SECRET: ${HMRC_MTD_CLIENT_SECRET:-}
+      HMRC_MTD_REDIRECT_URI: ${HMRC_MTD_REDIRECT_URI:-}
+      HMRC_MTD_BASE_URL: ${HMRC_MTD_BASE_URL:-}
+      HMRC_MTD_VRN: ${HMRC_MTD_VRN:-}
+      HMRC_ENV: ${HMRC_ENV:-sandbox}
     # Published so the app is reachable from the host: the hosted smoke test
     # curls http://127.0.0.1:55431, and a person driving the stack by hand
     # needs a URL too. Without this the smoke test skipped itself, silently,
@@ -107,3 +137,36 @@ services:
       - ./certs/server.key:/etc/ssl/private/server.key:ro
     depends_on:
       next: { condition: service_started }
+
+  # A stand-in for HMRC, for the chaos drills.
+  #
+  # The drills have to point the DEPLOYED application at an HMRC that answers
+  # the way the drill needs it to. The application's submission path is the
+  # thing under test, and it cannot be tested against the live HMRC API.
+  #
+  # It is on the compose network, so the application reaches it as
+  # `stub-hmrc`, and it is published on the host, so the drill script can
+  # drive the OAuth round trip itself. The mode is chosen by the drill, which
+  # recreates this service with STUB_MODE set.
+  #
+  # The image is the same base the application is built from, so a stack that
+  # has already built the application does not have to pull anything.
+  stub-hmrc:
+    image: node:22-bookworm-slim
+    command: ["node", "/stub/stub-hmrc.mjs"]
+    environment:
+      STUB_MODE: ${STUB_MODE:-reject}
+      STUB_PORT: "8099"
+    volumes:
+      # `../tests/chaos/lib`, NOT `./tests/chaos/lib`.
+      #
+      # A relative bind mount is resolved against the compose file's own
+      # directory — `hosted/dev` — so `./tests/chaos/lib` pointed at
+      # `hosted/dev/tests/chaos/lib`, which does not exist. Docker does not
+      # complain about a missing host directory: it creates it, mounts the
+      # empty directory, and the stub then dies on startup with
+      # "Cannot find module '/stub/stub-hmrc.mjs'". The drill then reported
+      # "the stub HMRC never came up", which was true but said nothing about
+      # why. The stub lives at `hosted/tests/chaos/lib`, which is one level up.
+      - ../tests/chaos/lib:/stub:ro
+    ports: ["8099:8099"]

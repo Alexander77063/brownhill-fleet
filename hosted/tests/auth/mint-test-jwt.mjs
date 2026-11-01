@@ -18,7 +18,13 @@
 // `role: 'owner'` — neither of which the application ever produces.
 //
 // Usage:
-//   node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [secret]
+//   node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [secret] [subject]
+//
+// The subject is the user id the token is for. It defaults to a fixed
+// placeholder, which is all the portability proof needs — it asserts about
+// the TENANT claim. The chaos drills need a real one: they create a
+// throwaway user, and a token for a user who does not exist is refused by
+// exactly the code path the drill is there to exercise.
 //
 // The token goes to stdout. A failure is a failure on stderr with a
 // non-zero exit — never an empty token, because an empty token turns a
@@ -87,9 +93,10 @@ if (!process.env[RESPAWNED]) {
 
 const tenant = process.argv[2];
 const secret = process.argv[3];
+const subject = process.argv[4] || 'proof-subject';
 
 if (!tenant) {
-  console.error('usage: mint-test-jwt.mjs <tenantId> [secret]');
+  console.error('usage: mint-test-jwt.mjs <tenantId> [secret] [subject]');
   process.exit(2);
 }
 
@@ -109,7 +116,7 @@ try {
 // when one is provided, so the token is a genuine session token.
 try {
   const token = await signJwt(
-    { sub: 'proof-subject', role: 'authenticated', tenant_id: tenant },
+    { sub: subject, role: 'authenticated', tenant_id: tenant },
     secret || 'local-proof-secret',
     600,
   );

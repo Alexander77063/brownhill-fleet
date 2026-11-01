@@ -292,6 +292,8 @@ Concretely, on the hosted box:
 | `HMRC_MTD_CLIENT_SECRET` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` |
 | `HMRC_MTD_REDIRECT_URI` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (empty → derived from the app's address) |
 | `HMRC_ENV` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (`sandbox` or `production`) |
+| `HMRC_MTD_VRN` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (empty → the tenant's own `accounting.firs_credentials.vrn`, which overrides it) |
+| `HMRC_MTD_BASE_URL` | `src/lib/accounting/hmrc.ts` | `install.sh` | `mtd.env` (empty → HMRC's own sandbox/production address; the chaos drills point it at a stub) |
 | `NEXT_PUBLIC_APP_URL` | `src/lib/requests.ts`, `src/lib/accounting/mtd.ts` | `write-app-env.sh` | `app.env` |
 
 **Why.** A variable that is *set* under one spelling and *read* under
