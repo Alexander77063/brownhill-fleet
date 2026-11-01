@@ -66,8 +66,8 @@ describe('signInCapabilities', () => {
     // was broken on `managed` too.
     expect(signInCapabilities('standalone').setupPathBuild).toBe(true);
     expect(signInCapabilities('managed').setupPathBuild).toBe(true);
-    // The hosted box is onboarded through /api/v1/bootstrap, which also
-    // closes the bootstrap window, so it must not be redirected to /setup.
+    // The hosted box is onboarded through /api/v1/bootstrap, so it must not
+    // be redirected to /setup.
     expect(signInCapabilities('hosted').setupPathBuild).toBe(false);
     expect(signInCapabilities('managed-shared').setupPathBuild).toBe(false);
     expect(signInCapabilities('saas').setupPathBuild).toBe(false);

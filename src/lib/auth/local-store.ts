@@ -12,6 +12,7 @@
  * would still pull the driver into every serverless bundle.
  */
 import { hashPassword, needsRehash, verifyPassword } from './password';
+import { closeBootstrapWindow, isBootstrapPending } from '@/lib/app-state';
 
 export interface LocalUser {
   id: string;
@@ -31,6 +32,7 @@ const LOCK_MINUTES = 30;
 // Imported here so the functions in this file can use it directly,
 // and re-exported so callers (admin routes etc.) keep working.
 import { localDb } from '@/lib/db/local';
+import type { Query } from '@/lib/db/local';
 export { localDb };
 
 /**
@@ -144,7 +146,26 @@ export async function createLocalUser(
   password: string,
   meta: { role: LocalUserRole; fullName?: string },
 ): Promise<LocalUser> {
-  const db = await localDb();
+  const hash = await hashPassword(password);
+  return insertLocalUser(await localDb(), email, hash, meta);
+}
+
+/**
+ * The write half of `createLocalUser`: the account row and its credential
+ * row, on a connection the caller owns.
+ *
+ * The password arrives already hashed, and that is not an optimisation: the
+ * callers that need this inside a transaction must hash it BEFORE the
+ * transaction opens, because PBKDF2 at 600,000 iterations takes seconds and a
+ * transaction held open for a key derivation would pin a database connection
+ * for the length of it.
+ */
+async function insertLocalUser(
+  db: Query,
+  email: string,
+  passwordHash: string,
+  meta: { role: LocalUserRole; fullName?: string },
+): Promise<LocalUser> {
   const normalised = email.trim().toLowerCase();
 
   const users = (await db`
@@ -158,11 +179,10 @@ export async function createLocalUser(
   `) as Array<{ id: string; email: string }>;
 
   const user = users[0];
-  const hash = await hashPassword(password);
 
   await db`
     insert into auth.local_credentials (user_id, password_hash)
-    values (${user.id}, ${hash})
+    values (${user.id}, ${passwordHash})
     on conflict (user_id) do update
       set password_hash = excluded.password_hash,
           failed_attempts = 0,
@@ -240,10 +260,53 @@ export async function localHasPassword(userId: string): Promise<boolean> {
 }
 
 /** True when no account exists yet, so the app can offer first-run setup. */
-export async function hasAnyUser(): Promise<boolean> {
-  const db = await localDb();
-  const rows = (await db`select 1 from auth.users limit 1`) as unknown as unknown[];
+export async function hasAnyUser(db?: Query): Promise<boolean> {
+  const q = db ?? (await localDb());
+  const rows = (await q`select 1 from auth.users limit 1`) as unknown as unknown[];
   return rows.length > 0;
+}
+
+/**
+ * Is first-run setup still available on this installation?
+ *
+ * Two questions, and both have to say yes:
+ *
+ *   * does the installation already have an owner? (no → setup is done)
+ *   * is the first-run window still open? (no → the door is shut)
+ *
+ * The flag is only a CACHE of the first of those. An installation with an
+ * owner HAS been bootstrapped, whatever the flag says, so when the two
+ * disagree the flag is stale and is corrected here rather than believed.
+ *
+ * That is not a convenience. It is the repair for the state a box is left in
+ * when first-run setup completes on a path that does not close the window: the
+ * owner account exists, the flag still says 'pending', and the first-run door
+ * is still open behind the operator. Correcting the flag when the server
+ * next proves otherwise heals the box without a hand-written UPDATE on the
+ * customer's server.
+ */
+export async function firstRunOpen(db?: Query): Promise<boolean> {
+  const q = db ?? (await localDb());
+
+  if (await hasAnyUser(q)) {
+    // There is an owner, so the window is shut. If the flag still says it is
+    // open, the flag is the thing that is wrong.
+    if (await isBootstrapPending(q)) await closeBootstrapWindow(q);
+    return false;
+  }
+
+  return await isBootstrapPending(q);
+}
+
+/**
+ * Close the first-run window if it is still armed.
+ *
+ * For callers that have already PROVED there is an owner — a successful
+ * sign-in is the proof — and so need not ask the database whether one exists.
+ */
+export async function closeStaleFirstRunWindow(db?: Query): Promise<void> {
+  const q = db ?? (await localDb());
+  if (await isBootstrapPending(q)) await closeBootstrapWindow(q);
 }
 
 /**
@@ -290,6 +353,17 @@ export interface FirstRunResult {
  *
  * It refuses to run once any account exists, so the route that exposes it
  * cannot be replayed later to mint a second owner.
+ *
+ * ## Why this is one transaction
+ *
+ * The owner account, the tenant they operate, and the closing of the
+ * first-run window are ONE transition: "this installation has an owner now".
+ * Splitting them is how an installation ends up with an owner and a flag that
+ * still says it is waiting for its first run — a green setup on an
+ * application that still believes it is pending, with the first-run door left
+ * open behind the operator. In a transaction, either all of it lands or none
+ * of it does, so a setup that cannot close the window does not report
+ * success, and a setup that fails leaves nothing half-done.
  */
 export async function createFirstUserAndTenant(args: {
   email: string;
@@ -297,56 +371,71 @@ export async function createFirstUserAndTenant(args: {
   fullName: string;
   businessName: string;
 }): Promise<FirstRunResult> {
-  if (await hasAnyUser()) {
-    throw new Error('Setup has already been completed on this installation.');
-  }
+  // The password is hashed BEFORE the transaction opens. PBKDF2 at 600,000
+  // iterations takes seconds, and a transaction held open for a key
+  // derivation would pin a database connection on the one installation that
+  // ever runs this.
+  const passwordHash = await hashPassword(args.password);
 
   const db = await localDb();
 
-  // `ops` so the profiles trigger from migration 0002 gives them the operator
-  // portal; the first account is the business owner, not a driver.
-  const user = await createLocalUser(args.email, args.password, {
-    role: 'ops',
-    fullName: args.fullName,
+  const created = await db.begin(async (tx): Promise<FirstRunResult> => {
+    if (await hasAnyUser(tx)) {
+      throw new Error('Setup has already been completed on this installation.');
+    }
+
+    // `ops` so the profiles trigger from migration 0002 gives them the operator
+    // portal; the first account is the business owner, not a driver.
+    const user = await insertLocalUser(tx, args.email, passwordHash, {
+      role: 'ops',
+      fullName: args.fullName,
+    });
+
+    // The trigger is the only thing that creates the profile, and a silent
+    // fallback to `driver` would sign the owner into the wrong portal with none
+    // of their own data. Fail setup loudly instead of handing that over.
+    const profiles = (await tx`
+      select role::text as role from profiles where id = ${user.id}
+    `) as Array<{ role: string }>;
+    if (profiles[0]?.role !== 'ops') {
+      throw new Error(
+        `Account was created with role "${profiles[0]?.role ?? 'none'}" instead of "ops".`,
+      );
+    }
+
+    const slug =
+      args.businessName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 50) || 'fleet';
+
+    // Seed the tenant's branding from the name they just typed. Without it the
+    // portal header falls back to the product name, so a self-hosted customer
+    // signs into their own system and is greeted by someone else's brand.
+    const tenants = (await tx`
+      insert into tenants (name, slug, branding)
+      values (
+        ${args.businessName},
+        ${slug},
+        jsonb_build_object('legal_name', ${args.businessName}::text, 'trading_name', ${args.businessName}::text)
+      )
+      returning id
+    `) as Array<{ id: string }>;
+    const tenantId = tenants[0].id;
+
+    await tx`
+      insert into tenant_memberships (tenant_id, user_id, role, status)
+      values (${tenantId}, ${user.id}, 'owner', 'active')
+    `;
+
+    // The window closes HERE — in the same transaction as the account it
+    // describes. This is the only place in the application that opens a
+    // first run, so this is the only place that closes one.
+    await closeBootstrapWindow(tx);
+
+    return { user, tenantId };
   });
 
-  // The trigger is the only thing that creates the profile, and a silent
-  // fallback to `driver` would sign the owner into the wrong portal with none
-  // of their own data. Fail setup loudly instead of handing that over.
-  const profiles = (await db`
-    select role::text as role from profiles where id = ${user.id}
-  `) as Array<{ role: string }>;
-  if (profiles[0]?.role !== 'ops') {
-    throw new Error(
-      `Account was created with role "${profiles[0]?.role ?? 'none'}" instead of "ops".`,
-    );
-  }
-
-  const slug =
-    args.businessName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 50) || 'fleet';
-
-  // Seed the tenant's branding from the name they just typed. Without it the
-  // portal header falls back to the product name, so a self-hosted customer
-  // signs into their own system and is greeted by someone else's brand.
-  const tenants = (await db`
-    insert into tenants (name, slug, branding)
-    values (
-      ${args.businessName},
-      ${slug},
-      jsonb_build_object('legal_name', ${args.businessName}::text, 'trading_name', ${args.businessName}::text)
-    )
-    returning id
-  `) as Array<{ id: string }>;
-  const tenantId = tenants[0].id;
-
-  await db`
-    insert into tenant_memberships (tenant_id, user_id, role, status)
-    values (${tenantId}, ${user.id}, 'owner', 'active')
-  `;
-
-  return { user, tenantId };
+  return created;
 }

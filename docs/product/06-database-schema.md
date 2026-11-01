@@ -758,6 +758,31 @@ provisions itself, a developer running the app locally — queried a table that
 did not exist and got `42P01`. The migration history is the one thing every
 install has applied, by definition.
 
+### 7.2 The first-run window — `app_state.bootstrap_pending`
+
+The flag is a **cache of a fact the database already holds**: "does this
+installation have an owner yet?".
+
+| Moment | Value | Who writes it |
+| --- | --- | --- |
+| A fresh installation | `'1'` | Migration 0080 inserts the row. `brownhill-bootstrap.sh` inserts it with `ON CONFLICT DO NOTHING`, so a boot can never re-open a window the application has closed |
+| First-run setup completes | `'0'` | `createFirstUserAndTenant()` — **in the same transaction** as the owner account and the tenant they operate |
+| An installation that already has an owner but whose flag still says `'1'` | `'0'` | `firstRunOpen()` and `closeStaleFirstRunWindow()` — the server corrects a flag the database has already contradicted, rather than believing it |
+
+The closing write is inside the transaction on purpose. The owner account,
+the tenant and the closing of the window are one transition — "this
+installation has an owner now" — and splitting them is how an installation
+ends up with an owner and a flag that still says it is waiting for its first
+run: a green setup on an application that still believes it is pending, with
+the first-run door open behind the operator. In a transaction either all of
+it lands or none of it does, so a setup that cannot close the window does not
+report success, and a setup that fails leaves nothing half-made.
+
+Both first-run doors read the flag before they serve — the signed
+`/api/v1/bootstrap` and the browser `/api/auth/local/setup` — and both read
+it through `localDb()`, as the table owner. The Edge middleware never sees
+it (§7.1), which is why the first-run decision is made server-side.
+
 ## 8. Migrations
 
 - 82 files, `0001`–`0083` (there is no `0057`; the number was never used).

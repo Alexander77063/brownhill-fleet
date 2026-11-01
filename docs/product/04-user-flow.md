@@ -116,9 +116,17 @@ number they do not have, for an account that cannot be created that way.
 The build's first-run path follows the same rule. The desktop product and the
 dedicated Nigerian instance create their first account at `/setup`, and the
 sign-in page sends the operator there when the database is empty. The hosted
-box does not: it is onboarded through `/api/v1/bootstrap`, which also closes
-the bootstrap window, so its sign-in page must not send anyone to `/setup`
-behind the operator's back.
+box does not: it is onboarded through `/api/v1/bootstrap`, so its sign-in page
+must not send anyone to `/setup` behind the operator's back.
+
+Whichever door is used, the **first-run window** closes in the same
+transaction that creates the owner account. The window is
+`app_state.bootstrap_pending` — `'1'` while the installation has no owner,
+`'0'` once it has one — and it is the flag both first-run doors read before
+they serve. A setup that cannot close it fails and rolls back rather than
+reporting success; and an installation that already has an owner is closed
+even if the flag is stale, because the server corrects a flag the database
+has already contradicted.
 
 ### 2.3 What happens on a successful sign-in
 

@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Tests | Vitest | 2.1.9 | `pnpm test` — 702 passing, 0 skipped, 55 files. The database-backed ones need `DATABASE_URL` |
+| Tests | Vitest | 2.1.9 | `pnpm test` — 712 passing, 0 skipped, 56 files. The database-backed ones need `DATABASE_URL` |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 93 scans across 81 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -63,12 +63,13 @@ nginx  (:443, TLS via certbot, HSTS)          ← only public listener
 - The app talks to PostgREST on **loopback only**. PostgREST never binds a
   public interface.
 - The browser never sees a database URL. Every query goes through the app.
-- `app_state` holds the operational flags the middleware reads:
-  `bootstrap_pending`, `app_draining`. The Node server reads it through
-  `localDb()` — a direct connection as the table owner. The **Edge** middleware
-  cannot open a database connection, so it reads the drain flag over HTTP from
-  PostgREST as `anon`, against a one-row RLS policy that exposes the drain row
-  and nothing else. See §7.1 of the [schema document](./06-database-schema.md).
+- `app_state` holds the operational flags: `bootstrap_pending` — the first-run
+  window, read by the Node server — and `app_draining`, the restore switch.
+  The Node server reads it through `localDb()` — a direct connection as the
+  table owner. The **Edge** middleware cannot open a database connection, so
+  it reads the drain flag over HTTP from PostgREST as `anon`, against a
+  one-row RLS policy that exposes the drain row and nothing else. See §7.1 of
+  the [schema document](./06-database-schema.md).
 
 ### 3.1 The data-access seam (decision D2)
 
@@ -549,7 +550,7 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Tests | `pnpm test` | 702 passing, 0 skipped, 55 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Tests | `pnpm test` | 712 passing, 0 skipped, 56 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
 | Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 52 tests across 7 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, the HMRC filing, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
