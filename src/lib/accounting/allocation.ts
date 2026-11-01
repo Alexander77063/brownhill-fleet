@@ -88,7 +88,8 @@ export async function allocatePaymentToInvoices(
            i.gross_pence,
            coalesce((select sum(pa.amount_pence)
                        from public.payment_allocations pa
-                      where pa.invoice_id = i.id), 0)::bigint as allocated_pence
+                      where pa.invoice_id = i.id
+                        and pa.tenant_id = ${tenantId}::uuid), 0)::bigint as allocated_pence
       from public.invoices i
      where i.agreement_id = ${agreementId}::uuid
        and i.tenant_id = ${tenantId}::uuid

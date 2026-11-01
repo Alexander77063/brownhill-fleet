@@ -45,10 +45,14 @@ export async function recordHandoverPhotos(formData: FormData): Promise<void> {
   }
 
   // Pull the agreement to learn vehicle_id and the linked driver.
+  //
+  // The tenant is the session's own tenant, and it is in the SQL: this runs
+  // on the direct Postgres connection, which owns the table and bypasses RLS.
   const ag = (await sql`
     select vehicle_id, driver_id
       from agreements
      where id = ${session.agreement_id}::uuid
+       and tenant_id = ${session.tenant_id}::uuid
   `) as Array<{ vehicle_id: string | null; driver_id: string | null }>;
   const agreementRow = ag[0];
 

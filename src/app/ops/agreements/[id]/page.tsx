@@ -8,6 +8,7 @@ import { formatDate, titleCase, agreementStatusTone, invoiceStatusTone } from '@
 import { listSigningSessions, sendForSignature } from '@/lib/actions/signing';
 import { completeAgreementAction } from '@/lib/actions/agreements';
 import { listHandoverPhotos } from '@/lib/queries-handover-photos';
+import { requireTenantContext } from '@/lib/auth/context';
 import { storageSignedUrl, HANDOVER_PHOTO_BUCKET } from '@/lib/storage';
 import { HANDOVER_PHOTO_LABELS, isValidHandoverPhotoKind, MIN_HANDOVER_PHOTOS } from '@/lib/sign/handover-photo';
 import { SigningPanel } from './SigningPanel';
@@ -25,6 +26,10 @@ function Spec({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default async function AgreementDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // The tenant is needed for the direct-Postgres reads on this page (handover
+  // photos). The agreement itself comes through the RLS-scoped PostgREST
+  // client, so it is already limited to the tenant this operator belongs to.
+  const ctx = await requireTenantContext();
   const agreement = await getAgreement(id);
   if (!agreement) notFound();
 
@@ -35,7 +40,7 @@ export default async function AgreementDetailPage({ params }: { params: Promise<
     agreement.type === 'rtb' ? getEquityForAgreement(id) : Promise.resolve([]),
     getCertificatesForDriver(agreement.driver_id),
     listSigningSessions(id),
-    listHandoverPhotos(id),
+    listHandoverPhotos(id, ctx.tenantId),
   ]);
 
   // Handover photos live in object storage, not under the app's public/

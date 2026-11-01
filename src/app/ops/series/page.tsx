@@ -21,12 +21,12 @@ const STATUS_TONE = {
 } as const;
 
 export default async function OpsSeriesPage() {
-  await requireTenantContext();
+  const ctx = await requireTenantContext();
   const [series, drivers, vehicles, activeCount] = await Promise.all([
-    listSeries(),
+    listSeries(ctx.tenantId),
     getDrivers(),
     getVehicles(),
-    countActiveSeries(),
+    countActiveSeries(ctx.tenantId),
   ]);
 
   return (

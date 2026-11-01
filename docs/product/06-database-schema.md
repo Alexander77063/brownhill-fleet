@@ -573,10 +573,13 @@ used by `public` since migration 0017.
 **The application must still name the tenant.** The Node server connects as a
 superuser, which bypasses RLS entirely, and the accounting schema is not
 exposed by PostgREST — so a policy is not what stops one tenant reading
-another's ledger. `tests/unit/accounting/sql-contract.test.ts` holds every
-statement that touches a tenant-scoped accounting table to containing
-`tenant_id`; the policy is the second line of defence for any connection that
-is *not* the superuser.
+another's ledger. The tenant has to be in the SQL, and two gates hold it
+there: `tests/unit/accounting/sql-contract.test.ts` holds every statement that
+touches a tenant-scoped **accounting** table to containing `tenant_id`, and
+`tests/unit/tenant-scope-contract.test.ts` holds **every** tenant-scoped table
+the direct client touches — accounting and `public` alike — to being filtered
+by itself, alias by alias. The policy is the second line of defence for any
+connection that is *not* the superuser.
 
 **And no such connection exists today.** The accounting schema carries **no
 privileges at all** for any role other than the owner: `anon` and

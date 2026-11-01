@@ -83,6 +83,35 @@ export async function createBookingSeries(formData: FormData): Promise<CreateSer
 
   const sql = await localDb();
 
+  // THE DRIVER AND THE VEHICLE MUST BE THIS TENANT'S
+  // -------------------------------------------------
+  // Both ids arrive in hidden form fields, which makes them client-supplied:
+  // they are whatever the browser posted. A series that points at another
+  // tenant's driver puts that driver's name on this tenant's dispatch board
+  // and hands their bookings to a stranger; a series that points at another
+  // tenant's vehicle puts their car on this tenant's work. Both references
+  // are checked against this tenant before anything is written.
+  if (driverId) {
+    const owned = (await sql`
+      select id from drivers
+       where id = ${driverId}::uuid
+         and tenant_id = ${ctx.tenantId}::uuid
+    `) as Array<{ id: string }>;
+    if (!owned.length) {
+      return { ok: false, message: 'That driver is not on your fleet.' };
+    }
+  }
+  if (vehicleId) {
+    const owned = (await sql`
+      select id from vehicles
+       where id = ${vehicleId}::uuid
+         and tenant_id = ${ctx.tenantId}::uuid
+    `) as Array<{ id: string }>;
+    if (!owned.length) {
+      return { ok: false, message: 'That vehicle is not on your fleet.' };
+    }
+  }
+
   // Insert the series first.
   const seriesRows = (await sql`
     insert into booking_series
@@ -135,7 +164,7 @@ export async function createBookingSeries(formData: FormData): Promise<CreateSer
 }
 
 export async function setSeriesStatus(formData: FormData): Promise<void> {
-  await requireTenantContext();
+  const ctx = await requireTenantContext();
   const id = String(formData.get('id') ?? '');
   const to = String(formData.get('to') ?? '');
   const allowed = new Set(['active', 'paused', 'cancelled']);
@@ -143,7 +172,23 @@ export async function setSeriesStatus(formData: FormData): Promise<void> {
   if (!allowed.has(to)) throw new Error('Unknown target status.');
 
   const sql = await localDb();
-  await sql`update booking_series set status = ${to} where id = ${id}::uuid`;
+  // TENANT SCOPE
+  // ------------
+  // The series id arrives in a hidden form field, which makes it
+  // client-supplied: it is whatever the browser posted. This write goes over
+  // the direct Postgres connection, which bypasses RLS, so without the tenant
+  // in the WHERE clause one tenant could pause another tenant's series by
+  // posting its id. The row that comes back says whether anything was
+  // updated, so a series that is not this tenant's is refused rather than
+  // silently ignored.
+  const updated = (await sql`
+    update booking_series
+       set status = ${to}
+     where id = ${id}::uuid
+       and tenant_id = ${ctx.tenantId}::uuid
+    returning id
+  `) as Array<{ id: string }>;
+  if (!updated.length) throw new Error('Series not found.');
 
   // If we're pausing or cancelling, leave the already-materialised bookings
   // in place (ops may want to leave a few weeks of pending bookings visible

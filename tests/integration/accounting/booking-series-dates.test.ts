@@ -80,7 +80,7 @@ describe.skipIf(!DATABASE_URL)('the ops booking series, against a real postgres'
   });
 
   it('loads the series days as the YYYY-MM-DD strings the expansion needs', async () => {
-    const rows = await listSeries({ status: 'active' });
+    const rows = await listSeries(tenantId, { status: 'active' });
     const row = rows.find((r) => r.id === seriesId);
     expect(row, 'the series is not in the list').toBeTruthy();
 
@@ -94,7 +94,7 @@ describe.skipIf(!DATABASE_URL)('the ops booking series, against a real postgres'
   });
 
   it('loads the created-at stamp as a string', async () => {
-    const rows = await listSeries({ status: 'active' });
+    const rows = await listSeries(tenantId, { status: 'active' });
     const row = rows.find((r) => r.id === seriesId);
     expect(row, 'the series is not in the list').toBeTruthy();
 
@@ -103,7 +103,7 @@ describe.skipIf(!DATABASE_URL)('the ops booking series, against a real postgres'
   });
 
   it('expands the loaded series into its booking dates', async () => {
-    const rows = await listSeries({ status: 'active' });
+    const rows = await listSeries(tenantId, { status: 'active' });
     const row = rows.find((r) => r.id === seriesId);
     expect(row, 'the series is not in the list').toBeTruthy();
 

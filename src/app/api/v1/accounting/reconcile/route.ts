@@ -267,10 +267,12 @@ export async function POST(req: NextRequest) {
         select i.id, i.gross_pence, i.agreement_id, i.status::text as status,
                (select a.driver_id
                   from public.agreements a
-                 where a.id = i.agreement_id) as driver_id,
+                 where a.id = i.agreement_id
+                   and a.tenant_id = ${ctx.tenantId}::uuid) as driver_id,
                coalesce((select sum(pa.amount_pence)
                            from public.payment_allocations pa
-                          where pa.invoice_id = i.id), 0)::bigint as allocated_pence
+                          where pa.invoice_id = i.id
+                            and pa.tenant_id = ${ctx.tenantId}::uuid), 0)::bigint as allocated_pence
           from public.invoices i
          where i.id = ${invoiceId}::uuid
            and i.tenant_id = ${ctx.tenantId}::uuid

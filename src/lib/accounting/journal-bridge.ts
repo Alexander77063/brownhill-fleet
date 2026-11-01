@@ -285,6 +285,7 @@ export async function commitJournalForInvoice(
     update public.invoices
     set posted_journal_id = ${journalId}::uuid
     where id = ${invoiceId}::uuid
+      and tenant_id = ${ctx.tenantId}::uuid
   `;
   return journalId;
 }
@@ -309,6 +310,7 @@ export async function commitJournalForPayment(
     update public.payments
     set posted_journal_id = ${journalId}::uuid
     where id = ${paymentId}::uuid
+      and tenant_id = ${ctx.tenantId}::uuid
   `;
   return journalId;
 }

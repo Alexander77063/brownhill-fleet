@@ -138,6 +138,7 @@ export async function GET(req: NextRequest) {
               select id from public.rent_schedule
                where agreement_id = ${raw.id}::uuid
                  and week_no = ${week}
+                 and tenant_id = ${raw.tenant_id}::uuid
             `) as Array<{ id: string }>;
             rentScheduleId = existing[0]?.id ?? null;
           }
@@ -180,6 +181,7 @@ export async function GET(req: NextRequest) {
                    posted_journal_id, vat_code_id
               from public.invoices
              where number = ${number}
+               and tenant_id = ${raw.tenant_id}::uuid
              for update
           `) as Array<{
             id: string;
@@ -202,6 +204,7 @@ export async function GET(req: NextRequest) {
               update public.invoices
                  set vat_code_id = ${vatCodeId}::uuid
                where id = ${invoice.id}::uuid
+                 and tenant_id = ${raw.tenant_id}::uuid
             `;
           }
 

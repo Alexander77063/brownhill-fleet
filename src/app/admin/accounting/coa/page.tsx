@@ -8,21 +8,27 @@
 
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
-import { PageHeader, Card, CardTitle, Table, Th, Td, EmptyState } from '@/components/ui';
+import { PageHeader, Card, CardTitle, Table, Th, Td, EmptyState, Badge } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminCoaPage() {
-  await requirePermission('tenant.settings');
+  const ctx = await requirePermission('tenant.settings');
 
   const sql = await localDb();
+  // The chart is GLOBAL (seeded once, by migration 0065) with a per-tenant
+  // override column. Both the global account and this tenant's own account
+  // are shown — and another tenant's account never is. This runs on the
+  // direct Postgres connection, so the tenant has to be in the SQL.
   const rows = (await sql`
-    select id, code, name, type, normal_balance, archived_at
+    select id, code, name, type, normal_balance, archived_at, tenant_id
       from accounting.chart_of_accounts
-     order by code
+     where tenant_id is null or tenant_id = ${ctx.tenantId}::uuid
+     order by code, tenant_id nulls last
   `) as Array<{
     id: string; code: string; name: string;
     type: string; normal_balance: string; archived_at: string | null;
+    tenant_id: string | null;
   }>;
 
   return (
@@ -57,7 +63,10 @@ export default async function AdminCoaPage() {
               {rows.map((r) => (
                 <tr key={r.id}>
                   <Td className="font-mono">{r.code}</Td>
-                  <Td className="text-cream">{r.name}</Td>
+                  <Td className="text-cream">
+                    {r.name}
+                    {r.tenant_id && <Badge tone="gold" className="ml-2">tenant override</Badge>}
+                  </Td>
                   <Td>{r.type}</Td>
                   <Td>{r.normal_balance}</Td>
                   <Td>

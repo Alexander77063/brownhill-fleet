@@ -34,12 +34,16 @@ async function loadSession(token: string): Promise<SessionCheck | null> {
   return rows[0] ?? null;
 }
 
-async function loadExistingPhotos(agreementId: string): Promise<UploadedPhoto[]> {
+async function loadExistingPhotos(agreementId: string, tenantId: string): Promise<UploadedPhoto[]> {
   const sql = await localDb();
+  // The tenant comes from the signing session, and it is in the SQL because
+  // this is the direct Postgres connection: RLS does not apply, so a photo
+  // belonging to another tenant would otherwise be visible here.
   const rows = (await sql`
     select kind, uploaded_at
       from agreement_handover_photos
      where agreement_id = ${agreementId}::uuid
+       and tenant_id = ${tenantId}::uuid
      order by uploaded_at asc
   `) as Array<{ kind: string; uploaded_at: string }>;
   return rows.map((r) => ({ kind: r.kind, uploadedAt: r.uploaded_at }));
@@ -66,7 +70,7 @@ export default async function HandoverPage({ params }: { params: Promise<{ token
   }
 
   const operator = await operatorName(session.tenant_id);
-  const existing = await loadExistingPhotos(session.agreement_id);
+  const existing = await loadExistingPhotos(session.agreement_id, session.tenant_id);
   const presentKinds = existing.filter((p) => isValidHandoverPhotoKind(p.kind)).map((p) => p.kind);
 
   return (

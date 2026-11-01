@@ -1573,6 +1573,7 @@ async function completeAcceptedSubmission(
            p.year, p.month
       from accounting.vat_submissions s
       join accounting.periods p on p.id = s.period_id
+                              and p.tenant_id = ${tenantId}::uuid
      where s.id = ${submissionId}::uuid
        and s.tenant_id = ${tenantId}::uuid
   `) as Array<{

@@ -27,12 +27,12 @@ const STATUS_TONE: Record<DamageReportStatus, 'warn' | 'loss' | 'neutral' | 'pro
 };
 
 export default async function OpsIncidentsPage() {
-  await requireTenantContext();
+  const ctx = await requireTenantContext();
 
   const [open, recent, openCount] = await Promise.all([
-    listOpenIncidents(),
-    listRecentIncidents(50),
-    countOpenIncidents(),
+    listOpenIncidents(ctx.tenantId),
+    listRecentIncidents(ctx.tenantId, 50),
+    countOpenIncidents(ctx.tenantId),
   ]);
 
   return (

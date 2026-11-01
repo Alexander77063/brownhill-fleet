@@ -105,16 +105,35 @@ async function resolveTenant(sql: ISql, opts: IngestOpts): Promise<string | null
  * The payment row is driver-linked so the driver's portal can show what they
  * have paid; an agreement with no driver (a vehicle-let, before it is signed)
  * contributes no driver rather than a broken link.
+ *
+ * A driver that belongs to ANOTHER tenant is refused rather than linked. The
+ * driver's portal reads their own payments, so linking a payment to a foreign
+ * driver would show one tenant's money on another tenant's customer record —
+ * and the agreement the payment was raised for would say something different
+ * from the driver it was attached to.
  */
 async function resolveDriverId(
   sql: ISql,
   agreementId: string | undefined,
   driverId: string | undefined,
+  tenantId: string,
 ): Promise<string | null> {
-  if (driverId) return driverId;
+  if (driverId) {
+    const owned = (await sql`
+      select id from public.drivers
+       where id = ${driverId}::uuid
+         and tenant_id = ${tenantId}::uuid
+    `) as Array<{ id: string }>;
+    if (!owned.length) {
+      throw new Error('payment ingest rejected: driver belongs to a different tenant');
+    }
+    return driverId;
+  }
   if (!agreementId) return null;
   const rows = (await sql`
-    select driver_id from public.agreements where id = ${agreementId}::uuid
+    select driver_id from public.agreements
+     where id = ${agreementId}::uuid
+       and tenant_id = ${tenantId}::uuid
   `) as Array<{ driver_id: string | null }>;
   return rows[0]?.driver_id ?? null;
 }
@@ -143,7 +162,7 @@ export async function ingestPayment(opts: IngestOpts): Promise<IngestResult> {
     throw new Error('payment ingest rejected: agreement/driver belongs to a different tenant');
   }
 
-  const driverId = await resolveDriverId(sql, opts.agreementId, opts.driverId);
+  const driverId = await resolveDriverId(sql, opts.agreementId, opts.driverId, tenantId);
   const amountPence = BigInt(opts.amountPence);
   const receivedOn = opts.receivedOn ?? null;
 
