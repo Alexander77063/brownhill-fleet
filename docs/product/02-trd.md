@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Unit tests | Vitest | 2.1.9 | 489 passing, 2 skipped |
+| Tests | Vitest | 2.1.9 | `pnpm test` — 626 passing, 2 skipped, 50 files. The database-backed ones need `DATABASE_URL` |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -482,7 +482,8 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 489 passing, 2 skipped, 35 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset |
+| Tests | `pnpm test` | 626 passing, 2 skipped, 50 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 40 tests across 5 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close and its preflight, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |

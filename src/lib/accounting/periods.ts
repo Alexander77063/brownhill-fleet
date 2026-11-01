@@ -149,6 +149,122 @@ function toPeriod(r: PeriodRow): Period {
   };
 }
 
+// ── the audit trail ────────────────────────────────────────────────────────
+
+/**
+ * The jsonb payload of a period audit row.
+ *
+ * A type **alias** rather than an interface on purpose: TypeScript gives an
+ * object-literal type an implicit index signature, and that is what lets it
+ * be handed to `sql.json()`, whose parameter type is `JSONValue`. An
+ * interface would not have one, and the call would not compile.
+ */
+export type PeriodAuditPayload = {
+  year?: number;
+  month?: number;
+  closed_at?: string | null;
+  closed_by_user_id?: string | null;
+};
+
+/**
+ * Write one audit row for a period state change.
+ *
+ * `sql` is the transaction handle the caller already holds, so the state
+ * change and its audit row land together or not at all.
+ *
+ * Why this is here at all: `accounting.audit_action` has carried
+ * 'period_opened', 'period_closed' and 'period_reopened' since migration
+ * 0064, and NOTHING ever wrote them. A month could be shut with no record
+ * of who shut it — which is precisely the question an accountant asks
+ * first when a figure is wrong.
+ *
+ * `user_id` is nullable: a period opened lazily by a journal posting has no
+ * person behind it, and saying so beats inventing one.
+ *
+ * THE JSONB ARGUMENT IS AN OBJECT, NOT A STRING
+ * ---------------------------------------------
+ * Measured against the real database:
+ *
+ *   ${JSON.stringify(obj)}::jsonb  →  jsonb_typeof = 'string'
+ *   ${sql.json(obj)}::jsonb        →  jsonb_typeof = 'object'
+ *
+ * postgres.js serialises a jsonb parameter with `JSON.stringify`. So a value
+ * that has ALREADY been stringified gets stringified a second time and lands
+ * in the column as a JSON *string* — the payload is there, but
+ * `after->>'closed_by_user_id'` is NULL and nothing can read it.
+ *
+ * `sql.json()` is postgres.js's own API for this: it tags the parameter with
+ * the jsonb OID (3802) so the server is told what it is rather than having
+ * to infer it from the cast, and it serialises the value exactly once. A
+ * `null` payload goes in as SQL NULL, not as the four characters `null`.
+ */
+async function writePeriodAudit(
+  sql: ISql,
+  tenantId: string,
+  userId: string | null,
+  action: 'period_opened' | 'period_closed' | 'period_reopened',
+  periodId: string,
+  before: PeriodAuditPayload | null,
+  after: PeriodAuditPayload | null,
+): Promise<void> {
+  await sql`
+    insert into accounting.audit_log
+      (user_id, action, entity, entity_id, before, after, tenant_id)
+    values (
+      ${userId}::uuid,
+      ${action}::accounting.audit_action,
+      'accounting_period',
+      ${periodId}::uuid,
+      ${sql.json(before)}::jsonb,
+      ${sql.json(after)}::jsonb,
+      ${tenantId}::uuid
+    )
+  `;
+}
+
+/**
+ * Make sure the period row exists, and say whether it had to be created.
+ *
+ * `created` comes from `xmax = 0`: on a fresh INSERT the row has no
+ * deleting/updating transaction, and on the `on conflict do update` branch
+ * the row has the current transaction's xid. That is the only way to tell
+ * the two apart in one statement, and it matters — the journal bridge opens
+ * the period on every posting, so auditing every call would write a
+ * 'period_opened' row for every journal entry in the month.
+ *
+ * The audit row is written HERE, inside the caller's transaction, so a
+ * period row and the record of its creation cannot come apart. Whoever
+ * creates a period — the operator on the periods page, or a journal posting
+ * that opens the month lazily — goes through this one function, so there is
+ * one place where a period can come into existence and it is always
+ * recorded.
+ */
+export async function ensurePeriodRow(
+  sql: ISql,
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string | null = null,
+): Promise<PeriodRow & { created: boolean }> {
+  const rows = (await sql`
+    insert into accounting.periods (tenant_id, year, month)
+    values (${tenantId}::uuid, ${year}, ${month})
+    on conflict (tenant_id, year, month) do update set year = excluded.year
+    returning id, year, month, closed_at, closed_by_user_id, locked_at,
+              (xmax = 0) as created
+  `) as Array<PeriodRow & { created: boolean }>;
+  const row = rows[0];
+  if (row.created) {
+    await writePeriodAudit(sql, tenantId, userId, 'period_opened', row.id, null, {
+      year: row.year,
+      month: row.month,
+      closed_at: null,
+      closed_by_user_id: null,
+    });
+  }
+  return row;
+}
+
 /**
  * The tenant's configured reopen window, in days.
  *
@@ -174,16 +290,27 @@ export async function reopenWindowDays(tenantId: string): Promise<number> {
   return typeof days === 'number' && days > 0 ? days : REOPEN_WINDOW_DAYS;
 }
 
-/** Look up or create the period for the given tenant (year, month). Idempotent. */
-export async function openPeriod(tenantId: string, year: number, month: number): Promise<Period> {
+/**
+ * Look up or create the period for the given tenant (year, month). Idempotent.
+ *
+ * `userId` names the operator the 'period_opened' audit row is written
+ * against. It is optional because a period can also be created by a journal
+ * posting, which has no person behind it — and a null is honest there.
+ */
+export async function openPeriod(
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string | null = null,
+): Promise<Period> {
   const sql = await localDb();
-  const rows = (await sql`
-    insert into accounting.periods (tenant_id, year, month)
-    values (${tenantId}::uuid, ${year}, ${month})
-    on conflict (tenant_id, year, month) do update set year = excluded.year
-    returning id, year, month, closed_at, closed_by_user_id, locked_at
-  `) as PeriodRow[];
-  return toPeriod(rows[0]);
+  // One transaction: the period row and its audit row land together. A
+  // period with no audit row is a hole in the trail, and a hole that opens
+  // exactly when the process dies mid-statement is the worst place for one.
+  return sql.begin(async (tx) => {
+    const row = await ensurePeriodRow(tx, tenantId, year, month, userId);
+    return toPeriod(row);
+  }) as unknown as Promise<Period>;
 }
 
 /**
@@ -206,43 +333,64 @@ export async function openPeriod(tenantId: string, year: number, month: number):
  */
 export async function closePeriod(tenantId: string, year: number, month: number, userId: string): Promise<Period> {
   const sql = await localDb();
-  const rows = (await sql`
-    update accounting.periods
-    set closed_at = now(), closed_by_user_id = ${userId}::uuid
-    where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-      and closed_at is null
-      and locked_at is null
-    returning id, year, month, closed_at, closed_by_user_id, locked_at
-  `) as PeriodRow[];
-  if (rows.length) return toPeriod(rows[0]);
+  // One transaction: the compare-and-set and the audit row that records it.
+  // A month that closed with no record of who closed it is exactly the hole
+  // this closes, so the two cannot be allowed to come apart.
+  return sql.begin(async (tx) => {
+    const rows = (await tx`
+      update accounting.periods
+      set closed_at = now(), closed_by_user_id = ${userId}::uuid
+      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+        and closed_at is null
+        and locked_at is null
+      returning id, year, month, closed_at, closed_by_user_id, locked_at
+    `) as PeriodRow[];
 
-  // The update matched no row. Either there is no such period, or somebody
-  // else got there first. Read the row to say which — and to say WHO.
-  const current = (await sql`
-    select id, year, month, closed_at, closed_by_user_id, locked_at
-      from accounting.periods
-     where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-  `) as PeriodRow[];
-  if (!current.length) throw new Error(`Period ${year}-${month} does not exist`);
-  const p = current[0];
-  if (p.locked_at) {
+    if (rows.length) {
+      const closed = toPeriod(rows[0]);
+      await writePeriodAudit(
+        tx,
+        tenantId,
+        userId,
+        'period_closed',
+        closed.id,
+        { closed_at: null, closed_by_user_id: null },
+        {
+          closed_at: closed.closedAt ? closed.closedAt.toISOString() : null,
+          closed_by_user_id: closed.closedByUserId,
+        },
+      );
+      return closed;
+    }
+
+    // The update matched no row. Either there is no such period, or somebody
+    // else got there first. Read the row to say which — and to say WHO.
+    const current = (await tx`
+      select id, year, month, closed_at, closed_by_user_id, locked_at
+        from accounting.periods
+       where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+    `) as PeriodRow[];
+    if (!current.length) throw new Error(`Period ${year}-${month} does not exist`);
+    const p = current[0];
+    if (p.locked_at) {
+      throw new AccountingPeriodError(
+        'period_locked',
+        year,
+        month,
+        p.closed_at ? new Date(p.closed_at) : null,
+        p.closed_by_user_id,
+        new Date(p.locked_at),
+      );
+    }
     throw new AccountingPeriodError(
-      'period_locked',
+      'period_already_closed',
       year,
       month,
       p.closed_at ? new Date(p.closed_at) : null,
       p.closed_by_user_id,
-      new Date(p.locked_at),
+      null,
     );
-  }
-  throw new AccountingPeriodError(
-    'period_already_closed',
-    year,
-    month,
-    p.closed_at ? new Date(p.closed_at) : null,
-    p.closed_by_user_id,
-    null,
-  );
+  }) as unknown as Promise<Period>;
 }
 
 /**
@@ -267,13 +415,42 @@ export async function reopenPeriod(tenantId: string, year: number, month: number
   if (ageDays > windowDays) {
     throw new Error(`Period ${year}-${month} was closed ${ageDays.toFixed(1)}d ago; the ${windowDays}-day reopen window has elapsed`);
   }
-  const rows = (await sql`
-    update accounting.periods
-    set closed_at = null, closed_by_user_id = null
-    where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-    returning id, year, month, closed_at, closed_by_user_id, locked_at
-  `) as PeriodRow[];
-  return toPeriod(rows[0]);
+
+  // The reopen and its audit row land together. The update is a
+  // compare-and-set (`closed_at is not null`): if somebody else reopened the
+  // period between the read above and this statement, the update matches no
+  // row, and no audit row is written for a reopen that did not happen.
+  return sql.begin(async (tx) => {
+    const rows = (await tx`
+      update accounting.periods
+      set closed_at = null, closed_by_user_id = null
+      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+        and closed_at is not null
+      returning id, year, month, closed_at, closed_by_user_id, locked_at
+    `) as PeriodRow[];
+
+    if (!rows.length) {
+      const stillThere = (await tx`
+        select id, year, month, closed_at, closed_by_user_id, locked_at
+          from accounting.periods
+         where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+      `) as PeriodRow[];
+      if (!stillThere.length) throw new Error(`Period ${year}-${month} does not exist`);
+      return toPeriod(stillThere[0]);
+    }
+
+    const reopened = toPeriod(rows[0]);
+    await writePeriodAudit(
+      tx,
+      tenantId,
+      userId,
+      'period_reopened',
+      reopened.id,
+      { closed_at: p.closed_at, closed_by_user_id: p.closed_by_user_id },
+      { closed_at: null, closed_by_user_id: null },
+    );
+    return reopened;
+  }) as unknown as Promise<Period>;
 }
 
 /**
@@ -305,9 +482,17 @@ export async function listPeriods(tenantId: string): Promise<Period[]> {
 
 /** Ensure the period for (year, month) exists. Idempotent — used by the page
  *  on first visit so the operator can close/reopen it without racing the
- *  journal-bridge's lazy open. */
-export async function ensurePeriod(tenantId: string, year: number, month: number): Promise<Period> {
-  return openPeriod(tenantId, year, month);
+ *  journal-bridge's lazy open.
+ *
+ *  `userId` names the operator against whom a newly created period is
+ *  audited; pass it whenever there is a person behind the call. */
+export async function ensurePeriod(
+  tenantId: string,
+  year: number,
+  month: number,
+  userId: string | null = null,
+): Promise<Period> {
+  return openPeriod(tenantId, year, month, userId);
 }
 
 /**

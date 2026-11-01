@@ -83,6 +83,10 @@ interface Fake {
   /** Set when a transaction's work threw. */
   rolledBack: boolean;
   begin(fn: (tx: Fake) => Promise<unknown>): Promise<unknown>;
+  /** Every payload handed to `json()`, in order, across the pool and its transactions. */
+  jsonValues: unknown[];
+  /** postgres.js's own way of sending a jsonb parameter. */
+  json(value: unknown): unknown;
 }
 
 /**
@@ -93,12 +97,25 @@ interface Fake {
  * shape of answers. What it adds is the bookkeeping a real connection cannot
  * show us from the outside: which statements ran, and inside how many
  * transactions.
+ *
+ * It also carries `json()`, because the real connection does. The bridge sends
+ * its audit payload through `sql.json()`, which tags the parameter with the
+ * jsonb OID so Postgres stores an OBJECT rather than a JSON string. A double
+ * without `json()` is not a stand-in for the thing it stands in for — it is a
+ * stand-in for an older, broken version of it, and the production code fails
+ * against it for a reason that has nothing to do with the code under test.
  */
-function fakeConnection(rowsFor: (sqlText: string) => Row[], sharedCalls?: string[]): Fake {
+function fakeConnection(
+  rowsFor: (sqlText: string) => Row[],
+  sharedCalls?: string[],
+  sharedJson?: unknown[],
+): Fake {
   // The statement log is shared by construction, not by property assignment:
   // the callable closes over this array, so a transaction has to be handed
   // the SAME array to end up in the same log.
   const calls = sharedCalls ?? [];
+  // The jsonb payloads are logged the same way, for the same reason.
+  const jsonValues = sharedJson ?? [];
   const pool = ((strings: TemplateStringsArray) => {
     const text = strings.join(' ? ');
     calls.push(text);
@@ -108,12 +125,22 @@ function fakeConnection(rowsFor: (sqlText: string) => Row[], sharedCalls?: strin
   pool.calls = calls;
   pool.begun = 0;
   pool.rolledBack = false;
+  pool.jsonValues = jsonValues;
+
+  // postgres.js's `sql.json(value)` returns a Parameter tagged with the jsonb
+  // OID. The fake's template ignores the values it is given, so all that
+  // matters here is that the call exists, is accepted, and that the payload
+  // is recorded for the test to look at.
+  pool.json = (value: unknown) => {
+    jsonValues.push(value);
+    return { __jsonb: value };
+  };
 
   pool.begin = async (fn: (tx: Fake) => Promise<unknown>) => {
     pool.begun += 1;
     // The transaction shares the pool's statement log: the point of the test
     // is WHICH statements ran, and in which transaction.
-    const tx = fakeConnection(rowsFor, calls);
+    const tx = fakeConnection(rowsFor, calls, jsonValues);
     try {
       return await fn(tx);
     } catch (err) {
@@ -253,5 +280,43 @@ describe('the journal bridge and its transaction', () => {
     expect(tx.begun).toBe(0);
     expect(pool.begun).toBe(0);
     expect(pool.calls.filter((c) => c.includes('insert into accounting.journal_entries')).length).toBe(4);
+  });
+
+  it('hands the audit payload to the connection as an object, not as a string', async () => {
+    // The defect this guards against: the payload used to be built with
+    // `JSON.stringify(obj)` and interpolated into a `::jsonb` cast. Postgres
+    // stored that as a JSON *string* — `jsonb_typeof(after)` was 'string' and
+    // `after->>'sourceType'` was NULL. The audit row was there, and nothing
+    // could read it.
+    //
+    // The fix is postgres.js's own `sql.json()`, which tags the parameter with
+    // the jsonb OID so the server stores an object. The fake cannot see the
+    // wire format — it ignores the values it is handed — so what it can see
+    // is that the payload reaches the connection as an object, through
+    // `json()`, rather than as a pre-stringified string. The integration test
+    // (journal-atomicity) is the proof that Postgres then stores it as an
+    // object; this is the proof that the code asks for one.
+    const pool = fakeConnection(bridgeRows);
+    db.pool = pool;
+
+    const payment = {
+      lines: [
+        { accountId: 'acct-bank', debitPence: 120n, creditPence: 0n },
+        { accountId: 'acct-ar', debitPence: 0n, creditPence: 120n },
+      ],
+      sumDebits: 120n,
+      sumCredits: 120n,
+      sourceType: 'payment' as const,
+      sourceId: 'pay-2',
+    };
+
+    await withJournalTx((tx) => commitJournalForPayment(tx, CTX, payment, 'pay-2'));
+
+    expect(pool.jsonValues.length).toBe(1);
+    const payload = pool.jsonValues[0] as { sourceType?: string; sourceId?: string };
+    expect(typeof payload).toBe('object');
+    expect(payload).not.toBeNull();
+    expect(payload.sourceType).toBe('payment');
+    expect(payload.sourceId).toBe('pay-2');
   });
 });

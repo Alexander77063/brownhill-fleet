@@ -4,6 +4,13 @@ import { formatGBP } from '@/lib/money';
 import { HelpHint } from '@/components/HelpHint';
 import type { HelpKey } from '@/lib/help-content';
 
+/**
+ * The modal dialog. It lives in its own file because it is a client module
+ * and this one is not — see the note at the top of ./Dialog.tsx.
+ */
+export { Dialog } from './Dialog';
+export type { DialogProps } from './Dialog';
+
 /* ── Eyebrow / section label ─────────────────────────────────────────────── */
 export function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
   return <p className={cn('eyebrow', className)}>{children}</p>;

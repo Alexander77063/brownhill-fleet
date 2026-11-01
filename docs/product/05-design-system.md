@@ -110,7 +110,8 @@ utility (`text-cream`, `bg-navy`, `border-hair`) re-colours at once.
 
 ## 4. Components
 
-All of them live in `src/components/ui/index.tsx`. There is no component
+All of them live in `src/components/ui/index.tsx` — except `Dialog`, which
+has a file of its own for the reason given in §4.3. There is no component
 library and no `cn` utility beyond `src/lib/cn.ts`.
 
 | Component | Notes |
@@ -126,6 +127,7 @@ library and no `cn` utility beyond `src/lib/cn.ts`.
 | `Table` | A scrollable wrapper with a visually-hidden `<caption>`. The wrapper is `tabIndex={0}` so keyboard users can scroll it (WCAG 2.1.1) |
 | `Th` / `Td` | Column headers carry `scope="col"` by default |
 | `EmptyState` | The gold rule, a title, and a hint |
+| `Dialog` | The modal. `role="dialog"`, `aria-modal="true"`, focus moves in and is restored, Tab loops, Escape closes, the page behind does not scroll. Lives in `src/components/ui/Dialog.tsx` — see §4.3 |
 
 ### 4.1 `Button` and `prefetch`
 
@@ -141,6 +143,29 @@ landmark, and naming 41 table wrappers would inject 41 landmarks into the
 rota — on a page with four tables, a screen-reader user would cycle through all
 of them. The `<caption>` already names the table, which is what assistive
 technology actually needs.
+
+### 4.3 `Dialog`
+
+The repository had no modal until the period close needed one. A
+confirmation that a screen-reader user cannot operate is not a
+confirmation, so the dialog carries the whole keyboard contract rather than
+just a visual box:
+
+| The rule | Why |
+| --- | --- |
+| `role="dialog"` + `aria-modal="true"` + `aria-labelledby` pointing at the title | Assistive technology announces what the box is and what it is called (WCAG 4.1.2 Name, Role, Value) |
+| Focus moves to the first focusable control when it opens, and back to whatever had it when it closes | Without the restore, an operator who cancels is dropped at the top of the page; focus falling back to the document body is the classic symptom (WCAG 2.4.3 Focus Order) |
+| Tab and Shift+Tab cycle **inside** the dialog | The page behind is still there and still focusable, and a keyboard user who tabs out of a modal has no idea where they are (WCAG 2.1.2 No Keyboard Trap — the trap has to be a loop, not a dead end) |
+| Escape closes it | A dialog that cannot be dismissed with the keyboard is a keyboard trap (WCAG 2.1.1 Keyboard, Level A) |
+| The page behind does not scroll while it is open | The overlay is `fixed inset-0`; a scrolling page behind it makes the dialog look like it is sliding |
+| The backdrop closes it, but a click that *started* inside the panel does not | A text selection that ends outside the panel should not dismiss the dialog |
+
+**It is its own file.** `src/components/ui/index.tsx` has no `'use client'`
+and is imported by server components throughout the app. Adding the directive
+there would turn every component in it — `PageHeader`, `Card`, `Table`,
+`Button` — into a client component and ship all of them to the browser.
+`Dialog.tsx` is a client module on its own and is re-exported from the
+index, so it is imported the same way as everything else.
 
 ## 5. The house rules
 

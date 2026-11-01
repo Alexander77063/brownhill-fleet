@@ -157,6 +157,39 @@ describe.skipIf(!DATABASE_URL)('the ledger against a real postgres', () => {
     expect(audit.length).toBe(1);
   });
 
+  it('writes an audit payload that can actually be read', async () => {
+    // The audit row used to carry its payload as a JSON *string* rather than
+    // a JSON object: the value had been stringified before it was handed to
+    // postgres.js, which then stringified it again for the jsonb parameter.
+    // The row was there — the count was 1 — and nothing could read it:
+    // `after->>'sourceType'` was NULL.
+    //
+    // An audit trail nobody can read is decoration, so the payload is
+    // asserted on here, not just the row's existence.
+    const paymentId = randomUUID();
+    const result = postPaymentJournal({
+      paymentId,
+      gross: 120n,
+      bankAccountGlId: bankGlId,
+      arAccountId,
+    });
+
+    const journalId = await withJournalTx((tx) => commitJournalForPayment(tx, ctx, result, paymentId));
+
+    const audit = (await sql`
+      select after, jsonb_typeof(after) as shape
+        from accounting.audit_log
+       where entity_id = ${journalId}::uuid and action = 'journal_posted'
+    `) as Array<{ after: Record<string, unknown> | null; shape: string }>;
+
+    expect(audit.length).toBe(1);
+    expect(audit[0].shape, 'the payload is a JSON string, not a JSON object').toBe('object');
+    expect(audit[0].after?.sourceType).toBe('payment');
+    expect(audit[0].after?.sourceId).toBe(paymentId);
+    expect(audit[0].after?.sumDebits).toBe('120');
+    expect(audit[0].after?.sumCredits).toBe('120');
+  });
+
   it('commits NOTHING when the entry does not balance', async () => {
     const paymentId = randomUUID();
     // Each line on its own is a legal line — one side positive, the other

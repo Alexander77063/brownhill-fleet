@@ -52,7 +52,7 @@
 // posts satisfy another tenant's check.
 
 import { localDb } from '@/lib/auth/local-store';
-import { assertPeriodOpenForPosting } from './periods';
+import { assertPeriodOpenForPosting, ensurePeriodRow } from './periods';
 import type { PostResult } from './journal';
 import type { ISql } from 'postgres';
 
@@ -135,13 +135,11 @@ async function persistJournal(
   //    dropped the old (year, month) constraint, so `on conflict (year, month)`
   //    would be rejected by Postgres with 42P10 and every journal post would
   //    fail.
-  const periodRows = (await sql`
-    insert into accounting.periods (tenant_id, year, month)
-    values (${ctx.tenantId}::uuid, ${year}, ${month})
-    on conflict (tenant_id, year, month) do update set year = excluded.year
-    returning id
-  `) as Array<{ id: string }>;
-  const periodId = periodRows[0].id;
+  //    `ensurePeriodRow` also writes the 'period_opened' audit row when it
+  //    has to create the period — inside this transaction, so the record of
+  //    the month coming into existence lands with the posting that caused it.
+  const periodRow = await ensurePeriodRow(sql, ctx.tenantId, year, month, ctx.userId);
+  const periodId = periodRow.id;
 
   // 4. If a journal_entry already exists for this (tenant, source_type,
   //    source_id), return its id without writing again. Idempotency. The
@@ -184,10 +182,23 @@ async function persistJournal(
   }
 
   // 7. Audit log entry. Append-only.
+  //
+  // The payload goes in as an OBJECT, not as a JSON string. postgres.js
+  // serialises a jsonb parameter with `JSON.stringify` — so a value that has
+  // already been stringified is stringified a second time and lands in the
+  // column as a JSON *string*. Measured against the real database:
+  //
+  //   ${JSON.stringify(obj)}::jsonb  →  jsonb_typeof = 'string'
+  //   ${sql.json(obj)}::jsonb        →  jsonb_typeof = 'object'
+  //
+  // The row was there, and nothing could read it: `after->>'sourceType'`
+  // was NULL. An audit trail whose payload cannot be read is decoration.
+  // `sql.json()` is postgres.js's own API: it tags the parameter with the
+  // jsonb OID rather than leaving the server to infer it from the cast.
   await sql`
     insert into accounting.audit_log (user_id, action, entity, entity_id, after, tenant_id)
     values (${ctx.userId}::uuid, 'journal_posted', 'journal_entry', ${journalId}::uuid,
-            ${JSON.stringify({ sourceType: result.sourceType, sourceId: result.sourceId, sumDebits: result.sumDebits.toString(), sumCredits: result.sumCredits.toString() })}::jsonb,
+            ${sql.json({ sourceType: result.sourceType, sourceId: result.sourceId, sumDebits: result.sumDebits.toString(), sumCredits: result.sumCredits.toString() })}::jsonb,
             ${ctx.tenantId}::uuid)
   `;
 
@@ -236,12 +247,58 @@ export async function commitJournalForPayment(
 }
 
 /**
+ * The month a bank line belongs to: the month the BANK posted it.
+ *
+ * This matters more than it looks. A bank line dated 28 October that the
+ * operator categorises on 3 November belongs to October — that is where the
+ * money left the account, and that is the month the operator's VAT return
+ * and their year-end accounts are built from. Posting it into November
+ * would move the money to a month it did not happen in, and the VAT
+ * position for October would be wrong.
+ *
+ * It is also what makes the close-time warning true. The close preflight
+ * warns "a bank line posts into the month the bank posted it, and a posting
+ * into a closed period is refused" — and that sentence is only true if the
+ * posting really does land in the bank's month. Before this, the posting
+ * landed in the current month, so an October line could still be categorised
+ * after October was closed, and the warning was a lie.
+ *
+ * UTC, because that is the clock the preflight's month boundaries are drawn
+ * on (`make_date(...) at time zone 'UTC'`). Both have to agree or the
+ * warning counts a different set of lines than the posting refuses.
+ *
+ * Returns undefined when the line cannot be read — the caller then falls
+ * back to the current month, which is the old behaviour and is no worse
+ * than refusing to categorise the line at all.
+ */
+export async function bankTransactionPeriod(
+  tx: Sql,
+  tenantId: string,
+  bankTxId: string,
+): Promise<JournalPeriod | undefined> {
+  const rows = (await tx`
+    select posted_at
+      from accounting.bank_transactions
+     where id = ${bankTxId}::uuid
+       and tenant_id = ${tenantId}::uuid
+  `) as Array<{ posted_at: string }>;
+  const postedAt = rows[0]?.posted_at;
+  if (!postedAt) return undefined;
+  const when = new Date(postedAt);
+  if (Number.isNaN(when.getTime())) return undefined;
+  return { year: when.getUTCFullYear(), month: when.getUTCMonth() + 1 };
+}
+
+/**
  * Public: commit a journal result for a bank transaction.
  *
  * A bank transaction can carry three different postings — a receipt
  * auto-matched to an invoice, a VAT payment to HMRC, a bank charge — so the
  * `posted_journal_id` column holds the most recent one. The full history is
  * in `accounting.journal_entries`, keyed by (tenant, source_type, source_id).
+ *
+ * The posting lands in the bank's month, not the current one — see
+ * `bankTransactionPeriod`.
  */
 export async function commitJournalForBankTransaction(
   tx: Sql,
@@ -249,7 +306,14 @@ export async function commitJournalForBankTransaction(
   result: PostResult,
   bankTxId: string,
 ): Promise<string> {
-  const journalId = await persistJournal(tx, ctx, result, `Bank transaction ${bankTxId} posted`);
+  const period = await bankTransactionPeriod(tx, ctx.tenantId, bankTxId);
+  const journalId = await persistJournal(
+    tx,
+    ctx,
+    result,
+    `Bank transaction ${bankTxId} posted`,
+    period,
+  );
   await tx`
     update accounting.bank_transactions
     set posted_journal_id = ${journalId}::uuid

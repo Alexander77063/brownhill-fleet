@@ -353,14 +353,62 @@ business paid.
 | `accounting.journal_entries` / `journal_lines` | Double-entry. `check ((debit_pence > 0) <> (credit_pence > 0))` — a line is a debit or a credit, never both and never neither |
 | `accounting.bank_accounts` | Registered accounts and their import settings |
 | `accounting.bank_transactions` | Imported statements |
-| `accounting.periods` | The accounting period lifecycle; `period_end >= period_start`; `reopen_window_days between 1 and 90` |
+| `accounting.periods` | The accounting period lifecycle. One row per (tenant, year, month) — `unique (tenant_id, year, month)` — with `month between 1 and 12` and `year between 2000 and 2100`; `started_at`, `closed_at`, `closed_by_user_id` and `locked_at`. The row is created lazily, by whichever posting first needs the month |
 | `accounting.vat_codes` | `code ~ '^T[0-9]$'`, `vat_t1_rate_pct between 0 and 100`, `vat_treatment in ('standard','zero','exempt','outside')` |
 | `accounting.vat_submissions` | UK VAT return; `box_number between 1 and 6` (the nine boxes are spread across six box numbers with sub-boxes) |
 | `accounting.filing_artifacts` | What was filed, when, and the MTD response |
 | `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4 |
 | `accounting.vat_return_lines` | The lines of a VAT return. Keyed on `vat_submission_id`; its tenancy is its submission's |
 | `accounting.audit_log` | The accounting module's own append-only audit trail — read and appended to, never edited or removed |
-| `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window |
+| `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window: `reopen_window_days between 1 and 90` (migration 0070, default 7) |
+
+**The accounting audit trail is written in the same transaction as the change
+it records.** `accounting.audit_log` is append-only. `entity` and `entity_id`
+say what changed, `before` and `after` are `jsonb` snapshots, `user_id` says
+who, and `tenant_id` says whose — it is `NOT NULL` and carries a foreign key
+to `public.tenants`, so an audit row cannot outlive the tenant it belongs
+to. The `action` column is the `accounting.audit_action` enum.
+
+| Action | Written when | Writer |
+| --- | --- | --- |
+| `journal_posted` | A balanced entry commits | `journal-bridge.ts` |
+| `period_opened` | A period row is **created** — not when it is merely looked up, which the journal bridge does on every posting | `periods.ts` |
+| `period_closed` | A period is closed | `periods.ts` |
+| `period_reopened` | A period is reopened inside the reopen window | `periods.ts` |
+| `invoice_voided`, `credit_note_issued`, `bank_import_committed`, `bank_transaction_categorised`, `bank_transaction_recategorised`, `vat_submission_attempted`, `vat_submission_succeeded`, `vat_submission_rejected`, `chart_of_accounts_seeded` | Carried by the enum since migration 0064; **none of them has a writer yet** | — |
+
+The three period actions had been in the enum since 0064 and **nothing ever
+wrote them**: a month could be closed and reopened with no record of who did
+it. Each state change now writes its row inside the same `sql.begin` as the
+change itself, so a close cannot land without a record of who closed it and
+when.
+
+**The jsonb columns take an object, not a JSON string.** This is the one
+place the audit trail could have been written wrong and nobody would have
+known. `postgres.js` serialises a `jsonb` parameter with `JSON.stringify`,
+so a value that is *already* a JSON string is stringified a second time and
+lands in the column as a JSON **string** rather than a JSON **object** — and
+`after->>'key'` then reads NULL, because the value is one opaque string
+rather than a map. The failure is invisible in the column: the row is there,
+the payload is there, and the payload cannot be read. The rule is therefore
+to pass the JavaScript **object** and let the driver encode it:
+
+```ts
+// wrong — lands as a JSON string; after->>'sourceType' is NULL
+await sql`insert … values (${JSON.stringify(payload)}::jsonb)`;
+
+// right — lands as a JSON object; jsonb_typeof(after) = 'object'
+await sql`insert … values (${sql.json(payload)}::jsonb)`;
+```
+
+`sql.json()` is postgres.js's own API: it tags the parameter with the jsonb
+OID instead of leaving the server to infer it from the cast. (Passing the raw
+object works too, and lands as an object as well — but `sql.json()` says what
+it means, and it is what the code does.)
+
+`tests/integration/accounting/journal-atomicity.test.ts` asserts the
+difference with `jsonb_typeof`, so the trail cannot go back to being
+unreadable without a test failing.
 
 **The balance is checked at COMMIT, not at INSERT.** `accounting.journal_lines`
 carries a deferred constraint trigger — `trg_journal_lines_balanced`,

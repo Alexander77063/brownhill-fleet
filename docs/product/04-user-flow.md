@@ -307,8 +307,28 @@ This is the flow the newest work added, end to end.
   ├── Reconcile → match (auto-match at a 90% threshold) → unmatched queue
   ├── Reports → P&L / Balance sheet / Cashflow / AR aging, by date range
   ├── VAT return → the 9 boxes → Submit to HMRC (MTD)
-  └── Periods → open / close / reopen within 7 days
+  └── Periods → close (with counts and warnings) / reopen within 7 days
 ```
+
+### 4.1 Closing a period
+
+1. The operator opens `/accounts/accounting/periods` — or
+   `/admin/accounting/periods`, for an owner — and presses **Close** on an
+   open month.
+2. The dialog asks `POST /api/v1/accounting/periods/close` what the close
+   would do. The server answers **428** with the counts and the warnings.
+   **Nothing is closed yet.**
+3. The operator reads the warnings and ticks each one.
+4. Confirming sends the same request with `confirm: true` and the list of
+   acknowledged warnings. If a bank line has landed in the meantime, the
+   server answers **428** again with a fresh preflight: the new warning is
+   shown unticked and the confirm button stays disabled.
+5. The server closes the period in the same transaction that writes the
+   `period_closed` audit row, and answers **200**.
+6. The page refreshes and the month reads "closed".
+
+Reopen is a one-click server action, available only inside the tenant's
+reopen window.
 
 **Failure paths**
 
@@ -317,7 +337,10 @@ This is the flow the newest work added, end to end.
 | HMRC rejects the return | **No journal entry is written.** The operator gets an inline error. The fail-safe rule is: the §2 Rule #5 posting happens only on HMRC success |
 | MTD token expired | Reconnect via the MTD page; submissions are refused until then |
 | A period is closed | A posting into it is refused with a **409** that names the period and the user who closed it — the reconciliation queue's three buttons and the VAT return all answer that way. The VAT return is refused **before** it reaches HMRC, because a return HMRC has accepted cannot be taken back. Reopen is allowed within 7 days; outside that, the period is final |
-| An open bank transaction exists at close | The chaos drill `06-period-close-with-open-bank.sh` proves the behaviour |
+| The operator presses Close | **Nothing closes on the first press.** The dialog asks the server what the close would do and shows the counts — postings in the period, open bank lines, invoices still owed, net VAT — and the warnings. The operator ticks each warning and confirms. The server refuses the close (**428**) until every warning is acknowledged, so a warning that appeared while the dialog was open cannot be closed over. The close is a compare-and-set: of two simultaneous closers, one wins and the other is told who closed it and when |
+| An open bank transaction exists at close | The close preflight **warns** about it and names the period, so it cannot be shut over an uncategorised line. The behaviour is proved against a real postgres by `tests/integration/accounting/close-preflight.test.ts` |
+| A close would land on a period that is already closed or locked | **409**, naming the period, who closed it and when it was locked — the same typed refusal a posting into a closed period gets |
+| The operator does not have `billing.write` | The close route answers **403**. The periods page does not render the table at all for that operator — it says which permission is missing and who can grant it |
 | The import file is the wrong format | The preview refuses it and names the formats accepted (Barclays, HSBC, Starling, Lloyds) |
 
 ## 5. The operations flow

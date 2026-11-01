@@ -46,6 +46,7 @@ import {
   closePeriod,
   lockPeriod,
   openPeriod,
+  reopenPeriod,
 } from '@/lib/accounting/periods';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -84,6 +85,12 @@ describe.skipIf(!DATABASE_URL)('closing an accounting period', () => {
 
   afterAll(async () => {
     if (!sql) return;
+    // The audit rows reference the period, the user and the tenant, so they
+    // have to go first — the foreign keys would refuse the deletes below.
+    await sql`delete from accounting.audit_log where tenant_id = ${tenantId}::uuid`;
+    // The reopen window setting is created on demand and points at the
+    // tenant, so it goes too.
+    await sql`delete from accounting.tenant_accounting_settings where tenant_id = ${tenantId}::uuid`;
     await sql`delete from accounting.periods where tenant_id = ${tenantId}::uuid`;
     await sql`delete from public.tenants where id = ${tenantId}::uuid`;
     await sql`delete from auth.users where id in (${closerA}::uuid, ${closerB}::uuid)`;
@@ -204,5 +211,73 @@ describe.skipIf(!DATABASE_URL)('closing an accounting period', () => {
     // The journal bridge creates the period lazily, so a month with no row
     // must not be refused — it is how the first posting of a month happens.
     await expect(assertPeriodOpenForPosting(tenantId, 2026, 7, sql)).resolves.toBeUndefined();
+  });
+
+  // ── the audit trail ──────────────────────────────────────────────────────
+
+  it('records the close in the audit log', async () => {
+    const period = await openPeriod(tenantId, 2026, 8);
+    await closePeriod(tenantId, 2026, 8, closerA);
+
+    const rows = (await sql`
+      select action::text as action, entity, entity_id::text as entity_id,
+             user_id::text as user_id, before, after
+        from accounting.audit_log
+       where tenant_id = ${tenantId}::uuid
+         and entity_id = ${period.id}::uuid
+         and action = 'period_closed'
+    `) as Array<{
+      action: string;
+      entity: string;
+      entity_id: string;
+      user_id: string;
+      before: Record<string, unknown> | null;
+      after: Record<string, unknown> | null;
+    }>;
+
+    expect(rows.length, 'the close left no audit row').toBe(1);
+    expect(rows[0].entity_id).toBe(period.id);
+    // WHO closed it, and WHEN it was closed, are both on the record. The
+    // enum has carried 'period_closed' since migration 0064 and nothing ever
+    // wrote it — so a month could be shut with no trace of who did it.
+    expect(rows[0].user_id).toBe(closerA);
+    expect(rows[0].after?.closed_by_user_id).toBe(closerA);
+    expect(rows[0].after?.closed_at).toBeTruthy();
+  });
+
+  it('records the reopen in the audit log', async () => {
+    const period = await openPeriod(tenantId, 2026, 9);
+    await closePeriod(tenantId, 2026, 9, closerA);
+    await reopenPeriod(tenantId, 2026, 9, closerB);
+
+    const rows = (await sql`
+      select action::text as action, user_id::text as user_id, after
+        from accounting.audit_log
+       where tenant_id = ${tenantId}::uuid
+         and entity_id = ${period.id}::uuid
+         and action = 'period_reopened'
+    `) as Array<{ action: string; user_id: string; after: Record<string, unknown> | null }>;
+
+    expect(rows.length, 'the reopen left no audit row').toBe(1);
+    expect(rows[0].user_id).toBe(closerB);
+    expect(rows[0].after?.closed_at).toBeNull();
+  });
+
+  it('records the opening of a period, but only when it is genuinely created', async () => {
+    // The journal bridge opens the period lazily on every posting, so the
+    // open has to be audited once — when the row is created — and not on
+    // every later post that finds it already there.
+    const period = await openPeriod(tenantId, 2026, 10);
+    await openPeriod(tenantId, 2026, 10);
+
+    const rows = (await sql`
+      select action::text as action, entity_id::text as entity_id
+        from accounting.audit_log
+       where tenant_id = ${tenantId}::uuid
+         and entity_id = ${period.id}::uuid
+         and action = 'period_opened'
+    `) as Array<{ action: string; entity_id: string }>;
+
+    expect(rows.length, 'the period was opened more than once in the log').toBe(1);
   });
 });
