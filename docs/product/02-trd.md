@@ -21,8 +21,8 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Unit tests | Vitest | 2.1.9 | 489 passing, 2 skipped |
-| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
+| Unit tests | Vitest | 2.1.9 | 552 passing, 2 skipped |
+| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 93 scans across 81 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
 | Backups | Backblaze B2 (S3-compatible) via `@aws-sdk/client-s3` | 3.1094.0 | Off-host copy of the nightly dump |
@@ -482,12 +482,12 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 489 passing, 2 skipped, 35 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset |
+| Unit | `pnpm test` | 552 passing, 2 skipped, 39 files (38 run, 1 skipped whole). Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset and the accessibility-coverage arithmetic |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
-| Contrast | `pnpm test:a11y` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
-| E2E + axe | `pnpm test:axe` | Playwright, against a running app |
+| Contrast | `pnpm test:a11y:contrast` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
+| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **93 scans across 81 pages**, including the 320 px reflow pass and the tokenised signing route |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 The three accessibility suites — form audit, lint and contrast — all run in the
@@ -495,6 +495,20 @@ The three accessibility suites — form audit, lint and contrast — all run in 
 `hosted/tests/a11y-contrast-negative.sh`, which runs it against three
 deliberately broken stylesheets and requires it to fail on each: a gate that
 cannot fail is not a gate.
+
+The runtime axe pass is a separate job, in the `a11y` workflow. It needs a
+browser and the hosted stack, so it cannot live in the fast lane, and it is not
+in the `hosted-smoke` workflow either — that workflow's trigger paths are the
+schema, and adding `src/**` to them would drag the migration-replay job into
+every interface change. The `a11y` workflow builds the stack from
+`hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
+scans **81 distinct pages of the hosted deployment in 93 analyses** — ten of
+those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The
+coverage numbers are computed rather than typed: `tests/a11y/routes.ts` holds
+the route lists and `tests/unit/a11y-coverage.test.ts` counts them, checks that
+every route scanned is a route the app serves, that every route the app serves
+is either scanned or explained, and that every document publishing a coverage
+figure publishes the computed one.
 
 ### 8.1 What is *not* unit-tested, and why
 

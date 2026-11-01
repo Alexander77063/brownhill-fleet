@@ -32,12 +32,12 @@ export default async function CoaPage() {
 
   const sql = await localDb();
   const rows = (await sql`
-    select id, code, name, type, normal_side, archived_at
+    select id, code, name, type, normal_balance, archived_at
       from accounting.chart_of_accounts
      order by code
   `) as Array<{
     id: string; code: string; name: string;
-    type: string; normal_side: string; archived_at: string | null;
+    type: string; normal_balance: string; archived_at: string | null;
   }>;
 
   return (
@@ -71,7 +71,7 @@ export default async function CoaPage() {
                   <Td className="font-mono">{r.code}</Td>
                   <Td className="text-cream">{r.name}</Td>
                   <Td>{r.type}</Td>
-                  <Td>{r.normal_side}</Td>
+                  <Td>{r.normal_balance}</Td>
                   <Td>
                     {r.archived_at
                       ? <span className="text-muted">archived</span>

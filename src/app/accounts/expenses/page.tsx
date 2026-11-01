@@ -2,14 +2,7 @@ import { PageHeader, Card, CardTitle, Money, Table, Th, Td, EmptyState, Button }
 import { formatDate } from '@/lib/display';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
 import { expenseSummaryByCategory, listExpenses, listCategories, listVehicleOptions } from '@/lib/expenses';
-import { recordExpenseAction } from '@/lib/actions/expenses';
-
-// <form action={...}> requires void. recordExpenseAction returns a structured
-// result for useFormState; the wrapper throws away the result so the form's
-// action prop is well-typed.
-async function submitExpense(fd: FormData): Promise<void> {
-  await recordExpenseAction(fd);
-}
+import { submitExpenseAction } from '@/lib/actions/expenses';
 
 export const dynamic = 'force-dynamic';
 
@@ -78,7 +71,7 @@ export default async function AccountsExpensesPage() {
           {categories.length === 0 ? (
             <EmptyState title="No categories yet" hint="Create one at /ops/expenses first." />
           ) : (
-            <form action={submitExpense} className="mt-4 space-y-3">
+            <form action={submitExpenseAction} className="mt-4 space-y-3">
               <label className="block">
                 <span className="eyebrow text-parchment">Category</span>
                 <select name="category_id" required className="mt-1 w-full rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream">

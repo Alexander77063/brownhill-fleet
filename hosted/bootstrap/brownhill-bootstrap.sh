@@ -142,6 +142,33 @@ if [ "${LEDGER_STATUS:-0}" = "1" ]; then
   exit 0
 fi
 
+# ── tell PostgREST the schema changed ───────────────────────────────────────
+# PostgREST reads the database schema ONCE, at start-up, and caches it. A
+# PostgREST that was started before these migrations ran has a cache with no
+# tables in it, and every write through it fails: an INSERT answers 404 with
+# an empty body, an RPC answers PGRST202, an embedded relationship answers
+# PGRST200. Reads still appear to work — PostgREST falls through to the
+# database for a table it has never heard of — so the failure looks like a
+# page that renders with no data rather than like a broken database.
+#
+# That is not hypothetical. It is what the first run of the compose stack did:
+# PostgREST started as soon as Postgres was healthy, the schema was applied
+# afterwards, and the result was a stack that could not record a legal
+# acceptance (the insert failed silently), sent every operator route to
+# /legal/accept, and could not resolve the audit page's relationship.
+#
+# The compose file now starts PostgREST only after this script has finished,
+# so a fresh stack never has the problem. This notification is what covers the
+# case the ordering cannot: PostgREST ALREADY running when a new migration is
+# applied to a live installation — which is every deployment after the first.
+#
+# `NOTIFY pgrst, 'reload schema'` is PostgREST's own reload signal. It is a
+# no-op when nothing is listening, so it is safe to send unconditionally, and
+# a failure to send it must not fail the bootstrap: the schema is applied
+# either way, and a stale cache is repairable.
+psql -v ON_ERROR_STOP=1 -c "notify pgrst, 'reload schema';" || \
+  echo "brownhill-bootstrap: could not ask PostgREST to reload its schema cache." >&2
+
 # Mark the system bootstrap-pending so the first-run endpoint can serve.
 #
 # Migration 0080 creates this table and inserts this row, so on a database
