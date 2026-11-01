@@ -59,7 +59,7 @@ hosted/tests/acceptance.sh                                  # all gates green
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0082 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0083 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
 **Status: passed 2026-10-30.** The replay ran against a scratch `postgres:16`

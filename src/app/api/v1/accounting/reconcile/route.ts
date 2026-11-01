@@ -34,6 +34,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { safeNextPath } from '@/lib/safe-next';
+import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import {
   postVatPaymentJournal,
   postBankFeeJournal,
@@ -133,16 +134,18 @@ export async function POST(req: NextRequest) {
 
   if (action === 'vat') {
     // Operator marked this line as a VAT payment to HMRC.
-    const vatPayableRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '2210'
-    `) as Array<{ id: string }>;
-    if (!vatPayableRows.length) {
+    //
+    // The account is resolved through the one chart-of-accounts lookup, so a
+    // missing account is reported by name instead of being an undefined
+    // `[0].id` — and a tenant's own account wins over the global one.
+    const vatPayableId = await findAccountId(sql, '2210', ctx.tenantId);
+    if (!vatPayableId) {
       return NextResponse.json({ error: 'VAT Payable account missing' }, { status: 500 });
     }
     const result = postVatPaymentJournal({
       bankTxId,
       amount: magnitude,
-      vatPayableAccountId: vatPayableRows[0].id,
+      vatPayableAccountId: vatPayableId,
       bankGlAccountId: bankGlId,
     });
     // The posting and the categorisation are ONE transaction.
@@ -162,20 +165,16 @@ export async function POST(req: NextRequest) {
 
   if (action === 'fee') {
     // Operator marked this line as a bank charge.
-    const chargesRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '5910'
-    `) as Array<{ id: string }>;
-    const arRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '1100'
-    `) as Array<{ id: string }>;
-    if (!chargesRows.length || !arRows.length) {
+    const chargesId = await findAccountId(sql, '5910', ctx.tenantId);
+    const arId = await findAccountId(sql, '1100', ctx.tenantId);
+    if (!chargesId || !arId) {
       return NextResponse.json({ error: 'Bank Charges / Trade Debtors missing' }, { status: 500 });
     }
     const result = postBankFeeJournal({
       bankTxId,
       feeAmount: magnitude,
-      bankChargesAccountId: chargesRows[0].id,
-      arAccountId: arRows[0].id,
+      bankChargesAccountId: chargesId,
+      arAccountId: arId,
     });
     // One transaction, for the same reason as the VAT payment above: a
     // posting outside a transaction is an orphan entry plus a failed button.
@@ -206,12 +205,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // The trade-debtors account is global reference data — one row, shared by
-  // every tenant — so it is read outside the transaction.
-  const arRows = (await sql`
-    select id from accounting.chart_of_accounts where code = '1100'
-  `) as Array<{ id: string }>;
-  if (!arRows.length) {
+  // The trade-debtors account is reference data, not a posting: it is read
+  // outside the transaction. The lookup prefers this tenant's own account
+  // over the global one, and returns null rather than an empty array, so a
+  // missing account is named instead of crashing on `[0].id`.
+  const arId = await findAccountId(sql, '1100', ctx.tenantId);
+  if (!arId) {
     return NextResponse.json({ error: 'Trade Debtors account missing' }, { status: 500 });
   }
 
@@ -315,7 +314,7 @@ export async function POST(req: NextRequest) {
         paymentId,
         gross: amountPence,
         bankAccountGlId: bankGlId,
-        arAccountId: arRows[0].id,
+        arAccountId: arId,
       });
       const journalId = await commitJournalForPayment(tx, ctx, result, paymentId);
 

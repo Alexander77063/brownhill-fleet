@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-10-30. Read from `supabase/migrations/` (81 files)
+*Status: current as of 2026-11-01. Read from `supabase/migrations/` (82 files)
 and `supabase/seed.sql`. The most recent migration is
-`0082_billing_allocation_guard.sql`.*
+`0083_accounting_vat_output_account.sql`.*
 
 ---
 
@@ -377,6 +377,59 @@ is rejected with `journal <id> unbalanced: debits=120 credits=0`.
 forgets one does not compile. The behaviour is proved against a real postgres
 by `tests/integration/accounting/journal-atomicity.test.ts`.
 
+**The chart of accounts is a contract, and it was broken.** The ledger posts to
+accounts by CODE — `1100` trade debtors, `2210` VAT payable to HMRC, `2200`
+VAT output. Those codes are the only thing joining the journal to the schema,
+and nothing in the database enforced them. The FRS 102 seed (migration 0065)
+created 33 accounts and did not create `2200` "VAT Output", which rules 1 and
+5 of the posting spec post to. The MTD VAT submission read
+
+```sql
+select id from accounting.chart_of_accounts where code = '2200'
+```
+
+and then `[0].id`, so with the account missing it threw
+
+```
+TypeError: Cannot read properties of undefined (reading 'id')
+```
+
+before the journal was reached: a return HMRC had already accepted never
+reached the ledger, and the failure named no account at all. Migration
+**0083** adds the account.
+
+**Migration 0069 dropped the global uniqueness, and nothing replaced it.** It
+replaced `unique (code)` with `unique (tenant_id, code)`, and because NULLs
+are distinct in a unique index, every *global* row — `tenant_id IS NULL` —
+fell outside the constraint entirely. A second global `2200` could have been
+inserted, and a lookup by code would then have had two rows to choose
+between. Migration 0083 restores the old invariant for the global rows with a
+partial unique index (`chart_of_accounts_global_code_key`, and the same for
+`vat_codes`), leaving a tenant's own copy of a code free to coexist with the
+global one.
+
+**One lookup, not six.** Six places asked for an account by code, each with
+its own SQL and each reading `[0].id` — so a missing account was an
+undefined-property crash rather than a named error, and a lookup by code alone
+could not tell a tenant's own account from the global one. They now all go
+through `src/lib/accounting/chart-of-accounts.ts`, which asks for the
+tenant's own account first (the global one is the fallback), passes the code
+as a parameter, and raises `MissingChartOfAccountsError` — naming the code —
+when there is no such account.
+
+**The MTD VAT return resolves its accounts BEFORE it calls HMRC.** A
+submission HMRC has accepted cannot be taken back, so a chart of accounts that
+cannot carry the posting stops the filing rather than orphaning it.
+
+Both halves are proved rather than asserted.
+`tests/integration/accounting/chart-of-accounts.test.ts` checks that every
+account the ledger posts to exists with the right type and normal balance,
+that a second global code is refused, and that a tenant's own account wins
+over the global one. `tests/rls/accounting-portable-proof.sql` (assertions
+11, 15 and 16) carries the same checks into the migration replay that runs in
+CI — which that file did not do at all before, having been written and never
+executed by anything.
+
 ### 5.4 How the accounting schema is tenant-scoped
 
 The accounting schema is the one part of the product that **does not** follow
@@ -386,7 +439,7 @@ exactly.
 
 | Tables | Scope |
 | --- | --- |
-| `chart_of_accounts`, `vat_codes` | **Global.** Seeded once by migrations 0065/0066; nothing provisions a per-tenant copy. A tenant-scoped lookup would find nothing and every chart-of-accounts lookup in the product would break. They are reference data, not tenant data |
+| `chart_of_accounts`, `vat_codes` | **Global.** Seeded once by migrations 0065/0066 and 0083; nothing provisions a per-tenant copy today, though the schema allows one — a tenant's own account shadows the global one when it has one (see §5.3). A tenant-scoped lookup would find nothing and every chart-of-accounts lookup in the product would break. They are reference data, not tenant data |
 | `vat_return_lines` | **Inherited.** Keyed on `vat_submission_id`; its tenancy is its submission's |
 | The other twelve — `periods`, `journal_entries`, `journal_lines`, `audit_log`, `bank_accounts`, `bank_imports`, `bank_transactions`, `vat_submissions`, `firs_credentials`, `tenant_accounting_settings`, `bank_formats`, `filing_artifacts` | **Tenant-scoped.** `tenant_id` is `NOT NULL`, indexed, and carries a RESTRICTIVE `tenant_isolation` policy ANDing `is_tenant_member(tenant_id)` onto the existing permissive policies |
 
@@ -568,7 +621,7 @@ install has applied, by definition.
 
 ## 8. Migrations
 
-- 81 files, `0001`–`0082` (there is no `0057`; the number was never used).
+- 82 files, `0001`–`0083` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

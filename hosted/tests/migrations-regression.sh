@@ -52,6 +52,7 @@ docker exec -u postgres "$cid" mkdir -p /tmp/migrations
 docker cp supabase/migrations/. "$cid":/tmp/migrations/
 docker cp standalone/sql/portable-rls-proof.sql "$cid":/tmp/
 docker cp standalone/sql/billing-allocation-proof.sql "$cid":/tmp/
+docker cp tests/rls/accounting-portable-proof.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-fixture.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-assert.sql "$cid":/tmp/
 
@@ -61,6 +62,18 @@ for f in $(ls -1 supabase/migrations/*.sql | sort); do
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$bn"
 done
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/portable-rls-proof.sql
+# The accounting schema's own assertions (10-16): the tables it is built on,
+# the accounts the ledger posts to, the VAT codes, the append-only audit log,
+# and the global-code uniqueness that migration 0069 dropped.
+#
+# This file used to exist and NOTHING RAN IT. It was written, it was
+# correct-looking, and it had never once been executed — so it kept a stale
+# table name ('mtd_credentials', renamed to 'firs_credentials' by migration
+# 0069) and two assertions written as "is at least one of these there?"
+# instead of "are they all there?". Six required chart-of-accounts codes, one
+# of them missing for the life of the module ('2200', VAT Output), and the
+# assertion was green. It is run here now.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/accounting-portable-proof.sql
 # The billing allocation guard: money may never be allocated to a void invoice,
 # and the two caps that were always there still hold. This proof FAILS against
 # a schema without migration 0082, so it is a real guard and not a rubber stamp.

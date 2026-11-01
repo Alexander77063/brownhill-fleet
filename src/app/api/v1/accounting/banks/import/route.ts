@@ -24,6 +24,7 @@ import { requirePermission } from '@/lib/auth/context';
 import { parseBankCsv, bestMatch, type MatchCandidate, type Pounds } from '@/lib/accounting/bank-rec';
 import { summarizeImport } from '@/lib/accounting/bank-import-summary';
 import { commitJournalForBankTransaction } from '@/lib/accounting/journal-bridge';
+import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import { postBankReceiptJournal } from '@/lib/accounting/journal';
 import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
 
@@ -237,16 +238,13 @@ export async function POST(req: NextRequest) {
 
   // Look up the AR account once; we need it to post the matching journal
   // entry (Dr Bank / Cr Trade Debtors).
-  const arRows = (await sql`
-    select id from accounting.chart_of_accounts where code = '1100'
-  `) as Array<{ id: string }>;
-  if (!arRows.length) {
+  const arAccountId = await findAccountId(sql, '1100', tenantId);
+  if (!arAccountId) {
     return NextResponse.json(
       { error: 'Trade Debtors (1100) account missing' },
       { status: 500 },
     );
   }
-  const arAccountId = arRows[0].id;
 
   // Apply auto-matches: record the money as a payment, allocate it to the
   // invoice it settles, post the receipt to the ledger, and point the bank

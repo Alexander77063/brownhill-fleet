@@ -21,6 +21,7 @@ import { localDb } from '@/lib/auth/local-store';
 import { findJwtSecret } from '@/lib/auth/secret';
 import { signJwt, verifyJwt } from '@/lib/auth/jwt';
 import { postVatSubmissionJournal, type PostResult } from './journal';
+import { requireAccountId } from './chart-of-accounts';
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
 
@@ -314,6 +315,27 @@ export async function submitVatReturn(args: SubmitArgs, hmtrCall: (payload: obje
   const boxes = await aggregateVatReturn(args.tenantId, args.year, args.month);
   const payload = serializeHmrcPayload(boxes, args.year, args.month);
 
+  // Resolve the accounts BEFORE HMRC is called.
+  //
+  // A submission HMRC has accepted cannot be taken back, so everything that
+  // has to be true for the return to reach the ledger is checked first. The
+  // VAT Output account (2200) was never seeded — migration 0083 adds it —
+  // and the lookup used to read `[0].id` on an empty result, so a return
+  // HMRC had already accepted died with
+  //
+  //   TypeError: Cannot read properties of undefined (reading 'id')
+  //
+  // before the journal was reached, and nothing was recorded anywhere. With
+  // the accounts resolved first, a chart of accounts that cannot carry the
+  // posting stops the FILING instead of orphaning it.
+  const sql = await localDb();
+  let vatOutputAccountId = '';
+  let vatPayableAccountId = '';
+  if (boxes.box7_netVat !== 0n) {
+    vatOutputAccountId = await requireAccountId(sql, '2200', args.tenantId);
+    vatPayableAccountId = await requireAccountId(sql, '2210', args.tenantId);
+  }
+
   // Record the attempt BEFORE calling HMRC. If HMRC accepts and the process
   // dies before the journal is posted, the pending row is the evidence that
   // something was sent. The old code persisted only at the end, so a failed
@@ -334,14 +356,11 @@ export async function submitVatReturn(args: SubmitArgs, hmtrCall: (payload: obje
     // be a real uuid: `accounting.journal_entries.source_id` is a uuid column
     // and rejected the old synthetic `sub-YYYY-MM` string with 22P02.
     if (boxes.box7_netVat !== 0n) {
-      const sql = await localDb();
-      const vatOutputId = (await sql`select id from accounting.chart_of_accounts where code = '2200'`)[0].id as string;
-      const vatPayableId = (await sql`select id from accounting.chart_of_accounts where code = '2210'`)[0].id as string;
       const postResult: PostResult = postVatSubmissionJournal({
         submissionId,
         vatAmount: boxes.box7_netVat,
-        vatOutputAccountId: vatOutputId,
-        vatPayableAccountId: vatPayableId,
+        vatOutputAccountId,
+        vatPayableAccountId,
       });
       const { commitJournalForVatSubmission, withJournalTx } = await import('./journal-bridge');
       // The entry belongs to the period being submitted, not to the month the
