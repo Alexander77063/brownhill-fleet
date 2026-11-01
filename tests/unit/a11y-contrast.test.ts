@@ -4,18 +4,24 @@
 //
 // WHY THIS TEST EXISTS
 // --------------------
-// `docs/product/05-design-system.md` says:
+// `docs/product/05-design-system.md` used to say:
 //
 //   "Every text token clears 4.5:1 (WCAG 2.1 SC 1.4.3, Level AA) against both
 //    the page background and the card surface, in both themes... `pnpm test:a11y`
 //    asserts the token pairs."
 //
-// and `package.json` has a script for that file. The script existed; the file
+// and `package.json` had a script for that file. The script existed; the file
 // did not. `pnpm test:a11y` failed with "No test files found", so the claim in
 // the design system and the command an operator or an auditor would run both
 // pointed at nothing — and the accessibility statement on /accessibility claims
 // "partially conformant with WCAG 2.1 Level AA" on the strength of exactly
 // this kind of check.
+//
+// The script has since been renamed to `pnpm test:a11y:contrast`, because the
+// name `pnpm test:a11y` now belongs to the runtime axe pass — a browser, a
+// running stack and 93 axe scans across 81 pages. This file is the token
+// arithmetic underneath it. The design system's wording was corrected to
+// match.
 //
 // `src/lib/a11y/contrast.ts` was written for this test and shipped without it.
 // The library sat in the tree with no importer, and its own docstring pointed

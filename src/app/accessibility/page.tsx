@@ -17,10 +17,12 @@ export const metadata: Metadata = {
  * use LegalShell, whose "draft template, get it reviewed" banner would misrepresent this
  * page — the contents here are statements of fact about the product, not a legal template.
  *
- * Keep in step with docs/accessibility/VPAT.md. Do not upgrade the wording to a full
- * conformance claim until the runtime and assistive-technology passes have been completed.
+ * Keep in step with docs/accessibility/VPAT.md — in particular, the coverage figures
+ * below are checked against it by `tests/unit/a11y-coverage.test.ts`, which fails if
+ * this page and the suite stop agreeing. Do not upgrade the wording to a full
+ * conformance claim until the assistive-technology pass has been completed.
  */
-const STATEMENT_UPDATED = '31 July 2026';
+const STATEMENT_UPDATED = '1 November 2026';
 
 export default function AccessibilityPage() {
   return (
@@ -38,9 +40,9 @@ export default function AccessibilityPage() {
         <section>
           <h2 className="font-display text-xl text-cream">Our commitment</h2>
           <p className="mt-2">
-            We want every fleet operator, driver and administrator to be able to use Elite Fleet
-            Management, including people who rely on screen readers, keyboard-only navigation,
-            magnification or high-contrast display settings. We work to the{' '}
+            We want every fleet operator, driver and administrator to be able to use{' '}
+            {deploymentBrand().productName}, including people who rely on screen readers,
+            keyboard-only navigation, magnification or high-contrast display settings. We work to the{' '}
             <a
               href="https://www.w3.org/TR/WCAG21/"
               target="_blank"
@@ -61,10 +63,11 @@ export default function AccessibilityPage() {
             met, but some parts are not yet met or have not yet been fully tested.
           </p>
           <p className="mt-2">
-            We completed a full accessibility review on {STATEMENT_UPDATED}, covering both the
-            source code and the running application (36 pages tested in a real browser with
-            automated WCAG tooling). It remediated colour contrast across the light theme, added
-            a skip link and proper table semantics throughout, gave every form control an
+            We completed a full accessibility review, first on 31 July 2026 and re-verified on{' '}
+            {STATEMENT_UPDATED} when the runtime pass was restored to this deployment: both the
+            source code and the running application — 93 automated WCAG scans across 81 pages,
+            in a real browser. The review remediated colour contrast across the light theme,
+            added a skip link and proper table semantics throughout, gave every form control an
             accessible name, introduced announced status messages, fixed pages that scrolled
             sideways on a narrow phone, and — most importantly — added a keyboard-accessible way
             to sign a rental agreement, which previously required drawing with a pointer.
@@ -93,8 +96,10 @@ export default function AccessibilityPage() {
             <li>Wide financial tables scroll sideways; they can be scrolled with the keyboard.</li>
           </ul>
           <p className="mt-2">
-            These are scheduled for the next accessibility iteration, which will add automated
-            browser-based testing and a manual assistive-technology review.
+            These are scheduled for the next accessibility iteration, which will add a manual
+            assistive-technology review. The automated browser-based testing that now runs on
+            every change is what has already found and prevented regressions; it cannot stand
+            in for that review.
           </p>
         </section>
 

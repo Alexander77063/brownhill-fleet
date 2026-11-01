@@ -3,9 +3,11 @@
 # gate.
 #
 # hosted/tests/a11y-contrast-negative.sh's counterpart is
-# tests/unit/a11y-contrast.test.ts, run by `pnpm test:a11y`. That test reads
-# the colour tokens out of src/app/globals.css and asserts that each one
+# tests/unit/a11y-contrast.test.ts, run by `pnpm test:a11y:contrast`. That test
+# reads the colour tokens out of src/app/globals.css and asserts that each one
 # clears its WCAG threshold against the page background and the card surface.
+# (The script used to be called `pnpm test:a11y`; that name now belongs to the
+# runtime axe pass, which needs a browser and a running stack.)
 #
 # A gate that cannot fail is not a gate. The test has its own guards against
 # the usual way a check goes hollow — a stylesheet it cannot read fails

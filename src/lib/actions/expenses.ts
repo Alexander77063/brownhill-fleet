@@ -21,6 +21,20 @@ export interface RecordExpenseResult {
   intent: 'save' | 'add-another';
 }
 
+/**
+ * The void form of `recordExpenseAction`, for `<form action={...}>`.
+ *
+ * A form action has to return nothing, and the structured result exists for
+ * `useFormState`. The wrapper has to live in a `'use server'` module: a
+ * locally-declared async function is not a server action, and React refuses
+ * to serialise one into a form — "Functions cannot be passed directly to
+ * Client Components unless you explicitly expose it by marking it with 'use
+ * server'" — which made the whole page fail to render.
+ */
+export async function submitExpenseAction(formData: FormData): Promise<void> {
+  await recordExpenseAction(formData);
+}
+
 export async function recordExpenseAction(formData: FormData): Promise<RecordExpenseResult> {
   const ctx = await requirePermission('billing.write');
   const amount = Number(String(formData.get('amount') ?? '').replace(/[£,\s]/g, ''));

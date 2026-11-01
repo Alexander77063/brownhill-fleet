@@ -4,19 +4,32 @@ import { defineConfig, devices } from '@playwright/test';
  * Runtime accessibility testing (axe-core in a real browser).
  *
  * This is the pass the static checks explicitly could not do — see
- * docs/accessibility/README.md. It needs a running app AND a running local
- * Supabase, because every authenticated route is behind middleware.
+ * docs/accessibility/README.md. It needs a running app AND a running database,
+ * because every authenticated route is behind middleware.
  *
- *   supabase start
+ * Against a local stack:
+ *
+ *   docker compose -f hosted/dev/docker-compose.yml up -d --build
+ *   psql postgresql://postgres@127.0.0.1:55432/postgres -f supabase/seed.sql
  *   SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs
- *   pnpm build
- *   pnpm test:axe
+ *   pnpm test:a11y
+ *
+ * Against a stack that is already up (CI does this — the compose stack is the
+ * system under test, and the harness must not start a second one):
+ *
+ *   A11Y_BASE_URL=http://127.0.0.1:55431 pnpm test:a11y
+ *
+ * `A11Y_BASE_URL` also switches off the `webServer` block below: with it set,
+ * the harness attaches to the app that is already running instead of starting
+ * one of its own, which is the difference between testing the deployed build
+ * and testing a second copy of it.
  *
  * Runs against a production build rather than `next dev`: the dev overlay injects
  * its own DOM, which pollutes the results.
  */
 const PORT = 3100;
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+const EXTERNAL_BASE_URL = process.env.A11Y_BASE_URL?.trim();
+const BASE_URL = EXTERNAL_BASE_URL || `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: './tests/a11y',
@@ -57,10 +70,24 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], storageState: 'test-results/.auth/ops.json' },
     },
     {
+      // The finance console: its own portal, so its own session.
+      name: 'accounts',
+      testMatch: /accounts\.spec\.ts/,
+      dependencies: ['setup'],
+      use: { ...devices['Desktop Chrome'], storageState: 'test-results/.auth/accounts.json' },
+    },
+    {
       name: 'driver',
       testMatch: /driver\.spec\.ts/,
       dependencies: ['setup'],
       use: { ...devices['Desktop Chrome'], storageState: 'test-results/.auth/driver.json' },
+    },
+    {
+      // The investor portal: its own portal, so its own session.
+      name: 'investor',
+      testMatch: /investor\.spec\.ts/,
+      dependencies: ['setup'],
+      use: { ...devices['Desktop Chrome'], storageState: 'test-results/.auth/investor.json' },
     },
     {
       // WCAG 1.4.10 Reflow — 320 CSS px wide, the criterion's own threshold.
@@ -74,10 +101,15 @@ export default defineConfig({
       },
     },
   ],
-  webServer: {
-    command: `pnpm exec next start -p ${PORT}`,
-    url: BASE_URL,
-    reuseExistingServer: true,
-    timeout: 180_000,
-  },
+  // Only when this harness is responsible for the app. With A11Y_BASE_URL set,
+  // the app is somebody else's — the compose stack's — and starting a second
+  // one would test a different build than the one under test.
+  webServer: EXTERNAL_BASE_URL
+    ? undefined
+    : {
+        command: `pnpm exec next start -p ${PORT}`,
+        url: BASE_URL,
+        reuseExistingServer: true,
+        timeout: 180_000,
+      },
 });

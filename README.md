@@ -29,8 +29,11 @@ script. Read it through before running anything.
 | `HANDOFF-BROWNHILL.md` | The operator handoff doc — the entry point |
 | `docs/runbook/`, `docs/testing/` | Operational references |
 | `docs/product/` | The product foundation set — PRD, TRD, MVP scope, user flow, design system, schema, monetisation, launch, acquisition, growth. Start at [`docs/product/README.md`](./docs/product/README.md) |
+| `docs/accessibility/` | The accessibility programme — the audit, the VPAT, and what the runtime pass covers. Start at [`docs/accessibility/README.md`](./docs/accessibility/README.md) |
+| `tests/a11y/` | The Playwright + axe runtime pass — 93 scans across 81 pages of the hosted build |
 | `.github/workflows/hosted-smoke.yml` | CI for the hosted stack (runs on `ubuntu-latest`; the production-shaped job is opt-in, on the self-hosted `pulsar` runner) |
 | `.github/workflows/unit-tests.yml` | CI for typecheck + unit tests (runs on `ubuntu-latest`) |
+| `.github/workflows/a11y.yml` | CI for the runtime accessibility pass — builds the hosted stack, seeds it and runs axe in Chromium (runs on `ubuntu-latest`) |
 
 ## What's NOT in this repo (and why)
 
@@ -38,8 +41,8 @@ These paths existed in the upstream repo but were stripped for this mirror
 because they aren't part of the Brownhill-hosted deployment:
 
 - `standalone/tauri/`, `standalone/delivery/`, `standalone/scripts/*.ps1` — Windows Tauri installer (different deployment shape, not used here)
-- `docs/superpowers/`, `docs/accessibility/`, `docs/business/` — internal planning, SaaS-only docs. **`docs/product/` is the exception: it is kept, because it describes this deployment**
-- `tests/`, `.github/workflows/{ci,migrate-production}.yml` — SaaS CI
+- `docs/superpowers/`, `docs/business/` — internal planning and SaaS-only docs. **`docs/product/` and `docs/accessibility/` are the exceptions: they are kept, because they describe this deployment**
+- the SaaS integration suites under `tests/`, `.github/workflows/{ci,migrate-production}.yml` — SaaS CI. **`tests/unit/`, `tests/helpers/`, `tests/rls/` and `tests/a11y/` are the exception: they are kept, because they gate this deployment**
 - `.claude/`, `.serena/`, `.vercel/`, `.sops.yaml`, `.env*` — local dev secrets, agent config
 
 ## Where the rent-to-buy lives

@@ -1,0 +1,145 @@
+# .github/workflows/a11y.yml
+#
+# The runtime accessibility pass — axe-core through a real browser, against the
+# hosted stack.
+#
+# WHY THIS IS ITS OWN WORKFLOW
+# -----------------------------
+# The brief for this job was "add an axe job", and there were two places to
+# put it. It is here rather than in `unit-tests.yml` because that workflow is
+# the fast lane — it installs, typechecks and runs vitest, and it must stay
+# that fast, because it is the signal most people wait for. It is here rather
+# than as a second job in `hosted-smoke.yml` because that workflow's trigger
+# paths are the SCHEMA (`supabase/migrations/**`, `standalone/**`, `hosted/**`)
+# and not the interface: adding `src/**` to that filter would drag the
+# 90-minute migration-replay job into every UI change. A separate workflow
+# gives this job its own trigger surface, its own concurrency group and its
+# own ceiling, and it runs in parallel with the other two rather than behind
+# them.
+#
+# WHAT IT ACTUALLY SCANS
+# ----------------------
+# 93 axe analyses across 81 pages of the hosted deployment: the public pages,
+# the operations console, the admin console, the accounting module, the
+# finance console, the driver portal, the investor portal, the agreement
+# signing pages, and ten of those pages again at 320 CSS px for WCAG 1.4.10
+# Reflow.
+#
+# The numbers are not written here by hand. `tests/a11y/routes.ts` holds the
+# route lists, `tests/unit/a11y-coverage.test.ts` counts them and checks that
+# every document that publishes a figure publishes the computed one — so this
+# workflow's comment and the accessibility statement cannot drift apart from
+# the suite without a test failing.
+#
+# THE STACK
+# ---------
+# The stack under test is `hosted/dev/docker-compose.yml` — the same compose
+# file the hosted smoke uses, running the `hosted` deployment profile. Not
+# Supabase: the hosted product does not use Supabase Auth, and a suite that
+# ran against a different product would be scanning a different application.
+#
+# `--build` is not optional. `docker compose up` reuses an existing `dev-next`
+# image when there is one, so a stack brought up before a source change keeps
+# serving the OLD bundle, and every scan afterwards tests yesterday's code.
+
+name: a11y
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/a11y/**'
+      - 'tests/unit/a11y-coverage.test.ts'
+      - 'tests/unit/a11y-contrast.test.ts'
+      - 'playwright.config.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'hosted/**'
+      - 'supabase/**'
+      - '.github/workflows/a11y.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel duplicates on the same PR / branch — a fast re-push should not queue
+# two browser runs behind each other.
+concurrency:
+  group: a11y-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  axe:
+    runs-on: ubuntu-latest
+    # The image build is the long pole (about half an hour on a developer
+    # machine), then 93 page loads. The ceiling is generous on purpose: a
+    # ceiling that is too low costs a whole cycle, and one that is too high
+    # costs nothing — the job ends when it ends.
+    timeout-minutes: 60
+    env:
+      JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
+      BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+      # The profile the suite scans, and the profile the app is built as.
+      # `tests/a11y/helpers.ts` refuses to run if the two spellings disagree.
+      DEPLOYMENT_PROFILE: hosted
+      NEXT_PUBLIC_DEPLOYMENT_PROFILE: hosted
+      # The app under test, published by the compose stack on 55431. Setting
+      # this also switches off the harness's own `webServer` block: the app
+      # under test is the one in the container, not a second copy of it.
+      A11Y_BASE_URL: http://127.0.0.1:55431
+      # The compose stack's own postgres, published on 55432. The signing
+      # setup writes its session here.
+      DATABASE_URL: postgres://postgres@127.0.0.1:55432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Install the browser
+        # The suite drives Chromium through Playwright. `--with-deps` installs
+        # the system libraries it needs, which a GitHub runner does not have.
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Choose a password for the demo accounts
+        # The seven demo accounts need one password, and this repository
+        # publishes none — `scripts/seed-auth-policy.mjs` refuses to carry a
+        # default and the credential gate in `hosted/tests` fails the build on
+        # anything that looks like one.
+        #
+        # The database here is created by this job and destroyed by it, on a
+        # runner that is itself thrown away, so there is nothing for the
+        # password to protect and nothing to rotate. It is generated here,
+        # used by the two steps that need it, and never printed: the value
+        # goes into the environment file rather than onto stdout.
+        run: |
+          value="$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))')"
+          echo "SEED_PASSWORD=$value" >> "$GITHUB_ENV"
+      - name: Spin up the hosted stack
+        run: |
+          if ! docker compose -f hosted/dev/docker-compose.yml up -d --build --wait; then
+            echo "the stack did not come up; the bootstrap's own log follows:"
+            docker compose -f hosted/dev/docker-compose.yml logs bootstrap || true
+            exit 1
+          fi
+      - name: Wait for the bootstrap to finish
+        # The stack provisions itself: the `bootstrap` service applies the
+        # shim, every migration and the app_state table. The script finds the
+        # oneshot with `--all` — `docker compose ps` alone lists only the
+        # RUNNING containers, and a bootstrap that has already exited is
+        # invisible to it.
+        run: bash hosted/scripts/wait-for-bootstrap.sh --compose-file hosted/dev/docker-compose.yml
+      - name: Seed the demo data
+        # The bootstrap applies the schema; it does not seed. The vehicles,
+        # drivers and agreements the scans render come from the seed file,
+        # and without them the console renders its empty states — which are
+        # not the pages the statement claims to cover.
+        run: docker compose -f hosted/dev/docker-compose.yml exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d postgres < supabase/seed.sql
+      - name: Seed the demo accounts
+        # Seven personas with real roles on the demo tenant, one of which
+        # holds `tenant_admin` — the account the operator, admin and
+        # accounting scans sign in as.
+        run: node scripts/seed-auth.mjs
+      - name: The runtime axe pass
+        run: pnpm test:a11y
+      - name: Tear down
+        if: always()
+        run: docker compose -f hosted/dev/docker-compose.yml down -v

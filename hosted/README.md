@@ -361,6 +361,22 @@ Restart PostgREST only if `postgrest.conf` changed:
 systemctl restart postgrest.service
 ```
 
+**A migration applied to a running box has to tell PostgREST about it.**
+PostgREST reads the database schema once, at start-up, and caches it; it does
+not poll. A PostgREST that was running before a migration was applied keeps
+the old schema, and every write through it then fails — an INSERT answers 404
+with an empty body, an RPC answers PGRST202, an embedded relationship answers
+PGRST200. Reads keep working, because PostgREST falls through to the database
+for a table it has never heard of, so the failure looks like a page that
+renders with no data rather than like a broken database.
+
+The bootstrap now sends `NOTIFY pgrst, 'reload schema'` when it finishes
+applying migrations, which is PostgREST's own reload signal, so an update
+needs no manual restart. `hosted/tests/postgrest-schema-cache.sh` asserts
+that the notification is there, and that the compose stack starts PostgREST
+only after the bootstrap has applied the schema — a fresh stack must not have
+a cache of nothing.
+
 In-app "click to update" is a v2 follow-up after the friction of the SSH+git-pull cycle is measured.
 
 ## Spec

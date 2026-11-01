@@ -42,7 +42,25 @@ services:
     # compose network.
     ports: ["55430:3000"]
     depends_on:
-      postgres: { condition: service_healthy }
+      # The schema has to exist BEFORE PostgREST starts, not merely before the
+      # app does.
+      #
+      # PostgREST reads the database schema once, at start-up, and caches it.
+      # A PostgREST that starts against an empty database has a cache with
+      # nothing in it, and every WRITE through it then fails: an INSERT
+      # answers 404 with an empty body, an RPC answers PGRST202, an embedded
+      # relationship answers PGRST200. Reads keep working, because PostgREST
+      # falls through to the database for a table it has never heard of —
+      # which is exactly what makes this so easy to miss. The pages look
+      # populated; the writes are quietly lost.
+      #
+      # The bootstrap oneshot below applies the shim and every migration and
+      # exits, so this dependency waits for it to finish successfully and
+      # PostgREST's first schema cache is the real schema. (The bootstrap also
+      # sends `NOTIFY pgrst, 'reload schema'` when it finishes, which covers
+      # the case this ordering cannot: a PostgREST that is already running
+      # when a new migration is applied.)
+      bootstrap: { condition: service_completed_successfully }
 
   # The stack provisions itself.
   #

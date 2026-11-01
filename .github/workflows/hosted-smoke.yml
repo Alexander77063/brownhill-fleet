@@ -119,6 +119,23 @@ jobs:
         # second of work. It runs first because it is the cheapest gate that
         # can catch the most expensive mistake.
         run: bash hosted/tests/env-var-names.sh
+      - name: PostgREST's schema cache
+        # PostgREST reads the database schema once, at start-up, and caches it.
+        # A PostgREST that starts before the migrations have run has a cache
+        # with nothing in it, and every write through it then fails — an
+        # INSERT answers 404 with an empty body, an RPC answers PGRST202, an
+        # embedded relationship answers PGRST200. Reads keep working, so the
+        # pages look fine and the writes are silently lost.
+        #
+        # It happened here: the compose stack started PostgREST before the
+        # bootstrap oneshot applied the schema, the legal acceptance could
+        # not be recorded, and every operator route redirected to
+        # /legal/accept. This gate asserts both halves of the fix — the
+        # dependency order in the compose file, and the reload notification
+        # the bootstrap sends to a PostgREST that is already running.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/postgrest-schema-cache.sh
       - name: The off-host backup's path prefix
         # The copy that leaves the box is the reason a backup exists. It is
         # filed under a path built from the deployment's hostname, and that

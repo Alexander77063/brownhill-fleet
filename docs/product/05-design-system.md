@@ -201,7 +201,7 @@ app uses when a person chooses it, so a colour that only reads on the dark
 background is a colour that fails for them. Both themes are measured.
 
 **These are measured, not asserted by hand.**
-`tests/unit/a11y-contrast.test.ts` (`pnpm test:a11y`) reads the real token
+`tests/unit/a11y-contrast.test.ts` (`pnpm test:a11y:contrast`) reads the real token
 values out of `src/app/globals.css` and computes the WCAG 2.1 contrast ratio
 for each pair. It runs in CI, and `hosted/tests/a11y-contrast-negative.sh`
 runs it against three deliberately broken stylesheets to prove it can fail.
