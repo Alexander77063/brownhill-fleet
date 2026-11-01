@@ -142,28 +142,61 @@ fi
 
 # The app's own environment.
 #
-# The systemd unit for the Next app loads this file, and it carries the three
+# The systemd unit for the Next app loads this file, and it carries the four
 # values the app needs at run time that live in no other secret file:
 #
-#   DATABASE_URL     — the app opens its own connection to Postgres for
-#                      sign-in, the operator status surface, the restore
-#                      console and the first-run setup. Without it every one of
-#                      those paths throws "DATABASE_URL is not set", which
-#                      on a freshly installed box means nobody can sign in at
-#                      all.
-#   BOOTSTRAP_TOKEN  — the HMAC key for /api/v1/bootstrap. Without it the
-#                      owner cannot create their first account, because no
-#                      signature can ever verify.
-#   POSTGREST_URL    — where PostgREST listens on this host.
+#   DATABASE_URL        — the app opens its own connection to Postgres for
+#                         sign-in, the operator status surface, the restore
+#                         console and the first-run setup. Without it every
+#                         one of those paths throws "DATABASE_URL is not
+#                         set", which on a freshly installed box means nobody
+#                         can sign in at all.
+#   BOOTSTRAP_TOKEN     — the HMAC key for /api/v1/bootstrap. Without it the
+#                         owner cannot create their first account, because no
+#                         signature can ever verify.
+#   POSTGREST_URL       — where PostgREST listens on this host.
+#   NEXT_PUBLIC_APP_URL — the deployment's own address. The application puts
+#                         it in the links it sends, and HMRC's OAuth redirect
+#                         is built from it.
 #
-# It is rewritten on every run, so a rotated database password takes effect on
-# the next install rather than needing a hand edit.
-pg_pw=$(grep '^PG_SUPERUSER_PASSWORD=' /etc/brownhill/secrets/pg.env | cut -d= -f2-)
-bs=$(grep '^BOOTSTRAP_TOKEN=' /etc/brownhill/secrets/bootstrap.env | cut -d= -f2-)
-write_secret /etc/brownhill/secrets/app.env \
-  "DATABASE_URL=postgresql://postgres:${pg_pw}@127.0.0.1:55432/postgres" \
-  "BOOTSTRAP_TOKEN=${bs}" \
-  "POSTGREST_URL=http://127.0.0.1:55430"
+# It is written by hosted/bootstrap/write-app-env.sh, which is also what
+# substitute-fqdn.sh calls when the deployment is given its real hostname.
+# One implementation, called by both, so the two cannot write the file
+# differently.
+#
+# It is REWRITTEN on every run, so a rotated database password takes effect
+# on the next install rather than needing a hand edit. The file used to be
+# written only when it was absent, which made that promise false.
+hosted/bootstrap/write-app-env.sh /etc/brownhill/secrets
+
+# The HMRC settings.
+#
+# The application reads four of them — the client id, the client secret, the
+# redirect URI and which HMRC environment to talk to — and nothing on the box
+# provided any of them. The client id and secret come from HMRC's own
+# registration of this deployment, so they are the operator's to fill in and
+# they live in their own file: the installer creates that file once, with
+# empty values, and never overwrites what the operator puts in it.
+#
+# The empty values are deliberate. The application treats an empty client id
+# or secret as "not connected" and says so on the settings page, rather than
+# offering a Connect button that cannot work.
+#
+# The redirect URI is empty on purpose too: the application derives it from
+# NEXT_PUBLIC_APP_URL, which is the deployment's own address, and the
+# derivation is right for every deployment. It is listed here so the
+# operator can see it, and can set it explicitly if HMRC's registration
+# names a different address.
+if [[ ! -f /etc/brownhill/secrets/mtd.env ]]; then
+  write_secret /etc/brownhill/secrets/mtd.env \
+    "HMRC_MTD_CLIENT_ID=" \
+    "HMRC_MTD_CLIENT_SECRET=" \
+    "HMRC_MTD_REDIRECT_URI=" \
+    "HMRC_ENV=sandbox"
+  echo "note: /etc/brownhill/secrets/mtd.env was created with empty HMRC" >&2
+  echo "      credentials. The HMRC connection stays unconnected until you" >&2
+  echo "      fill them in and restart brownhill-next.service." >&2
+fi
 
 # The B2 credentials are the operator's to supply — they cannot be generated.
 # If they are missing the nightly job still runs and still writes a local

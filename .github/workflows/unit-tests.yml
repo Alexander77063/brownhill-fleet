@@ -88,6 +88,23 @@ jobs:
         # rule reported "no fallback" on a file that had one in plain text.
         # The gate looked green for as long as it existed.
         run: bash hosted/tests/no-committed-credentials-negative.sh
+      - name: The deployment's settings reach the application
+        # The application reads HMRC_MTD_CLIENT_ID, HMRC_MTD_CLIENT_SECRET,
+        # HMRC_MTD_REDIRECT_URI, HMRC_ENV and NEXT_PUBLIC_APP_URL. Nothing
+        # on the deployed box provided any of them, the handover named three
+        # of them differently, and the redirect URI it gave was a path the
+        # application does not serve.
+        #
+        # A variable that is SET under one spelling and READ under another
+        # does not fail — it is ignored, and the deployment says "not
+        # connected" with nothing anywhere saying why.
+        run: bash hosted/tests/mtd-env-wiring.sh
+      - name: The settings gate can fail
+        # A gate that cannot fail is not a gate. This runs it against four
+        # copies of the tree that each carry one of the faults the gate
+        # exists to catch, and requires it to fail on the right check each
+        # time.
+        run: bash hosted/tests/mtd-env-wiring-negative.sh
       - name: The acceptance bar's own arithmetic
         # hosted/tests/acceptance.sh decides whether a deployment is fit to
         # hand over, and that decision is arithmetic. The arithmetic asked

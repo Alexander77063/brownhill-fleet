@@ -18,6 +18,15 @@ WorkingDirectory=/var/lib/brownhill/app
 # account.
 EnvironmentFile=/etc/brownhill/secrets/jwt.env
 EnvironmentFile=/etc/brownhill/secrets/app.env
+# mtd.env   — the HMRC application's client id, client secret and redirect
+#             URI, and which HMRC environment to talk to (sandbox or
+#             production).
+#
+# The file is OPTIONAL, and the leading '-' is what says so: a box that has
+# not been given HMRC credentials still starts. Without it the unit failed to
+# load its environment and the application never came up at all, which is a
+# far worse answer than a deployment that simply has no HMRC connection yet.
+EnvironmentFile=-/etc/brownhill/secrets/mtd.env
 Environment=DEPLOYMENT_PROFILE=hosted
 Environment=NODE_ENV=production
 Environment=PORT=55431
