@@ -24,6 +24,7 @@ import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { resolveJwtSecret } from '@/lib/auth/secret';
 import { safeNextPath } from '@/lib/safe-next';
+import { periodRefusal } from '@/lib/accounting/periods';
 import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
@@ -171,6 +172,13 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
         303,
       );
     } catch (e) {
+      // A closed or locked period is a conflict the operator can act on —
+      // reopen the period and file again — and nothing has been sent to HMRC.
+      // It is not a failure, and it must not be reported as one.
+      const refusal = periodRefusal(e);
+      if (refusal) {
+        return NextResponse.json(refusal.body, { status: refusal.status });
+      }
       return NextResponse.json({ error: e instanceof Error ? e.message : 'unknown' }, { status: 500 });
     }
   }

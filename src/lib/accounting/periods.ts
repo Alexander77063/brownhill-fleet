@@ -45,6 +45,96 @@ export interface Period {
   lockedAt: Date | null;
 }
 
+// ── Typed refusals ────────────────────────────────────────────────────────
+
+/**
+ * The three ways a period can refuse work.
+ *
+ * - 'period_closed'        — a posting wanted a period that is closed.
+ * - 'period_locked'        — a posting wanted a period that is locked.
+ * - 'period_already_closed'— a CLOSE lost the race: somebody else closed the
+ *                            period first, and this close must not overwrite
+ *                            theirs.
+ */
+export type PeriodRefusalCode = 'period_closed' | 'period_locked' | 'period_already_closed';
+
+/** '2026-10' — the way a period is written in every message and every body. */
+export function periodLabel(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+/** The sentence the operator reads. Pure, so it can be asserted on. */
+export function periodRefusalMessage(code: PeriodRefusalCode, year: number, month: number): string {
+  const ym = periodLabel(year, month);
+  switch (code) {
+    case 'period_closed':
+      return `Period ${ym} is closed; reopen it before posting.`;
+    case 'period_locked':
+      return `Period ${ym} is locked; nothing can be posted to it.`;
+    case 'period_already_closed':
+      return `Period ${ym} was already closed.`;
+  }
+}
+
+/**
+ * A refusal the caller can act on: the request was understood, and the
+ * answer is "no, and here is why".
+ *
+ * Typed, so the HTTP edge can tell it apart from an unexpected failure
+ * WITHOUT reading its message — a message is not a contract, and this one
+ * carries the detail that matters: which period, and who closed it.
+ *
+ * It is still an `Error`, so every existing `catch (e) { e instanceof Error
+ * ? e.message : 'unknown' }` keeps working and still reads the right
+ * sentence.
+ */
+export class AccountingPeriodError extends Error {
+  constructor(
+    readonly code: PeriodRefusalCode,
+    readonly year: number,
+    readonly month: number,
+    readonly closedAt: Date | null = null,
+    readonly closedByUserId: string | null = null,
+    readonly lockedAt: Date | null = null,
+  ) {
+    super(periodRefusalMessage(code, year, month));
+    this.name = 'AccountingPeriodError';
+  }
+}
+
+/** The JSON body a period refusal is answered with. */
+export interface PeriodRefusalBody {
+  error: string;
+  code: PeriodRefusalCode;
+  period: string;
+  closedAt: string | null;
+  closedByUserId: string | null;
+}
+
+/**
+ * Turn a thrown value into the refusal to answer with, or null if it is not
+ * one.
+ *
+ * A conflict, not a failure: the request was understood and refused on
+ * purpose, so the answer is 409 and the body names the period. Anything else
+ * is an unexpected failure and must not be dressed up as one.
+ */
+export function periodRefusal(
+  err: unknown,
+): { status: 409; body: PeriodRefusalBody } | null {
+  if (!(err instanceof AccountingPeriodError)) return null;
+  return {
+    status: 409,
+    body: {
+      error: err.message,
+      code: err.code,
+      period: periodLabel(err.year, err.month),
+      closedAt: err.closedAt ? err.closedAt.toISOString() : null,
+      closedByUserId: err.closedByUserId,
+    },
+  };
+}
+
 interface PeriodRow {
   id: string; year: number; month: number;
   closed_at: string | null; closed_by_user_id: string | null; locked_at: string | null;
@@ -96,17 +186,63 @@ export async function openPeriod(tenantId: string, year: number, month: number):
   return toPeriod(rows[0]);
 }
 
-/** Close a period. Operator can still reopen within the tenant's reopen window of close. */
+/**
+ * Close a period. Operator can still reopen within the tenant's reopen window of close.
+ *
+ * THE CLOSE IS A COMPARE-AND-SET
+ * ------------------------------
+ * The update only matches a period that is still open (`closed_at is null`
+ * and `locked_at is null`). Postgres evaluates that predicate against the row
+ * as it stands when the statement runs, and a concurrent update on the same row
+ * blocks until the first one commits — at which point the waiting statement
+ * re-reads the row and the predicate is false. So exactly one of two
+ * simultaneous closers wins, and the loser is told who closed the period and
+ * when, instead of silently overwriting them.
+ *
+ * The old update had no predicate at all: the SECOND close overwrote the
+ * first one's `closed_at` and `closed_by_user_id`. The reopen window was then
+ * measured from the later timestamp, and the row claimed the period had been
+ * closed by whoever pressed the button last.
+ */
 export async function closePeriod(tenantId: string, year: number, month: number, userId: string): Promise<Period> {
   const sql = await localDb();
   const rows = (await sql`
     update accounting.periods
     set closed_at = now(), closed_by_user_id = ${userId}::uuid
     where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+      and closed_at is null
+      and locked_at is null
     returning id, year, month, closed_at, closed_by_user_id, locked_at
   `) as PeriodRow[];
-  if (!rows.length) throw new Error(`Period ${year}-${month} does not exist`);
-  return toPeriod(rows[0]);
+  if (rows.length) return toPeriod(rows[0]);
+
+  // The update matched no row. Either there is no such period, or somebody
+  // else got there first. Read the row to say which — and to say WHO.
+  const current = (await sql`
+    select id, year, month, closed_at, closed_by_user_id, locked_at
+      from accounting.periods
+     where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
+  `) as PeriodRow[];
+  if (!current.length) throw new Error(`Period ${year}-${month} does not exist`);
+  const p = current[0];
+  if (p.locked_at) {
+    throw new AccountingPeriodError(
+      'period_locked',
+      year,
+      month,
+      p.closed_at ? new Date(p.closed_at) : null,
+      p.closed_by_user_id,
+      new Date(p.locked_at),
+    );
+  }
+  throw new AccountingPeriodError(
+    'period_already_closed',
+    year,
+    month,
+    p.closed_at ? new Date(p.closed_at) : null,
+    p.closed_by_user_id,
+    null,
+  );
 }
 
 /**
@@ -191,15 +327,40 @@ export async function assertPeriodOpenForPosting(
 ): Promise<void> {
   const conn = sql ?? (await localDb());
   const rows = (await conn`
-    select closed_at, locked_at
+    select closed_at, closed_by_user_id, locked_at
       from accounting.periods
      where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}
-  `) as Array<{ closed_at: string | null; locked_at: string | null }>;
+  `) as Array<{
+    closed_at: string | null;
+    closed_by_user_id: string | null;
+    locked_at: string | null;
+  }>;
   // No row = period doesn't exist yet (auto-create on first post is OK).
   if (!rows.length) return;
   const p = rows[0];
-  if (p.locked_at) throw new Error(`Period ${year}-${month} is locked`);
-  if (p.closed_at) throw new Error(`Period ${year}-${month} is closed; reopen before posting`);
+  // Typed, so the HTTP edge answers 409 with the period and its closer
+  // rather than a generic 500 that names nothing. It used to be a plain
+  // Error, which is indistinguishable from any other failure.
+  if (p.locked_at) {
+    throw new AccountingPeriodError(
+      'period_locked',
+      year,
+      month,
+      p.closed_at ? new Date(p.closed_at) : null,
+      p.closed_by_user_id,
+      new Date(p.locked_at),
+    );
+  }
+  if (p.closed_at) {
+    throw new AccountingPeriodError(
+      'period_closed',
+      year,
+      month,
+      new Date(p.closed_at),
+      p.closed_by_user_id,
+      null,
+    );
+  }
 }
 
 /**

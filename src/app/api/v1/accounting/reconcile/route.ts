@@ -35,6 +35,7 @@ import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { safeNextPath } from '@/lib/safe-next';
 import { findAccountId } from '@/lib/accounting/chart-of-accounts';
+import { periodRefusal } from '@/lib/accounting/periods';
 import {
   postVatPaymentJournal,
   postBankFeeJournal,
@@ -66,6 +67,20 @@ class MatchRejected extends Error {
     super(message);
     this.name = 'MatchRejected';
   }
+}
+
+/**
+ * The answer to a posting the ledger refused because the period is closed or
+ * locked — a conflict, not a failure, so it is 409 and the body names the
+ * period and who closed it.
+ *
+ * Returns null for anything else, so an unexpected failure is never dressed
+ * up as a conflict.
+ */
+function periodRefusalResponse(err: unknown): NextResponse | null {
+  const refusal = periodRefusal(err);
+  if (!refusal) return null;
+  return NextResponse.json(refusal.body, { status: refusal.status });
 }
 
 export async function POST(req: NextRequest) {
@@ -156,10 +171,18 @@ export async function POST(req: NextRequest) {
     // ("journal <id> unbalanced: debits=120 credits=0"), and left behind as an
     // orphan entry with no lines — and the categorisation below never ran.
     // That is what this button did for every operator who pressed it.
-    await withJournalTx(async (tx) => {
-      await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
-      await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
-    });
+    try {
+      await withJournalTx(async (tx) => {
+        await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+        await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+      });
+    } catch (err) {
+      // A closed or locked period is a conflict the operator can act on, not
+      // a broken button: it says which period, and who closed it.
+      const refusal = periodRefusalResponse(err);
+      if (refusal) return refusal;
+      throw err;
+    }
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
@@ -178,10 +201,16 @@ export async function POST(req: NextRequest) {
     });
     // One transaction, for the same reason as the VAT payment above: a
     // posting outside a transaction is an orphan entry plus a failed button.
-    await withJournalTx(async (tx) => {
-      await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
-      await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
-    });
+    try {
+      await withJournalTx(async (tx) => {
+        await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+        await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+      });
+    } catch (err) {
+      const refusal = periodRefusalResponse(err);
+      if (refusal) return refusal;
+      throw err;
+    }
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
@@ -337,6 +366,11 @@ export async function POST(req: NextRequest) {
     if (err instanceof MatchRejected) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
+    // A closed or locked period is a conflict too, and it has to say WHICH
+    // period. The generic message below would have hidden the only fact the
+    // operator needs.
+    const refusal = periodRefusalResponse(err);
+    if (refusal) return refusal;
     // Anything else is unexpected. The detail stays on the server — it can
     // name a column, a constraint or a file path, none of which belong in a
     // response the operator's browser reads — and the request id is the handle

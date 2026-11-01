@@ -316,7 +316,7 @@ This is the flow the newest work added, end to end.
 | --- | --- |
 | HMRC rejects the return | **No journal entry is written.** The operator gets an inline error. The fail-safe rule is: the §2 Rule #5 posting happens only on HMRC success |
 | MTD token expired | Reconnect via the MTD page; submissions are refused until then |
-| A period is closed | Reopen is allowed within 7 days; outside that, the period is final |
+| A period is closed | A posting into it is refused with a **409** that names the period and the user who closed it — the reconciliation queue's three buttons and the VAT return all answer that way. The VAT return is refused **before** it reaches HMRC, because a return HMRC has accepted cannot be taken back. Reopen is allowed within 7 days; outside that, the period is final |
 | An open bank transaction exists at close | The chaos drill `06-period-close-with-open-bank.sh` proves the behaviour |
 | The import file is the wrong format | The preview refuses it and names the formats accepted (Barclays, HSBC, Starling, Lloyds) |
 

@@ -22,6 +22,7 @@ import { findJwtSecret } from '@/lib/auth/secret';
 import { signJwt, verifyJwt } from '@/lib/auth/jwt';
 import { postVatSubmissionJournal, type PostResult } from './journal';
 import { requireAccountId } from './chart-of-accounts';
+import { assertPeriodOpenForPosting } from './periods';
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
 
@@ -335,6 +336,17 @@ export async function submitVatReturn(args: SubmitArgs, hmtrCall: (payload: obje
     vatOutputAccountId = await requireAccountId(sql, '2200', args.tenantId);
     vatPayableAccountId = await requireAccountId(sql, '2210', args.tenantId);
   }
+
+  // The period the return posts into must be open — and that has to be
+  // checked HERE, before HMRC is called, for the same reason the accounts
+  // are: a return HMRC has accepted cannot be taken back.
+  //
+  // The journal-bridge refuses to post into a closed period, so without this
+  // check HMRC would take the return, the posting would be refused, and the
+  // install would be left with a return the books have never seen. Refusing
+  // the FILING lets the operator reopen the period and try again, with
+  // nothing lost.
+  await assertPeriodOpenForPosting(args.tenantId, args.year, args.month, sql);
 
   // Record the attempt BEFORE calling HMRC. If HMRC accepts and the process
   // dies before the journal is posted, the pending row is the evidence that
