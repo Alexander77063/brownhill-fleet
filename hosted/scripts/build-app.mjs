@@ -37,9 +37,12 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { cleanDistDir } from '../../scripts/clean-dist-dir.mjs';
+import { rebaseStandaloneSymlinks } from '../../scripts/rebase-standalone-symlinks.mjs';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -98,11 +101,27 @@ function run(label, command, args) {
   }
 }
 
-// 1. The icons. `hosted/static/` is gitignored build output, so it is
+// 1. The output directory. `next build` clears `.next` itself, and the
+//    helper it uses walks INTO directory symlinks — so the `node_modules`
+//    a standalone build writes into `.next/standalone`, which are symlinks
+//    back into this project's own `node_modules`, would have their TARGETS
+//    deleted: the packages survive as empty directories and every import
+//    through them fails with "Cannot find module". The directory is removed
+//    here instead, by a routine that unlinks a link rather than following
+//    it, so Next's own clean step finds nothing to walk into.
+//
+//    This matters in production, not only on a workstation: the operator's
+//    documented update is `git pull && pnpm install && pnpm build:hosted`, run
+//    on the box, so the second update of a live installation would break it.
+//    See `scripts/clean-dist-dir.mjs`.
+console.log('==> cleaning the build output directory');
+cleanDistDir(join(repoRoot, '.next'));
+
+// 2. The icons. `hosted/static/` is gitignored build output, so it is
 //    regenerated on every build rather than committed.
 run('building the hosted icons', process.execPath, [join(here, 'build-icons.mjs')]);
 
-// 2. The Next build. `next` is resolved through Node rather than through
+// 3. The Next build. `next` is resolved through Node rather than through
 //    `node_modules/.bin/next`, because on Windows that file is a `.cmd`
 //    wrapper which can only be run through a shell — and the whole point of
 //    this script is to not need one.
@@ -118,3 +137,23 @@ console.log(`    DEPLOYMENT_PROFILE=${env.DEPLOYMENT_PROFILE}`);
 console.log(`    BUILD_STANDALONE=${env.BUILD_STANDALONE}`);
 console.log(`    DEPLOYMENT_REGION=${env.DEPLOYMENT_REGION}`);
 console.log(`    POSTGREST_URL=${env.POSTGREST_URL}`);
+
+// 4. The output's links. A standalone build writes `node_modules` into
+//    `.next/standalone` as symlinks back into THIS checkout's
+//    `node_modules/.pnpm` tree, carrying this machine's absolute path — so
+//    the tree that gets deployed depends on the build checkout still being
+//    there. The output holds a real copy of every package those links name,
+//    so each link is rewritten to point at that copy, relative to itself.
+//
+//    This matters most when it is least visible: a `pnpm install` that
+//    follows a lockfile change prunes the store directories the PREVIOUS
+//    deployment's links point at, so an update that fails at the build step
+//    would take the running application down with it.
+//
+//    See `scripts/rebase-standalone-symlinks.mjs`.
+const standaloneDir = join(repoRoot, '.next', 'standalone');
+if (existsSync(standaloneDir)) {
+  console.log("==> rebasing the standalone output's links onto its own copies");
+  const result = rebaseStandaloneSymlinks(standaloneDir);
+  console.log(`    ${result.rebased} link(s) now point inside the output`);
+}

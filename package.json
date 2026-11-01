@@ -5,6 +5,7 @@
   "description": "Elite Fleet Management — operating system for a UK luxury PCO chauffeur-vehicle rental business",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/clean-dist-dir.mjs .next",
     "build": "next build",
     "build:hosted": "node hosted/scripts/build-app.mjs hosted",
     "build:standalone": "node hosted/scripts/build-app.mjs standalone",

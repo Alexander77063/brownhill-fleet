@@ -60,6 +60,21 @@ if [[ -d public ]]; then
   cp -a public "$STAGE/public"
 fi
 
+# ── the staged tree must stand on its own ───────────────────────────────────
+# A standalone build writes `node_modules` as symlinks into the BUILD
+# checkout's `node_modules/.pnpm` tree, carrying the build machine's absolute
+# path. The build rewrites those links to point at the output's own copies,
+# so the staged tree resolves on its own — but "the build rewrites them" is
+# a claim about another program, and this is the last moment to check it.
+#
+# A link that still points out of the staged tree means the deployed
+# application would depend on a directory it was never told about: the build
+# checkout, at an absolute path, that a later `pnpm install` may prune. The
+# deploy stops here rather than shipping that. The previous build is still in
+# place, because the swap has not happened yet.
+echo "==> checking the staged tree stands on its own"
+node scripts/rebase-standalone-symlinks.mjs --find-out-of-tree-symlinks "$STAGE"
+
 # ── swap ────────────────────────────────────────────────────────────────────
 echo "==> installing into $APP_DIR"
 PREV="${APP_DIR}.previous"

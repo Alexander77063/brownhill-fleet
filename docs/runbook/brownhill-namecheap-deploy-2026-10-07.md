@@ -186,20 +186,21 @@ idempotent: every reboot from now on is a no-op that exits 0.
 3. Bring Postgres up if down: `sudo -u postgres /opt/brownhill/pgsql/bin/pg_ctl -D /var/lib/postgresql/16/main -l /tmp/pglog.txt start`.
 4. Verify PostgREST: `systemctl status postgrest`.
 5. **Adopt the box's schema into the migration ledger** — see "Adopting this box into the migration ledger" above. Do this before the app is deployed: until the database is adopted, the bootstrap cannot record what it has applied, and the box's own patched script is still the one doing the work.
-6. Build: `cd /opt/brownhill/repo && export PNPM_HOME=/root/.local/share/pnpm PATH=$PNPM_HOME:$PATH && DEPLOYMENT_PROFILE=hosted pnpm exec next build`.
-7. Deploy to /var/lib/brownhill/app per HANDOFF §4 D.
-8. Install brownhill-next.service: copy + `systemctl daemon-reload && systemctl enable --now brownhill-next`.
-9. Configure nginx with the brownhill.conf template and substitute-fqdn.sh.
-10. Issue cert via initial-cert.sh brownhillmanagementfleet.online ops@brownhillmanagementfleet.online. Verify with `curl -I https://brownhillmanagementfleet.online/`.
-11. Run the acceptance bar: `bash hosted/tests/acceptance.sh`. Five baseline gates, plus the accounting smoke and the no-credential scan when they apply (six or seven in total) — every gate that runs must be green. Gate 5 may need backup service touched manually (no Sunday yet).
-12. Bootstrap owner (HMAC-signed POST to /api/v1/bootstrap).
-13. Browser sign-in from laptop to /ops.
+6. Build and deploy the application: `cd /opt/brownhill/repo && export PNPM_HOME=/root/.local/share/pnpm PATH=$PNPM_HOME:$PATH && ./hosted/scripts/deploy-app.sh`.
+   That is the whole job: it installs the dependencies, builds the hosted **standalone** bundle, copies it into `/var/lib/brownhill/app` (the unit's working directory), and restarts `brownhill-next.service`. Do not hand-run `next build` and restart the unit instead — the bundle has to be *standalone* (that is what produces the `server.js` the unit runs and what turns on the `/rest/v1 → PostgREST` rewrite), it has to be *copied* into the unit's working directory, and its package links have to point at the copies inside it rather than back at this checkout. The script checks that last thing before it installs anything, and refuses to install a tree that would not stand on its own.
+7. `brownhill-next.service` is installed and enabled by `./hosted/bootstrap/install.sh` (the handover's step C) — it is not copied by hand. If it is not running, `systemctl start brownhill-next`.
+8. Configure nginx with the brownhill.conf template and substitute-fqdn.sh.
+9. Issue cert via initial-cert.sh brownhillmanagementfleet.online ops@brownhillmanagementfleet.online. Verify with `curl -I https://brownhillmanagementfleet.online/`.
+10. Run the acceptance bar: `bash hosted/tests/acceptance.sh`. Five baseline gates, plus the accounting smoke and the no-credential scan when they apply (six or seven in total) — every gate that runs must be green. Gate 5 may need backup service touched manually (no Sunday yet).
+11. Bootstrap owner (HMAC-signed POST to /api/v1/bootstrap).
+12. Browser sign-in from laptop to /ops.
 
 ## Ops cadence
 
 - Daily: zero (timers handle backup, verify, certbot renew)
 - Monthly: chaos drills hosted/tests/chaos/0[1-4]-*.sh, log to RUNS.md
-- Updates: `cd /opt/brownhill/repo && git pull && pnpm install --frozen-lockfile && pnpm build:hosted && sudo ./hosted/bootstrap/install.sh && systemctl daemon-reload && systemctl restart brownhill-next postgrest`
+- Updates: `cd /opt/brownhill/repo && git pull && sudo ./hosted/bootstrap/install.sh && ./hosted/scripts/deploy-app.sh && systemctl restart postgrest`
+  — the installer first (it puts the current unit files and operator scripts on the box, and does its own `daemon-reload`), then the deploy (it builds the standalone bundle, copies it into `/var/lib/brownhill/app`, and restarts the app). A build on its own deploys nothing: the unit runs the copy in `/var/lib/brownhill/app`, so a bundle left in the repository is not what the service starts.
 - Alert paging: wire /usr/local/bin/brownhill-alert-forward.sh — currently an empty shim
 
 ### The installer has to run on every update, not just the first

@@ -3,7 +3,7 @@
 Architecture, stack, integrations, constraints, and the decisions behind them
 with the reasons they were made.
 
-*Status: current as of 2026-10-30. Reviewed against `package.json`,
+*Status: current as of 2026-11-01. Reviewed against `package.json`,
 `next.config.ts`, `src/`, `supabase/`, `hosted/`.*
 
 ---
@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Unit tests | Vitest | 2.1.9 | 473 passing, 2 skipped |
+| Unit tests | Vitest | 2.1.9 | 489 passing, 2 skipped |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -116,7 +116,7 @@ one of them.
 | Resend (email) | `src/lib/email/*` | Platform send, `NOTIFY_FROM_EMAIL` |
 | Tenant BYO email | `src/lib/email/*` | `sendTenantEmail`; **silently skips when unconfigured** |
 | Backblaze B2 | `src/lib/backup/*` | Nightly 02:00; local retention 7 days, off-host 90 |
-| HMRC MTD | `src/lib/accounting/mtd.ts` | VAT return submission; tokens AES-GCM at rest |
+| HMRC MTD | `src/lib/accounting/mtd.ts` | VAT return submission; tokens AES-GCM at rest. Opt-in: reads `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI` and `HMRC_ENV` — see decision D13 |
 | DVLA | `src/lib/lookups/*` | Fails soft: the UI says "temporarily unavailable" |
 | Web Push | `src/lib/push.ts` | `web-push` is a `serverExternalPackage` |
 | MapLibre | `src/components/**` | Live tracking map |
@@ -276,6 +276,131 @@ membership, no invite email. The admin UI offers exactly those roles, so
 do; the portal role says which app they land in. Two vocabularies, and the
 trigger now translates.
 
+### D13 — A setting has one spelling, one home, and one writer
+
+**Decision.** Every setting the application reads is provided by the
+installer under the exact name the application reads, and the handover
+document quotes those same names. `hosted/tests/mtd-env-wiring.sh` holds
+both halves to that, and `hosted/tests/mtd-env-wiring-negative.sh` proves
+the gate can fail.
+
+Concretely, on the hosted box:
+
+| Setting | Read by | Provided by | Lives in |
+| --- | --- | --- | --- |
+| `HMRC_MTD_CLIENT_ID` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (the operator fills it in) |
+| `HMRC_MTD_CLIENT_SECRET` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` |
+| `HMRC_MTD_REDIRECT_URI` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (empty → derived from the app's address) |
+| `HMRC_ENV` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (`sandbox` or `production`) |
+| `NEXT_PUBLIC_APP_URL` | `src/lib/requests.ts`, `src/lib/accounting/mtd.ts` | `write-app-env.sh` | `app.env` |
+
+**Why.** A variable that is *set* under one spelling and *read* under
+another does not fail — it is ignored, and the application carries on with
+its fallback. That is a silent failure with no error message anywhere, and
+it is exactly what happened: the handover told the operator to set
+`MTD_CLIENT_ID`, the code read `HMRC_MTD_CLIENT_ID`, the value arrived on
+the box and was never read. The HMRC page said "not connected", and nothing
+said why. The redirect URI pointed at `/admin/accounting/mtd/callback` — a
+page a person clicks — when the route that receives the authorisation code
+is `/api/v1/accounting/mtd/callback`; and the application's own address was
+provided by nothing, so HMRC's redirect was built from a fallback of
+`http://localhost:3000`.
+
+**Why one writer.** `app.env` is written from two moments: the box being
+provisioned, and the box being given its real hostname. When two scripts
+wrote it, they wrote it differently — the second silently undid the first,
+and the file was written only when absent, so the promise that a rotated
+database password takes effect on the next install was false. One script
+(`hosted/bootstrap/write-app-env.sh`), called by both, cannot drift. The
+values that are the *operator's* — the HMRC credentials, the B2 keys — are
+not in that file and are never rewritten by it.
+
+**Why the address is a run-time value.** `NEXT_PUBLIC_*` is replaced with
+its literal value when it is present in the environment at build time, in
+the server bundle as well as the browser's. A committed `.env` carrying the
+address would therefore be compiled into the deployed bundle, and the
+address the box is configured with at run time would be ignored. The
+setting is read on the server only, so it is a run-time value, and the
+gate checks that no committed environment file sets it.
+
+### D14 — The build removes its own output directory, without following it
+
+**Decision.** `scripts/clean-dist-dir.mjs` removes `.next` before Next starts,
+and it does that by **unlinking a symlink rather than walking into it**. It
+runs on both build paths: `hosted/scripts/build-app.mjs` (the hosted and
+standalone builds) and `package.json`'s `prebuild` (the plain `pnpm build`).
+`tests/unit/clean-dist-dir.test.ts` pins both halves — that Next's own clean
+step really does empty the target, and that ours does not.
+
+**Why.** `next build` clears `.next` at the start, using a routine that
+follows directory symlinks into their targets and unlinks the real files
+behind them. A standalone build leaves `node_modules` inside `.next` as
+symlinks back into the project's own `node_modules`, so the **second** build
+in the same tree deleted the packages it was about to be built against: the
+directories survived, empty, and every import through them failed with
+"Cannot find module".
+
+Two things made this worse than an ordinary build failure. On a box with no
+other checkout above it, Node's module resolution walks *up* past a dangling
+link — so on a developer machine the tests still passed while the build
+failed, and only on the box, with nothing above it to fall back on, did the
+deployment actually go down. And the operator's documented update is a build
+(`hosted/scripts/deploy-app.sh` runs one), so the second update of a live
+installation would have broken it — on the one machine where there is no
+other checkout to fall back to.
+
+**Why the routine is ours and not a flag.** Next offers no switch for this:
+the clean step is unconditional, and `cleanDistDir: false` would leave the
+previous build's output in place, which is the state that made the failure
+hard to see in the first place. Removing the directory ourselves, first, and
+in a way that unlinks a symlink rather than following it, makes the hazard
+impossible rather than unlikely — and it is the same routine in both build
+paths, so the two cannot drift.
+
+### D15 — A deployment stands on its own
+
+**Decision.** Every link in the deployed application's `node_modules` points
+at a path **inside the deployed tree**. The build rewrites the standalone
+output's links onto the copies the output already holds, as paths relative
+to the link itself, and the deploy refuses to install a staged tree that
+still has a link pointing out of itself.
+(`scripts/rebase-standalone-symlinks.mjs`, pinned by
+`tests/unit/standalone-symlinks.test.ts`.)
+
+**Why.** Next writes the standalone output's `node_modules` as symlinks into
+the **build checkout's** `node_modules/.pnpm` tree — it copies a symlink as a
+symlink, so the link carries the build machine's absolute path. On the box
+the build happens at `/opt/brownhill/repo` and the application is deployed to
+`/var/lib/brownhill/app`, so every link pointed back into the build
+checkout: the tree that is supposed to *be* the deployment was really a
+deployment plus a dependency on a directory it was never told about.
+
+The sharp edge is an update that **fails**. `deploy-app.sh` installs
+dependencies before it builds, and a `pnpm install` after a lockfile change
+prunes the `.pnpm` directories the previous version resolved through. The
+previous deployment is still in place at that moment — the staging only
+happens after a successful build — but its links point into store
+directories the install has just removed. **A failed update takes the running
+application down with it**, which is the one outcome an update must never
+have. The window is small and the symptom is far away from the cause: the
+deploy reports a build error, and the box stops serving.
+
+**Why relative, and why not a copy.** The standalone output already holds a
+real copy of every package its links name — Next copies each package's
+traced files into `node_modules/.pnpm/<pkg>/node_modules/<pkg>` and then
+writes the links beside them. So the link can be pointed at that copy
+instead, and it can be a path *relative to the link*, which is what lets the
+tree be copied from the staging directory into place and still resolve.
+Nothing is duplicated: the deployed tree is the same size it was.
+
+**Why the deploy refuses.** The rewrite is a claim about another program's
+output. If a future version of Next lays the output out differently, the
+rewrite would find nothing to point at — and a link left pointing out of the
+tree is exactly the failure this decision exists to remove. So the rewrite
+fails when it cannot do its job, and the deploy checks the staged tree
+again, independently, before installing it. A deployment that cannot be made
+self-contained is not deployed; the previous build keeps running.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -357,7 +482,7 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 473 passing, 2 skipped, 34 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset |
+| Unit | `pnpm test` | 489 passing, 2 skipped, 35 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |

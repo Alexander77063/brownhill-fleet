@@ -115,7 +115,7 @@ You do **not** need Docker, a database server of your own, or any external monit
 
 ## 3. Five secrets you will own and seed into the box
 
-These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre-fill them, but production operations prefer a human-owned value. The five files are at `/etc/brownhill/secrets/` with mode `0640` and the corresponding service user as the owner. The format is the Linux convention `KEY=value` (one per file, since `set -a; source /etc/brownhill/secrets/*.env; set +a` is the standard way to load them).
+These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre-fill them, but production operations prefer a human-owned value. The files are at `/etc/brownhill/secrets/` with mode `0640` and the corresponding service user as the owner. The format is the Linux convention `KEY=value` (one per file, since `set -a; source /etc/brownhill/secrets/*.env; set +a` is the standard way to load them).
 
 | File | Variable | Use |
 | --- | --- | --- |
@@ -123,7 +123,15 @@ These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre
 | `jwt.env` | `JWT_SHARED_SECRET` | HS256 secret that signs the issued access/refresh JWTs **and** verifies them at PostgREST. Same value on both sides by design. |
 | `bootstrap.env` | `BOOTSTRAP_TOKEN` | HMAC key for the `/api/v1/bootstrap` first-run endpoint. Only used **once**, on the day the owner account is created. After that the row in `app_state` flips and the token is no longer accepted. |
 | `backup.env` | `BACKBLAZE_B2_KEY_ID`, `BACKBLAZE_B2_APPLICATION_KEY`, `BACKBLAZE_B2_BUCKET` | B2 credential for nightly off-host backups. |
-| `backup.env` (continued) | `BROWNHILL_FQDN` | The FQDN above; used as the B2 path prefix. |
+| `backup.env` (continued) | `BROWNHILL_FQDN` | The FQDN above; used as the B2 path prefix, and the source of the deployment's own address (see `app.env` below). |
+
+Two more files live in the same directory. They are not yours to seed — one is
+written for you, one is optional:
+
+| File | Written by | Use |
+| --- | --- | --- |
+| `app.env` | `install.sh`, and again by `substitute-fqdn.sh` | The application's own run-time environment: `DATABASE_URL`, `BOOTSTRAP_TOKEN`, `POSTGREST_URL` and `NEXT_PUBLIC_APP_URL`. **Rewritten on every `install.sh` run**, so a rotated database password takes effect on the next install rather than needing a hand edit. `NEXT_PUBLIC_APP_URL` follows `BROWNHILL_FQDN`. |
+| `mtd.env` | `install.sh` creates it empty; you fill it in | The HMRC Making Tax Digital credentials — `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`, `HMRC_ENV`. Optional: without it the application starts and the HMRC page says the connection is not configured. See Appendix A, Step A.1. |
 
 `hosted/bootstrap/operator-secrets.example` is a template you can copy and fill in. Once filled, drop it onto the box at `/etc/brownhill/secrets/` (renamed to remove `.example`) before `install.sh`. The default behaviour is to **generate** secrets at install time if your file is absent.
 
@@ -377,6 +385,15 @@ hand-run sequence deployed nothing:
   the repository and restarting the service leaves the service running the
   *previous* build.
 
+It also **checks the staged tree before it installs it**, and refuses if the
+deployed application would depend on the build checkout to resolve its own
+packages. A standalone build writes `node_modules` into its output as
+symlinks into the build checkout's store, carrying that checkout's absolute
+path; the build rewrites them onto the copies the output already holds, so
+`/var/lib/brownhill/app` stands on its own. If that ever stops being true,
+the update **stops and leaves the running application alone** — it does not
+install a tree that would break the next time the checkout is cleaned up.
+
 The previous build is kept at `/var/lib/brownhill/app.previous` until the new
 one is in place, and the script prints the rollback command if the restart
 fails.
@@ -588,12 +605,36 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
 ### Step A.1 — Register with HMRC MTD sandbox
 
 1. Register an app at `developer.service.hmrc.gov.uk`.
-2. Receive a `client_id` + `client_secret` + a `redirect_uri` (use `https://brownhill.<your-host>/admin/accounting/mtd/callback`).
-3. Drop them onto the box at `/etc/brownhill/secrets/mtd.env`:
+2. Receive a `client_id` and a `client_secret`. The **redirect URI** is not
+   something HMRC chooses — it is the URL HMRC sends the authorisation code
+   back to, so it has to be the one this deployment actually serves:
+
    ```
-   MTD_CLIENT_ID=<client_id>
-   MTD_CLIENT_SECRET=<client_secret>
-   MTD_REDIRECT_URI=https://brownhill.<your-host>/admin/accounting/mtd/callback
+   https://<your-host>/api/v1/accounting/mtd/callback
+   ```
+
+   `/admin/accounting/mtd` is the settings page a person clicks on. The
+   callback is an API route beneath `/api/v1/accounting/mtd/`, and a redirect
+   URI pointing at the page never comes back with a code.
+3. Fill them into `/etc/brownhill/secrets/mtd.env` on the box. `install.sh`
+   creates that file with empty values; these are the names the application
+   reads:
+   ```
+   HMRC_MTD_CLIENT_ID=<client_id>
+   HMRC_MTD_CLIENT_SECRET=<client_secret>
+   HMRC_MTD_REDIRECT_URI=https://<your-host>/api/v1/accounting/mtd/callback
+   HMRC_ENV=sandbox
+   ```
+   - `HMRC_MTD_REDIRECT_URI` may be left **empty**: the application then
+     derives it from the deployment's own address, which is the same URL.
+   - `HMRC_ENV` is `sandbox` while you are testing against HMRC's sandbox,
+     and `production` once you are filing live returns. Set it explicitly
+     rather than relying on the default.
+   - The file is optional. Without it the application starts, and the HMRC
+     settings page says the connection is not configured.
+4. Restart the application so it picks the file up:
+   ```
+   sudo systemctl restart brownhill-next.service
    ```
 
 ### Step A.2 — Complete the OAuth consent (operator-paste-the-code in v1)
@@ -601,7 +642,7 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
 1. In the Brownhill app, navigate to `/admin/accounting/mtd` and click **Connect to HMRC**.
 2. The consent screen redirects to HMRC; the operator signs in with their Government Gateway credentials and grants the app access to VAT filings.
 3. On the consent screen's "code" parameter URL, copy the `code` value.
-4. The app's callback handler (the SaaS team wires this) accepts the code and exchanges it for tokens via `submitVatReturn`'s `exchangeCodeForTokens`. Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in `src/lib/accounting/mtd.ts`.
+4. The app's callback handler — `src/app/api/v1/accounting/mtd/[action]/route.ts`, the `callback` action — accepts the code and exchanges it for tokens via `submitVatReturn`'s `exchangeCodeForTokens`. Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in `src/lib/accounting/mtd.ts`. This handler ships in this repository; nothing further has to be wired.
 
 ### Step A.3 — Submit a VAT return
 
