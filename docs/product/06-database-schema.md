@@ -645,8 +645,14 @@ that was renamed for the Nigerian programme. Filing a UK return against the
 has its own column and its own field.
 
 The number is per tenant, because a tenant is the thing that files returns.
-The installation-wide `HMRC_MTD_VRN` is only the fallback for a box serving
-one tenant, and the tenant's own value wins.
+The installation-wide `HMRC_MTD_VRN` is a **default one tenant adopts**, not
+a fallback at filing time: the first tenant to connect to HMRC adopts it,
+and no other tenant can take it. A VAT registration number belongs to one
+organisation, so two tenants filing under the same number would be a
+duplicate return at HMRC and one tenant's figures on another's record.
+`setVrn` refuses a number another tenant already holds, the adoption is
+serialised with an advisory lock, and the filing path reads the tenant's own
+column and nothing else.
 
 ## 6. Other invariants worth knowing
 

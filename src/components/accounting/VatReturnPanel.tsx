@@ -20,7 +20,7 @@
 // always fails teaches the operator to ignore it.
 
 import { aggregateVatReturn } from '@/lib/accounting/mtd-box';
-import { loadCredentialMeta } from '@/lib/accounting/mtd';
+import { loadVrnStatus } from '@/lib/accounting/mtd';
 import SubmitVatReturnButton from './SubmitVatReturnButton';
 
 export interface VatReturnPanelProps {
@@ -47,14 +47,14 @@ export default async function VatReturnPanel({
   canSubmit,
 }: VatReturnPanelProps) {
   const boxes = await aggregateVatReturn(tenantId, year, month);
-  const creds = await loadCredentialMeta(tenantId);
-  const connected = !!creds;
+  const vrnStatus = await loadVrnStatus(tenantId);
+  const connected = vrnStatus.connected;
   const period = `${year}-${String(month).padStart(2, '0')}`;
 
-  // The VAT registration number the return is filed against. The tenant's own
-  // connection carries it; HMRC_MTD_VRN is the install-level fallback for a
-  // single-tenant install that does not type it in.
-  const vrn = creds?.vrn?.trim() || process.env.HMRC_MTD_VRN?.trim() || null;
+  // The VAT registration number the return is filed against. It is the
+  // TENANT'S OWN — the return is never filed under the installation's
+  // default number unless this tenant has adopted it.
+  const vrn = vrnStatus.vrn;
 
   return (
     <>
@@ -84,6 +84,13 @@ export default async function VatReturnPanel({
             <a href={connectHref} className="underline">
               Add the VAT registration number
             </a>
+            {vrnStatus.installVrn && vrnStatus.installVrnAvailable && (
+              <>
+                {' '}
+                This installation is configured with <span className="font-mono">{vrnStatus.installVrn}</span> — save it
+                on the HMRC page to file this tenant&apos;s returns under it.
+              </>
+            )}
             .
           </p>
         </div>

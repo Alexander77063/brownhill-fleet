@@ -86,6 +86,68 @@ native_path() {
 
 is_box() { [[ -d "$BROWNHILL_BOX_DIR" ]]; }
 
+# The signing secret the RUNNING application uses.
+#
+# The proof presents a bearer token to the application's own middleware, so
+# the token has to be signed with the secret that application signs with —
+# anything else is a token signed with the wrong key, which looks exactly
+# like an application that refuses every request.
+#
+# So the secret is read from wherever the application reads it from, in the
+# application's own order of preference:
+#
+#   1. the environment, when the caller exported one;
+#   2. on the deployed box, the file the systemd unit reads
+#      (`/etc/brownhill/secrets/jwt.env`, or `app.env`);
+#   3. against the compose stack, the running container's own environment.
+#
+# It is never invented. A proof that signs with a secret of its own would
+# assert against a key nothing else knows, and the assertion would only ever
+# be able to fail — or, worse, pass for the wrong reason.
+#
+# This used to fall back to a fixed string that is in this repository. The
+# middleware does not verify signatures, so that string produced a working
+# session for any user in any tenant, and the proof's tenant assertion was
+# passing on a key nobody had configured. The minter now refuses to sign
+# without a secret, so this has to find the real one.
+load_signing_secret() {
+  if [[ -n "${JWT_SHARED_SECRET:-}" ]]; then
+    echo "$JWT_SHARED_SECRET"
+    return 0
+  fi
+
+  local candidate
+  for candidate in /etc/brownhill/secrets/jwt.env /etc/brownhill/secrets/app.env; do
+    if [[ -f "$candidate" ]] && grep -qE '^(JWT_SHARED_SECRET|LOCAL_JWT_SECRET)=' "$candidate"; then
+      sed -n 's/^\(JWT_SHARED_SECRET\|LOCAL_JWT_SECRET\)=\(.*\)$/\2/p' "$candidate" | head -1
+      return 0
+    fi
+  done
+
+  # The compose stack's own container. Same read the chaos drills do — the
+  # same compose file, the same service — so the proof and the drills cannot
+  # disagree about the secret.
+  if command -v docker >/dev/null 2>&1; then
+    local cid=""
+    local compose_file="$REPO/hosted/dev/docker-compose.yml"
+    if [[ -f "$compose_file" ]]; then
+      cid="$(docker compose -f "$compose_file" ps -q next 2>/dev/null | head -1)"
+    fi
+    if [[ -z "$cid" ]]; then
+      # A stack brought up under another project name. The compose service
+      # label is what identifies it, whatever the project was called.
+      cid="$(docker ps --filter 'label=com.docker.compose.service=next' --format '{{.ID}}' 2>/dev/null | head -1)"
+    fi
+    if [[ -n "$cid" ]]; then
+      docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | sed -n 's/^\(JWT_SHARED_SECRET\|LOCAL_JWT_SECRET\)=//p' | head -1
+      return 0
+    fi
+  fi
+
+  echo ""
+}
+
 # An assertion that only means something on the deployed box. Off the box it
 # skips, with the reason. On a job that was told it must be on the box, a
 # missing box is a failure — a job that silently skips its whole point is
@@ -242,22 +304,34 @@ else
   # The minter is called as plain `node` — it works out for itself which
   # TypeScript flags this Node needs, so the caller does not have to know
   # that they moved between releases.
-  JWT=$(node "$(native_path "$REPO/hosted/tests/auth/mint-test-jwt.mjs")" \
-        "tenant-A" "${JWT_SHARED_SECRET:-}" 2>"$TMP/mint.err")
-  if [[ -z "$JWT" ]]; then
-    bad "15: could not mint a test token with the application's own signer — $(cat "$TMP/mint.err")"
+  #
+  # The secret goes in the ENVIRONMENT. It used to go in the arguments, which
+  # put the deployment's signing secret into /proc/<pid>/cmdline — readable by
+  # every account on the box.
+  #
+  # And it is the secret the running application signs with, read from
+  # wherever that application reads it from — never one this script made up.
+  proof_secret="$(load_signing_secret)"
+  if [[ -z "$proof_secret" ]]; then
+    bad "15: could not find the application's signing secret (looked in the environment, /etc/brownhill/secrets/jwt.env, /etc/brownhill/secrets/app.env and the running container)"
   else
-    mismatch_http=$(curl -sk -o /dev/null -w '%{http_code}' \
-      -H "authorization: Bearer $JWT" \
-      "https://$NGX:$PORT_HTTPS/t/other-tenant/dashboard" || echo 000)
-    if [[ "$mismatch_http" == "403" ]]; then ok "15a: a token for one tenant is refused against another (403)"
-    else bad "15a expected 403, got $mismatch_http"; fi
+    JWT=$(MINT_JWT_SECRET="$proof_secret" node "$(native_path "$REPO/hosted/tests/auth/mint-test-jwt.mjs")" \
+          "tenant-A" 2>"$TMP/mint.err")
+    if [[ -z "$JWT" ]]; then
+      bad "15: could not mint a test token with the application's own signer — $(cat "$TMP/mint.err")"
+    else
+      mismatch_http=$(curl -sk -o /dev/null -w '%{http_code}' \
+        -H "authorization: Bearer $JWT" \
+        "https://$NGX:$PORT_HTTPS/t/other-tenant/dashboard" || echo 000)
+      if [[ "$mismatch_http" == "403" ]]; then ok "15a: a token for one tenant is refused against another (403)"
+      else bad "15a expected 403, got $mismatch_http"; fi
 
-    match_http=$(curl -sk -o /dev/null -w '%{http_code}' \
-      -H "authorization: Bearer $JWT" \
-      "https://$NGX:$PORT_HTTPS/t/tenant-A/dashboard" || echo 000)
-    if [[ "$match_http" != "403" ]]; then ok "15b: the same token is not refused against its own tenant ($match_http)"
-    else bad "15b: the token was refused against its own tenant too — this is not a tenant check"; fi
+      match_http=$(curl -sk -o /dev/null -w '%{http_code}' \
+        -H "authorization: Bearer $JWT" \
+        "https://$NGX:$PORT_HTTPS/t/tenant-A/dashboard" || echo 000)
+      if [[ "$match_http" != "403" ]]; then ok "15b: the same token is not refused against its own tenant ($match_http)"
+      else bad "15b: the token was refused against its own tenant too — this is not a tenant check"; fi
+    fi
   fi
 fi
 

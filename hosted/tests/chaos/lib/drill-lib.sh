@@ -967,10 +967,21 @@ drill_cleanup() {
 # A token hand-rolled here would be a different kind of credential, and a
 # drill that authenticates by a different path than the product does is not
 # testing the product.
+#
+# THE SECRET GOES IN THE ENVIRONMENT, NOT IN THE ARGUMENTS.
+#
+# On the deployed box, DRILL_JWT_SECRET is the deployment's REAL signing
+# secret — read out of /etc/brownhill/secrets/ — and a token minted with it
+# is a session for any user in any tenant. A command line is the wrong place
+# for it: /proc/<pid>/cmdline is world-readable on Linux, so any account on
+# the box could read the argument out of the process list while the drill
+# was running. /proc/<pid>/environ is readable only by the process's own
+# user and by root, so the environment is where a secret belongs.
 mint_token_for() {
   local subject="$1" token
-  token="$("$DRILL_NODE" "$DRILL_REPO/hosted/tests/auth/mint-test-jwt.mjs" \
-    "$DRILL_TENANT_ID" "$DRILL_JWT_SECRET" "$subject" 2>"$DRILL_TMP/mint.err")" || {
+  token="$(MINT_JWT_SECRET="$DRILL_JWT_SECRET" "$DRILL_NODE" \
+    "$DRILL_REPO/hosted/tests/auth/mint-test-jwt.mjs" \
+    "$DRILL_TENANT_ID" "$subject" 2>"$DRILL_TMP/mint.err")" || {
     cat "$DRILL_TMP/mint.err" >&2
     fail "could not mint a session token"
   }

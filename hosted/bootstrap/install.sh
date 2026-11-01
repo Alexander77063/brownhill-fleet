@@ -237,9 +237,13 @@ hosted/bootstrap/write-app-env.sh /etc/brownhill/secrets
 # It was nowhere: no column, no setting, no field, so there was no way to
 # say which organisation a return belonged to. The tenant can set its own
 # number on the MTD page, which is the better answer for a multi-tenant
-# deployment; this is the installation-wide fallback for a box that serves one
-# tenant. Empty means "no number", and the application then refuses to file
-# rather than filing against the wrong organisation.
+# deployment; this is the installation-wide DEFAULT. The first tenant to
+# connect to HMRC adopts it — by saving it on the MTD page, or by having it
+# set here before that tenant connects — and no other tenant can take it
+# afterwards, because a VAT registration number belongs to one organisation.
+# It is never used behind a tenant's back: a return is always filed under the
+# tenant's own number. Empty means "no number", and the application then
+# refuses to file rather than filing against the wrong organisation.
 #
 # HMRC_MTD_BASE_URL is the HMRC endpoint. Empty means HMRC's own sandbox (or
 # production, per HMRC_ENV). It exists so the chaos drills can point the
@@ -258,7 +262,9 @@ if [[ ! -f /etc/brownhill/secrets/mtd.env ]]; then
   echo "      credentials. The HMRC connection stays unconnected until you" >&2
   echo "      fill them in and restart brownhill-next.service." >&2
   echo "      Set HMRC_MTD_VRN to this tenant's VAT registration number, or" >&2
-  echo "      set it on the MTD page once the tenant is connected." >&2
+  echo "      set it on the MTD page once the tenant is connected. It is" >&2
+  echo "      the installation's default: the first tenant to connect adopts" >&2
+  echo "      it, and no other tenant can take it afterwards." >&2
 fi
 
 # The B2 credentials are the operator's to supply — they cannot be generated.

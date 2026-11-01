@@ -31,7 +31,8 @@
 // THE STATUSES
 // ------------
 //   200  HMRC accepted the return. The body carries HMRC's correlation id.
-//   409  The period is closed. Nothing was sent to HMRC.
+//   409  The period is closed, the return has already been filed, or another
+//        filing of the same period is in hand. Nothing was sent to HMRC.
 //   422  HMRC refused the return. The body carries HMRC's own words.
 //   428  The tenant cannot file: no connection, no VAT registration number,
 //        or a token that could not be refreshed. The body says which.
@@ -48,11 +49,14 @@ import { periodRefusal } from '@/lib/accounting/periods';
 import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
-  loadCredentialMeta,
+  loadVrnStatus,
+  MtdAlreadyFiledError,
+  MtdFilingInProgressError,
   MtdNotConnectedError,
   MtdRejectedError,
   MtdUnauthorizedError,
   MtdUnreachableError,
+  MtdVrnInUseError,
   parseVrn,
   persistCredentials,
   readMtdConfig,
@@ -191,16 +195,15 @@ export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ action
 
   if (action === 'vrn') {
     // The VAT registration number the return is filed against. It lives on
-    // the connection row, and the install-level HMRC_MTD_VRN is the
-    // fallback for a single-tenant install that does not type it in.
-    const creds = await loadCredentialMeta(ctx.tenantId);
-    const tenantVrn = creds?.vrn?.trim() || null;
-    const installVrn = process.env.HMRC_MTD_VRN?.trim() || null;
-    return NextResponse.json({
-      vrn: tenantVrn ?? installVrn,
-      source: tenantVrn ? 'tenant' : installVrn ? 'install' : null,
-      connected: creds !== null,
-    });
+    // the connection row, and it is the TENANT'S OWN.
+    //
+    // The installation-wide HMRC_MTD_VRN is a default one tenant adopts when
+    // it connects — it is not a fallback at filing time, and it is not
+    // available once another tenant holds it. Reporting it as the tenant's
+    // number would tell the operator their return is going out under a
+    // number it will not go out under.
+    const status = await loadVrnStatus(ctx.tenantId);
+    return NextResponse.json(status);
   }
 
   return NextResponse.json({ error: `unknown mtd action: ${action}` }, { status: 404 });
@@ -233,11 +236,17 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
       // C2 fix: real session user/tenant. Previously `'placeholder'` strings
       // failed FK on accounting.journal_entries.posted_by_user_id and rolled
       // back every submit.
+      //
+      // `force` is only ever present when the operator asked for it. It
+      // takes over a filing that started and never finished — never one that
+      // HMRC has accepted, and never one that is still running.
+      const force = url.searchParams.get('force') === '1';
       const outcome = await submitVatReturn({
         year,
         month,
         userId: ctx.userId,
         tenantId: ctx.tenantId,
+        ...(force ? { force: true } : {}),
       });
       return NextResponse.json({
         ok: true,
@@ -252,6 +261,25 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
       const refusal = periodRefusal(e);
       if (refusal) {
         return NextResponse.json(refusal.body, { status: refusal.status });
+      }
+      // The return has already been filed. HMRC takes one return per period,
+      // so a second one would be a duplicate return and a second posting.
+      // The reference HMRC gave is carried with the refusal: it is the one
+      // thing the operator needs to talk to HMRC about.
+      if (e instanceof MtdAlreadyFiledError) {
+        return NextResponse.json(
+          { error: e.message, code: 'already_filed', correlationId: e.correlationId },
+          { status: 409 },
+        );
+      }
+      // Another filing of this period is in hand. `canForce` says whether
+      // the operator can take it over — which they can only do once it has
+      // died, not while it is still working.
+      if (e instanceof MtdFilingInProgressError) {
+        return NextResponse.json(
+          { error: e.message, code: 'filing_in_progress', canForce: e.canForce },
+          { status: 409 },
+        );
       }
       // The tenant cannot file: no connection, no VAT registration number,
       // or a token HMRC would not take. The body says which, because the
@@ -309,7 +337,22 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
     // The VRN lives on the connection row. A tenant that has never
     // connected has nothing to attach it to, and saying "saved" for a write
     // that changed nothing would be a lie.
-    const saved = await setVrn(ctx.tenantId, parsed.vrn);
+    //
+    // A number another tenant already holds is refused: a VAT registration
+    // number belongs to one organisation, and two tenants filing under it
+    // would be a duplicate return at HMRC.
+    let saved = false;
+    try {
+      saved = await setVrn(ctx.tenantId, parsed.vrn);
+    } catch (e) {
+      if (e instanceof MtdVrnInUseError) {
+        console.warn(
+          `[mtd/vrn] tenant ${ctx.tenantId} tried to take a VAT registration number held by tenant ${e.holderTenantId}`,
+        );
+        return mtdRedirect(req, returnTo, 'vrn-in-use');
+      }
+      throw e;
+    }
     if (!saved) {
       return mtdRedirect(req, returnTo, 'vrn-not-connected');
     }

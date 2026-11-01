@@ -50,7 +50,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { localDb } from '@/lib/auth/local-store';
 import { openPeriod } from '@/lib/accounting/periods';
-import { decryptToken, persistCredentials, submitVatReturn } from '@/lib/accounting/mtd';
+import { decryptToken, loadVrnStatus, persistCredentials, setVrn, submitVatReturn } from '@/lib/accounting/mtd';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -73,6 +73,14 @@ const MONTHS = {
   refresh: 5,
   expired: 6,
   retry: 7,
+  /** The install-wide VRN must not be filed against on its own. */
+  installDefault: 8,
+  /** A return HMRC has already taken must not be filed twice. */
+  duplicate: 9,
+  /** A second filing while the first is still in flight. */
+  concurrent: 10,
+  /** A filing that started and never finished. */
+  stale: 11,
 } as const;
 
 const ALL_MONTHS = Object.values(MONTHS);
@@ -129,6 +137,15 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
   const slug = `mtd-${tenantId.slice(0, 8)}`;
   const userId = randomUUID();
 
+  // Two more tenants, for the cases that are ABOUT more than one tenant.
+  //
+  // The installation-wide VAT registration number is only ever safe for one
+  // tenant, and the rule that keeps it that way is "the first tenant to
+  // connect adopts it; every tenant after that must bring its own". These two
+  // are the ones that prove it.
+  const adopterTenantId = randomUUID();
+  const laterTenantId = randomUUID();
+
   let state: StubState = freshState();
 
   beforeAll(async () => {
@@ -181,6 +198,14 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     await sql`
       insert into public.tenants (id, name, slug)
       values (${tenantId}::uuid, 'MTD submission test', ${slug})
+    `;
+    await sql`
+      insert into public.tenants (id, name, slug)
+      values (${adopterTenantId}::uuid, 'MTD adopter test', ${`mtd-adopt-${adopterTenantId.slice(0, 8)}`})
+    `;
+    await sql`
+      insert into public.tenants (id, name, slug)
+      values (${laterTenantId}::uuid, 'MTD later tenant test', ${`mtd-later-${laterTenantId.slice(0, 8)}`})
     `;
     await sql`
       insert into auth.users (id, email)
@@ -238,6 +263,8 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       await sql`delete from accounting.vat_submissions where tenant_id = ${tenantId}::uuid`;
       await sql`delete from accounting.journal_entries where tenant_id = ${tenantId}::uuid`;
       await sql`delete from accounting.firs_credentials where tenant_id = ${tenantId}::uuid`;
+      await sql`delete from accounting.firs_credentials where tenant_id in (${adopterTenantId}::uuid, ${laterTenantId}::uuid)`;
+      await sql`delete from public.tenants where id in (${adopterTenantId}::uuid, ${laterTenantId}::uuid)`;
       await sql`delete from public.invoices where tenant_id = ${tenantId}::uuid`;
       await sql`delete from public.agreements where tenant_id = ${tenantId}::uuid`;
       await sql`delete from public.vehicles where tenant_id = ${tenantId}::uuid`;
@@ -263,6 +290,38 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       expiresIn: 3600,
       vrn: opts.vrn === undefined ? VRN : opts.vrn,
     });
+  }
+
+  /**
+   * Give a tenant an HMRC connection.
+   *
+   * `vrn` is left out entirely when it is undefined — which is what the OAuth
+   * callback does, and what "this tenant has not been given a number yet"
+   * looks like to `persistCredentials`. It is different from an explicit
+   * `null`, which says "this tenant has no VAT registration number".
+   */
+  async function connectAs(
+    target: string,
+    opts: { vrn?: string | null } = {},
+  ): Promise<void> {
+    await persistCredentials({
+      tenantId: target,
+      mtdClientId: 'test-client',
+      mtdClientSecret: 'test-secret',
+      redirectUri: 'http://localhost:3000/api/v1/accounting/mtd/callback',
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+      expiresIn: 3600,
+      ...(opts.vrn === undefined ? {} : { vrn: opts.vrn }),
+    });
+  }
+
+  /** The VAT registration number a tenant's connection carries. */
+  async function vrnOf(target: string): Promise<string | null> {
+    const rows = (await sql`
+      select vrn from accounting.firs_credentials where tenant_id = ${target}::uuid
+    `) as Array<{ vrn: string | null }>;
+    return rows[0]?.vrn ?? null;
   }
 
   /** The submission row for a month. */
@@ -522,5 +581,229 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     const settled = await submission(MONTHS.retry);
     expect(settled.status).toBe('rejected');
     expect(String(settled.response_payload?.reason ?? '')).toContain('The second attempt was refused.');
+  });
+
+  // ── 6. the installation-wide VAT registration number ──────────────────────
+  //
+  // `HMRC_MTD_VRN` is the number the OPERATOR typed into the installation's
+  // secret file. It is a DEFAULT for the tenant that adopts it — it is not a
+  // number every tenant on the box may file against.
+  //
+  // The old code fell back to it at FILE time:
+  //
+  //     const vrn = (credentials?.vrn ?? process.env.HMRC_MTD_VRN?.trim() ?? '').trim();
+  //
+  // so a tenant with no number of its own silently filed its return — its
+  // sales, its VAT — under whichever organisation the install happened to be
+  // configured for. Two tenants on one box, one of them filing under the
+  // other's VAT registration, is a filing against the wrong organisation and a
+  // disclosure of one tenant's figures to another.
+  //
+  // These cases pin the rule: the number belongs to the tenant that adopts
+  // it, and to nobody else.
+
+  it('does not file against the installation-wide VAT registration number', async () => {
+    state = freshState();
+    await connect();
+    // The tenant's own number is cleared — it has none of its own.
+    await setVrn(tenantId, null);
+    // The install has one.
+    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    const before = await journalCount();
+
+    try {
+      await expect(
+        submitVatReturn(
+          { year: YEAR, month: MONTHS.installDefault, userId, tenantId },
+          { baseUrl: stubUrl },
+        ),
+      ).rejects.toThrow(/VAT registration number/i);
+
+      // HMRC was never called, and nothing was written.
+      expect(state.paths).toHaveLength(0);
+      expect(await journalCountSince(before)).toBe(0);
+      expect(await submission(MONTHS.installDefault)).toBeUndefined();
+    } finally {
+      vi.stubEnv('HMRC_MTD_VRN', '');
+    }
+  });
+
+  it('adopts the installation-wide VAT registration number for the first tenant that connects', async () => {
+    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    try {
+      // The connection carries no number of its own — this is what the OAuth
+      // callback does.
+      await connectAs(adopterTenantId);
+      expect(await vrnOf(adopterTenantId)).toBe('999999999');
+    } finally {
+      vi.stubEnv('HMRC_MTD_VRN', '');
+    }
+  });
+
+  it('does not give the installation-wide number to a tenant that connects after another one has it', async () => {
+    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    try {
+      // The first tenant to connect adopts the installation's number.
+      await connectAs(adopterTenantId);
+      // The second one brings its own.
+      await connectAs(laterTenantId);
+      expect(await vrnOf(adopterTenantId)).toBe('999999999');
+      expect(await vrnOf(laterTenantId)).toBeNull();
+    } finally {
+      vi.stubEnv('HMRC_MTD_VRN', '');
+    }
+  });
+
+  it('refuses to save a VAT registration number another tenant already holds', async () => {
+    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    try {
+      await connectAs(adopterTenantId);
+      await connectAs(laterTenantId);
+
+      // The number belongs to the tenant that adopted it.
+      await expect(setVrn(laterTenantId, '999999999')).rejects.toThrow(/another tenant/i);
+      expect(await vrnOf(laterTenantId)).toBeNull();
+
+      // Its own number is accepted.
+      await expect(setVrn(laterTenantId, '111222333')).resolves.toBe(true);
+      expect(await vrnOf(laterTenantId)).toBe('111222333');
+    } finally {
+      vi.stubEnv('HMRC_MTD_VRN', '');
+    }
+  });
+
+  it('reports the number the return will be filed against, and the one on offer', async () => {
+    // The screens read this, and the submission acts on it. If the two
+    // disagree, the operator is told their return is going somewhere it is
+    // not going — which is the defect this whole rule exists to remove.
+
+    // A tenant connected with no installation default in place, and with no
+    // number of its own.
+    vi.stubEnv('HMRC_MTD_VRN', '');
+    await connectAs(laterTenantId);
+    await setVrn(laterTenantId, null);
+
+    // The installation is later configured with a number nobody holds.
+    vi.stubEnv('HMRC_MTD_VRN', '777777777');
+    try {
+      const onOffer = await loadVrnStatus(laterTenantId);
+      // Nothing of its own, so nothing to file under yet…
+      expect(onOffer.vrn).toBeNull();
+      expect(onOffer.connected).toBe(true);
+      // …and the installation's number is on offer to adopt.
+      expect(onOffer.installVrn).toBe('777777777');
+      expect(onOffer.installVrnAvailable).toBe(true);
+
+      // Once another tenant holds it, it is no longer on offer here.
+      await connectAs(adopterTenantId);
+      await setVrn(adopterTenantId, '777777777');
+      const taken = await loadVrnStatus(laterTenantId);
+      expect(taken.installVrn).toBe('777777777');
+      expect(taken.installVrnAvailable).toBe(false);
+    } finally {
+      vi.stubEnv('HMRC_MTD_VRN', '');
+    }
+  });
+
+  // ── 7. a return is filed once ────────────────────────────────────────────
+  //
+  // A VAT return is filed for a PERIOD, and HMRC takes one return per period.
+  // Filing the same period twice sends HMRC a second return and posts a
+  // second journal entry — the old code did both, because nothing stopped a
+  // second submission for a period that had already been accepted.
+
+  it('refuses to file a return HMRC has already accepted', async () => {
+    state = freshState();
+    await connect();
+    const before = await journalCount();
+
+    await submitVatReturn(
+      { year: YEAR, month: MONTHS.duplicate, userId, tenantId },
+      { baseUrl: stubUrl },
+    );
+    expect(state.paths).toHaveLength(1);
+    expect(await journalCountSince(before)).toBe(1);
+
+    await expect(
+      submitVatReturn(
+        { year: YEAR, month: MONTHS.duplicate, userId, tenantId },
+        { baseUrl: stubUrl },
+      ),
+    ).rejects.toThrow(/already been filed/i);
+
+    // HMRC was not asked a second time, and nothing was posted twice.
+    expect(state.paths).toHaveLength(1);
+    expect(await journalCountSince(before)).toBe(1);
+    const row = await submission(MONTHS.duplicate);
+    expect(row.status).toBe('submitted');
+    expect(row.hmtr_correlation_id).toBe('corr-default');
+  });
+
+  it('refuses a second filing while the first is still in flight', async () => {
+    state = freshState();
+    await connect();
+    const before = await journalCount();
+
+    state.hold = { reached: deferred(), release: deferred() };
+    const filing = submitVatReturn(
+      { year: YEAR, month: MONTHS.concurrent, userId, tenantId },
+      { baseUrl: stubUrl },
+    );
+    await state.hold.reached.promise;
+
+    await expect(
+      submitVatReturn(
+        { year: YEAR, month: MONTHS.concurrent, userId, tenantId },
+        { baseUrl: stubUrl },
+      ),
+    ).rejects.toThrow(/already in progress/i);
+
+    // Only one attempt reached HMRC.
+    expect(state.paths).toHaveLength(1);
+
+    state.hold.release.resolve();
+    await filing;
+
+    const row = await submission(MONTHS.concurrent);
+    expect(row.status).toBe('submitted');
+    expect(await journalCountSince(before)).toBe(1);
+  });
+
+  it('refuses a filing that never finished, until the operator forces it', async () => {
+    state = freshState();
+    await connect();
+    const before = await journalCount();
+
+    // A filing that started and never came back — the process died between
+    // the claim and the answer. HMRC may or may not have it.
+    await sql`
+      insert into accounting.vat_submissions
+        (tenant_id, period_id, hmtr_correlation_id, return_payload, response_payload,
+         status, submitted_at)
+      values (${tenantId}::uuid,
+              (select id from accounting.periods
+                where tenant_id = ${tenantId}::uuid and year = ${YEAR} and month = ${MONTHS.stale}),
+              '', ${sql.json({ periodKey: 'stale' })}::jsonb, null,
+              'pending_submission'::accounting.vat_submission_status,
+              now() - interval '2 hours')
+    `;
+
+    // The filing is not silently repeated.
+    await expect(
+      submitVatReturn(
+        { year: YEAR, month: MONTHS.stale, userId, tenantId },
+        { baseUrl: stubUrl },
+      ),
+    ).rejects.toThrow(/never finished/i);
+    expect(state.paths).toHaveLength(0);
+
+    // The operator can force it, once they are sure HMRC never got it.
+    await submitVatReturn(
+      { year: YEAR, month: MONTHS.stale, userId, tenantId, force: true },
+      { baseUrl: stubUrl },
+    );
+    const row = await submission(MONTHS.stale);
+    expect(row.status).toBe('submitted');
+    expect(await journalCountSince(before)).toBe(1);
   });
 });

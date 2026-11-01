@@ -26,6 +26,19 @@
 // A return HMRC has accepted cannot be taken back, so the button is disabled
 // once a return has been filed for the period: pressing it again would file
 // a second return for the same period.
+//
+// THE TWO 409s
+// ------------
+// Filing the same period twice is refused, and the two refusals mean
+// different things to the operator:
+//
+//   * 'already_filed' — HMRC has this return. There is nothing to do. Filing
+//     it again would be a duplicate return at HMRC and a second posting in
+//     the books.
+//   * 'filing_in_progress' — either the filing is still running, or it
+//     started and never finished. Only the second can be taken over, and
+//     only deliberately: an attempt that died may have reached HMRC, so the
+//     operator is asked to check HMRC's filing history first.
 
 import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -39,6 +52,14 @@ export interface SubmitVatReturnButtonProps {
 /** What the button is doing. */
 type Phase = 'idle' | 'submitting' | 'submitted' | 'failed';
 
+/** The body the submit route answers with. */
+interface SubmitBody {
+  error?: string;
+  correlationId?: string;
+  code?: string;
+  canForce?: boolean;
+}
+
 export default function SubmitVatReturnButton({ year, month }: SubmitVatReturnButtonProps) {
   const router = useRouter();
   const period = `${year}-${String(month).padStart(2, '0')}`;
@@ -46,38 +67,45 @@ export default function SubmitVatReturnButton({ year, month }: SubmitVatReturnBu
   const [phase, setPhase] = useState<Phase>('idle');
   const [message, setMessage] = useState<string | null>(null);
   const [reference, setReference] = useState<string | null>(null);
+  // True only when a filing died without an answer — the one case where the
+  // operator may deliberately take over.
+  const [canForce, setCanForce] = useState(false);
 
-  const submit = useCallback(async () => {
-    setPhase('submitting');
-    setMessage(null);
-    setReference(null);
+  const submit = useCallback(
+    async (force = false) => {
+      setPhase('submitting');
+      setMessage(null);
+      setReference(null);
 
-    try {
-      const res = await fetch(`/api/v1/accounting/mtd/submit?period=${period}`, {
-        method: 'POST',
-      });
-      // The body is JSON on every path this route produces, but a proxy or a
-      // crash can produce something else — and a parse failure must not turn
-      // into an unhandled rejection that leaves the button spinning forever.
-      const json = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        correlationId?: string;
-      };
+      try {
+        const res = await fetch(
+          `/api/v1/accounting/mtd/submit?period=${period}${force ? '&force=1' : ''}`,
+          { method: 'POST' },
+        );
+        // The body is JSON on every path this route produces, but a proxy or a
+        // crash can produce something else — and a parse failure must not turn
+        // into an unhandled rejection that leaves the button spinning forever.
+        const json = (await res.json().catch(() => ({}))) as SubmitBody;
 
-      if (res.ok) {
-        setPhase('submitted');
-        setReference(json.correlationId ?? null);
-        router.refresh();
-        return;
+        if (res.ok) {
+          setPhase('submitted');
+          setReference(json.correlationId ?? null);
+          setCanForce(false);
+          router.refresh();
+          return;
+        }
+
+        setPhase('failed');
+        setMessage(json.error ?? 'The return could not be filed.');
+        setCanForce(res.status === 409 && json.code === 'filing_in_progress' && json.canForce === true);
+      } catch {
+        setPhase('failed');
+        setMessage('Could not reach the server. The return was not filed — try again.');
+        setCanForce(false);
       }
-
-      setPhase('failed');
-      setMessage(json.error ?? 'The return could not be filed.');
-    } catch {
-      setPhase('failed');
-      setMessage('Could not reach the server. The return was not filed — try again.');
-    }
-  }, [period, router]);
+    },
+    [period, router],
+  );
 
   if (phase === 'submitted') {
     return (
@@ -117,11 +145,28 @@ export default function SubmitVatReturnButton({ year, month }: SubmitVatReturnBu
         type="button"
         variant="primary"
         size="md"
-        onClick={submit}
+        onClick={() => submit(false)}
         disabled={phase === 'submitting'}
       >
         {phase === 'submitting' ? 'Filing with HMRC…' : 'Submit to HMRC'}
       </Button>
+      {canForce && (
+        <div className="mt-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => submit(true)}
+            disabled={phase === 'submitting'}
+          >
+            File it again
+          </Button>
+          <p className="mt-1 text-sm text-muted">
+            Only do this once you have checked HMRC&rsquo;s filing history for {period}. If HMRC
+            never received the earlier attempt, this files it for the first time.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

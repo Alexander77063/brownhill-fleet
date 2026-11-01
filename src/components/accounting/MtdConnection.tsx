@@ -21,7 +21,7 @@
 // the Nigerian programme. Filing a UK return against it would file it against
 // the wrong organisation.
 
-import { loadCredentialMeta, readMtdConfig } from '@/lib/accounting/mtd';
+import { loadCredentialMeta, loadVrnStatus, readMtdConfig } from '@/lib/accounting/mtd';
 import { Button } from '@/components/ui';
 
 export interface MtdConnectionProps {
@@ -74,6 +74,15 @@ function statusMessage(status: string | null | undefined): { tone: 'ok' | 'bad';
         'connection to attach it to. Connect to HMRC first, then set the number.',
     };
   }
+  if (status === 'vrn-in-use') {
+    return {
+      tone: 'bad',
+      text:
+        'That VAT registration number has not been saved, because it is already in use by ' +
+        'another tenant on this installation. Each tenant files its own return under its own ' +
+        'VAT registration number — check the number HMRC issued to this tenant.',
+    };
+  }
   if (status.startsWith('denied:')) {
     const reason = status.slice('denied:'.length).replace(/_/g, ' ');
     return { tone: 'bad', text: `HMRC refused the connection (${reason}). Nothing was saved.` };
@@ -88,6 +97,7 @@ function statusMessage(status: string | null | undefined): { tone: 'ok' | 'bad';
 export default async function MtdConnection({ tenantId, returnTo, status }: MtdConnectionProps) {
   const creds = await loadCredentialMeta(tenantId);
   const config = readMtdConfig();
+  const vrnStatus = await loadVrnStatus(tenantId);
 
   const connectionState = creds
     ? creds.expiresAt.getTime() > Date.now() + 60_000
@@ -97,11 +107,13 @@ export default async function MtdConnection({ tenantId, returnTo, status }: MtdC
 
   const message = statusMessage(status);
 
-  // The VAT registration number the return is filed against. The tenant's own
-  // connection carries it; HMRC_MTD_VRN is the install-level fallback.
-  const tenantVrn = creds?.vrn?.trim() || null;
-  const installVrn = process.env.HMRC_MTD_VRN?.trim() || null;
-  const effectiveVrn = tenantVrn ?? installVrn;
+  // The VAT registration number the return is filed against — the TENANT'S
+  // OWN. The installation's HMRC_MTD_VRN is a default one tenant adopts by
+  // saving it here; it is never used behind the tenant's back, and it is not
+  // available once another tenant holds it.
+  const tenantVrn = vrnStatus.vrn;
+  const installVrn = vrnStatus.installVrn;
+  const installVrnAvailable = vrnStatus.installVrnAvailable;
 
   return (
     <>
@@ -162,12 +174,26 @@ export default async function MtdConnection({ tenantId, returnTo, status }: MtdC
           issued — not a tax reference of any other kind.
         </p>
 
-        {effectiveVrn ? (
+        {tenantVrn ? (
           <p className="mt-2 text-sm text-cream">
-            Currently filed at: <span className="font-mono">{effectiveVrn}</span>{' '}
+            Currently filed at: <span className="font-mono">{tenantVrn}</span>{' '}
+            <span className="text-muted">(set for this tenant)</span>
+          </p>
+        ) : installVrn && installVrnAvailable ? (
+          <p className="mt-2 text-sm text-cream">
+            This installation is configured with the VAT registration number{' '}
+            <span className="font-mono">{installVrn}</span>.{' '}
             <span className="text-muted">
-              ({tenantVrn ? 'set for this tenant' : 'from the installation’s HMRC_MTD_VRN'})
+              Save it below to file this tenant&apos;s returns under it. A return is always filed
+              under the tenant&apos;s own number, and each tenant files under its own.
             </span>
+          </p>
+        ) : installVrn ? (
+          <p className="mt-2 text-sm text-[var(--color-warn)]">
+            The installation&apos;s VAT registration number{' '}
+            <span className="font-mono">{installVrn}</span> is already in use by another tenant on
+            this installation, so it cannot be used here. Type this tenant&apos;s own VAT
+            registration number below.
           </p>
         ) : (
           <p className="mt-2 text-sm text-[var(--color-warn)]">
@@ -186,7 +212,7 @@ export default async function MtdConnection({ tenantId, returnTo, status }: MtdC
               name="vrn"
               inputMode="numeric"
               autoComplete="off"
-              defaultValue={tenantVrn ?? ''}
+              defaultValue={tenantVrn ?? (installVrnAvailable ? (installVrn ?? '') : '')}
               placeholder="123456789"
               aria-describedby="vrn-help"
               className="mt-1 w-full max-w-xs rounded-[var(--radius)] border border-hair-soft bg-ink px-3 py-2 text-sm text-cream"

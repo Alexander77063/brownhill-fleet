@@ -39,10 +39,18 @@ const USER_ID = '44444444-4444-4444-4444-444444333333';
 // type error — which is how a fake quietly stops matching the code.
 
 const submitVatReturn =
-  vi.fn<(args: { year: number; month: number; userId: string; tenantId: string }) => Promise<{
-    status: string;
-    correlationId: string;
-  }>>();
+  vi.fn<
+    (args: {
+      year: number;
+      month: number;
+      userId: string;
+      tenantId: string;
+      force?: boolean;
+    }) => Promise<{
+      status: string;
+      correlationId: string;
+    }>
+  >();
 const setVrn = vi.fn<(tenantId: string, vrn: string | null) => Promise<boolean>>();
 const loadCredentialMeta =
   vi.fn<(tenantId: string) => Promise<{
@@ -51,6 +59,13 @@ const loadCredentialMeta =
     expiresAt: Date;
     vrn: string | null;
   } | null>>();
+const loadVrnStatus =
+  vi.fn<(tenantId: string) => Promise<{
+    vrn: string | null;
+    connected: boolean;
+    installVrn: string | null;
+    installVrnAvailable: boolean;
+  }>>();
 const requirePermission =
   vi.fn<(perm: string) => Promise<{ userId: string; tenantId: string }>>();
 const persistCredentials =
@@ -67,6 +82,7 @@ vi.mock('@/lib/accounting/mtd', async (importOriginal) => {
     submitVatReturn: (args: Parameters<typeof submitVatReturn>[0]) => submitVatReturn(args),
     setVrn: (tenantId: string, vrn: string | null) => setVrn(tenantId, vrn),
     loadCredentialMeta: (tenantId: string) => loadCredentialMeta(tenantId),
+    loadVrnStatus: (tenantId: string) => loadVrnStatus(tenantId),
     persistCredentials: (args: Parameters<typeof persistCredentials>[0]) =>
       persistCredentials(args),
   };
@@ -75,7 +91,13 @@ vi.mock('@/lib/accounting/mtd', async (importOriginal) => {
 // `MtdNotConnectedError` stays REAL — the route's job is to turn the typed
 // refusal into the right answer, and a faked refusal would only prove the
 // route can format a mock.
-import { MtdNotConnectedError, signCallbackState } from '@/lib/accounting/mtd';
+import {
+  MtdAlreadyFiledError,
+  MtdFilingInProgressError,
+  MtdNotConnectedError,
+  MtdVrnInUseError,
+  signCallbackState,
+} from '@/lib/accounting/mtd';
 import { GET, POST } from '@/app/api/v1/accounting/mtd/[action]/route';
 
 /** The signing secret the OAuth state is signed with. */
@@ -118,6 +140,12 @@ describe('the MTD route', () => {
       redirectUri: 'https://app.test/api/v1/accounting/mtd/callback',
       expiresAt: new Date(Date.now() + 3_600_000),
       vrn: '123456789',
+    });
+    loadVrnStatus.mockResolvedValue({
+      vrn: '123456789',
+      connected: true,
+      installVrn: '999999999',
+      installVrnAvailable: true,
     });
   });
 
@@ -213,6 +241,78 @@ describe('the MTD route', () => {
     expect(submitVatReturn).not.toHaveBeenCalled();
   });
 
+  // ── filing the same period twice ─────────────────────────────────────────
+  //
+  // A VAT return is filed for a PERIOD and HMRC takes one per period, so a
+  // second filing is a duplicate return at HMRC and a second posting in the
+  // books. The route has to say that in a way the operator can act on: the
+  // difference between "you already did this" and "something is still
+  // running" is the difference between stopping and waiting.
+
+  it('answers 409 when the return has already been filed', async () => {
+    submitVatReturn.mockRejectedValue(new MtdAlreadyFiledError('HMRC-999'));
+
+    const res = await POST(request('submit', { method: 'POST', search: '?period=2026-10' }), params('submit'));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('already_filed');
+    expect(body.correlationId).toBe('HMRC-999');
+    expect(body.error).toMatch(/already been filed/i);
+  });
+
+  it('answers 409 while another filing of the same period is still running', async () => {
+    submitVatReturn.mockRejectedValue(new MtdFilingInProgressError(new Date(), false));
+
+    const res = await POST(request('submit', { method: 'POST', search: '?period=2026-10' }), params('submit'));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('filing_in_progress');
+    // Nothing can be forced while the filing is still in hand — forcing is
+    // for a filing that DIED, not one that is working.
+    expect(body.canForce).toBe(false);
+  });
+
+  it('offers the operator a way to take over a filing that never finished', async () => {
+    submitVatReturn.mockRejectedValue(new MtdFilingInProgressError(new Date(), true));
+
+    const res = await POST(request('submit', { method: 'POST', search: '?period=2026-10' }), params('submit'));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('filing_in_progress');
+    expect(body.canForce).toBe(true);
+  });
+
+  it('takes over a filing only when the operator asks it to', async () => {
+    await POST(
+      request('submit', { method: 'POST', search: '?period=2026-10&force=1' }),
+      params('submit'),
+    );
+
+    expect(submitVatReturn).toHaveBeenCalledWith({
+      year: 2026,
+      month: 10,
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+      force: true,
+    });
+  });
+
+  it('never takes over a filing by itself', async () => {
+    await POST(request('submit', { method: 'POST', search: '?period=2026-10' }), params('submit'));
+
+    // The refusal above is the reason a force exists: it is an answer to a
+    // stuck filing, not something the application does on its own.
+    expect(submitVatReturn).toHaveBeenCalledWith({
+      year: 2026,
+      month: 10,
+      userId: USER_ID,
+      tenantId: TENANT_ID,
+    });
+  });
+
   // ── the VAT registration number ──────────────────────────────────────────
 
   it('stores the VAT registration number', async () => {
@@ -273,6 +373,37 @@ describe('the MTD route', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.vrn).toBe('123456789');
+  });
+
+  it('reports the number the return will actually be filed against', async () => {
+    // The installation-wide number is a DEFAULT a tenant adopts, not a number
+    // it files under. Reporting it as if it were the tenant's would tell the
+    // operator their return is going somewhere it is not going.
+    loadVrnStatus.mockResolvedValue({
+      vrn: null,
+      connected: true,
+      installVrn: '999999999',
+      installVrnAvailable: true,
+    });
+
+    const res = await GET(request('vrn'), params('vrn'));
+
+    const body = await res.json();
+    expect(body.vrn).toBeNull();
+    expect(body.installVrn).toBe('999999999');
+    expect(body.installVrnAvailable).toBe(true);
+  });
+
+  it('refuses a VAT registration number another tenant already holds', async () => {
+    // A VAT registration number belongs to ONE organisation. Two tenants
+    // filing under the same number is a duplicate return at HMRC and one
+    // tenant's figures on another's record.
+    setVrn.mockRejectedValue(new MtdVrnInUseError('other-tenant-id', 'Other Tenant Ltd'));
+
+    const res = await POST(request('vrn', form({ vrn: '123456789' })), params('vrn'));
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location') ?? '').toContain('status=vrn-in-use');
   });
 
   // ── the OAuth round trip ─────────────────────────────────────────────────

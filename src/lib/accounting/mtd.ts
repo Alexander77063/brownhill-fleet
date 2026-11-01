@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
 import { localDb } from '@/lib/auth/local-store';
+import type { Query } from '@/lib/db/local';
 import { findJwtSecret } from '@/lib/auth/secret';
 import { signJwt, verifyJwt } from '@/lib/auth/jwt';
 import { postVatSubmissionJournal, type PostResult } from './journal';
@@ -207,6 +208,80 @@ export class MtdUnreachableError extends Error {
 }
 
 /**
+ * Another tenant already holds this VAT registration number.
+ *
+ * A VAT registration number belongs to ONE organisation, and a tenant is an
+ * organisation. Two tenants cannot file under the same number: HMRC would
+ * treat the second return as a second return for the same organisation, and
+ * the first tenant's figures would be on the second tenant's HMRC record.
+ *
+ * So the number is refused at the point it is saved. The operator is told
+ * that the number is taken on this installation — but NOT which tenant
+ * holds it: the person typing it is usually a tenant's own operator, and
+ * naming another organisation would be a cross-tenant disclosure. The
+ * holder's id and name are on the error for the server's log.
+ */
+export class MtdVrnInUseError extends Error {
+  constructor(
+    readonly holderTenantId: string,
+    readonly holderName: string | null,
+  ) {
+    super(
+      'That VAT registration number is already in use by another tenant on this installation. ' +
+        'Each tenant files its own return under its own VAT registration number.',
+    );
+    this.name = 'MtdVrnInUseError';
+  }
+}
+
+/**
+ * The period's return has already been filed with HMRC.
+ *
+ * A return is filed for a PERIOD, and HMRC takes one return per period. The
+ * reference HMRC gave is carried with the refusal, because it is the one
+ * thing an operator needs to talk to HMRC about that return.
+ */
+export class MtdAlreadyFiledError extends Error {
+  constructor(readonly correlationId: string) {
+    super(
+      'This VAT return has already been filed with HMRC' +
+        `${correlationId ? ` (reference ${correlationId})` : ''}. ` +
+        'A return cannot be filed twice for the same period.',
+    );
+    this.name = 'MtdAlreadyFiledError';
+  }
+}
+
+/**
+ * The period is already claimed by a filing.
+ *
+ * Two kinds, and they need different words:
+ *
+ *   * one is IN PROGRESS — the operator pressed the button and the request is
+ *     still talking to HMRC;
+ *   * one NEVER FINISHED — the attempt started and the answer never came
+ *     back, so HMRC may or may not have it.
+ *
+ * The second is the one the operator can do something about, so it says what
+ * to do: check HMRC's filing history, and if HMRC never received it, file it
+ * again deliberately. The first is not — the filing is still running.
+ */
+export class MtdFilingInProgressError extends Error {
+  constructor(
+    readonly startedAt: Date | null,
+    readonly canForce: boolean,
+  ) {
+    super(
+      canForce
+        ? `A filing for this period started at ${startedAt?.toISOString() ?? 'an earlier attempt'} and never finished. ` +
+            'HMRC may already have it. Check HMRC’s filing history; if HMRC never received it, file it again deliberately.'
+        : 'A filing for this period is already in progress. Wait for it to finish before filing again.',
+    );
+    this.name = 'MtdFilingInProgressError';
+  }
+}
+
+/**
  * A VAT registration number, or a reason it is not one.
  *
  * A VRN is digits — between three and fifteen of them. The same rule is
@@ -330,6 +405,63 @@ export async function loadCredentialMeta(tenantId: string): Promise<MtdCredentia
 export interface LoadedCredentials extends MtdCredentials {
   accessToken: string;
   refreshToken: string;
+}
+
+/**
+ * What the MTD screen needs to know about the VAT registration number.
+ *
+ * `vrn` is the number the return will be FILED against, and it is the
+ * tenant's own. `installVrn` is the installation-wide default, which a
+ * tenant may ADOPT — it is not a number the tenant files under until it has
+ * adopted it, and it is not available once another tenant holds it.
+ */
+export interface MtdVrnStatus {
+  /** The tenant's own number — the one the return is filed against. */
+  vrn: string | null;
+  /** Does the tenant have an HMRC connection at all? */
+  connected: boolean;
+  /** The installation-wide default, if the install has one configured. */
+  installVrn: string | null;
+  /** Can this tenant still adopt the installation-wide default? */
+  installVrnAvailable: boolean;
+}
+
+/**
+ * The VAT registration number situation, as the screens need to show it.
+ *
+ * The installation-wide `HMRC_MTD_VRN` is a DEFAULT that one tenant adopts
+ * when it connects — it is never a fallback at filing time. Two tenants
+ * filing under one number would be a duplicate return at HMRC and one
+ * tenant's figures on another's record, so the number is adopted once and
+ * belongs to that tenant alone.
+ *
+ * This is what the screens read, so that what the operator is told and what
+ * the submission will actually do are the same thing. They were not: the
+ * screens offered the installation-wide number as if the return would go out
+ * under it, and the submission refused to use it.
+ */
+export async function loadVrnStatus(tenantId: string): Promise<MtdVrnStatus> {
+  const sql = await localDb();
+  const creds = await loadCredentialMeta(tenantId);
+  const tenantVrn = creds?.vrn?.trim() || null;
+  const installVrn = installVrnDefault();
+
+  // The installation default is available to this tenant when it is not
+  // already held by another one. It is not available when the tenant has
+  // adopted it already — that is the tenant's own number now, and there is
+  // nothing left to adopt.
+  let installVrnAvailable = false;
+  if (installVrn && tenantVrn !== installVrn) {
+    const holder = await vrnHolder(sql, installVrn, tenantId);
+    installVrnAvailable = holder === null;
+  }
+
+  return {
+    vrn: tenantVrn,
+    connected: creds !== null,
+    installVrn,
+    installVrnAvailable,
+  };
 }
 
 /**
@@ -457,6 +589,39 @@ export async function exchangeCodeForTokens(
 }
 
 /**
+ * The installation's VAT registration number, if the operator set one.
+ *
+ * It is a DEFAULT — the number offered to the tenant that connects first —
+ * and never a filing source. See `persistCredentials`.
+ */
+function installVrnDefault(): string | null {
+  return process.env.HMRC_MTD_VRN?.trim() || null;
+}
+
+/**
+ * The tenant that holds a VAT registration number, if it is not this one.
+ *
+ * A number belongs to one organisation, so this is what stops a second
+ * tenant taking one that is already in use.
+ */
+async function vrnHolder(
+  sql: Query,
+  vrn: string,
+  exceptTenantId: string,
+): Promise<{ tenantId: string; name: string | null } | null> {
+  const rows = (await sql`
+    select c.tenant_id::text as tenant_id, t.name
+      from accounting.firs_credentials c
+      left join public.tenants t on t.id = c.tenant_id
+     where c.vrn = ${vrn}
+       and c.tenant_id <> ${exceptTenantId}::uuid
+     limit 1
+  `) as Array<{ tenant_id: string; name: string | null }>;
+  if (!rows.length) return null;
+  return { tenantId: rows[0].tenant_id, name: rows[0].name };
+}
+
+/**
  * Store the tokens for a tenant.
  *
  * The conflict target is `(tenant_id)`, which migration 0081 adds. The old
@@ -468,37 +633,85 @@ export async function exchangeCodeForTokens(
  * not supplied: a reconnect replaces the TOKENS, and the OAuth flow has no
  * reason to know the VRN, so an unmentioned VRN must not be wiped. It is set
  * by `setVrn`.
+ *
+ * THE INSTALL'S NUMBER IS ADOPTED HERE, NOT AT FILING TIME
+ * -------------------------------------------------------
+ * `HMRC_MTD_VRN` is the number the operator typed into the installation's
+ * secret file. It belongs to ONE tenant — the first one to connect — and
+ * after that every tenant brings its own.
+ *
+ * The old code fell back to it at FILE time:
+ *
+ *     const vrn = (credentials?.vrn ?? process.env.HMRC_MTD_VRN?.trim() ?? '').trim();
+ *
+ * so a tenant with no number of its own filed its return — its sales, its
+ * VAT — under whichever organisation the install happened to be configured
+ * for. On a box serving more than one tenant that is a filing against the
+ * wrong organisation, and one tenant's figures landing on another's HMRC
+ * record.
+ *
+ * So the number is ADOPTED here, at the one moment it is unambiguous: this
+ * tenant is about to connect, it has no number of its own, and no other
+ * tenant holds this one. After adoption it lives in this tenant's own column
+ * and the filing path never consults the installation again.
+ *
+ * The check and the write are one transaction under an advisory lock, so two
+ * tenants connecting at the same instant cannot both decide that nobody
+ * holds the number.
  */
 export async function persistCredentials(args: {
   tenantId: string;
   mtdClientId: string; mtdClientSecret: string; redirectUri: string;
   accessToken: string; refreshToken: string; expiresIn: number;
-  /** The tenant's VAT registration number. */
+  /** The tenant's VAT registration number. Omit it to leave the number alone. */
   vrn?: string | null;
 }): Promise<void> {
   const sql = await localDb();
   const accessEnc  = encryptToken(args.accessToken);
   const refreshEnc = encryptToken(args.refreshToken);
   const expiresAt = new Date(Date.now() + args.expiresIn * 1000);
-  await sql`
-    insert into accounting.firs_credentials
-      (tenant_id, mtd_client_id, access_token, access_token_iv, refresh_token, refresh_token_iv,
-       token_expires_at, redirect_uri, vrn)
-    values (${args.tenantId}::uuid, ${args.mtdClientId},
-            ${accessEnc.ciphertext}, ${accessEnc.iv},
-            ${refreshEnc.ciphertext}, ${refreshEnc.iv},
-            ${expiresAt.toISOString()}::timestamptz, ${args.redirectUri},
-            ${args.vrn ?? null})
-    on conflict (tenant_id) do update set
-      mtd_client_id = excluded.mtd_client_id,
-      access_token = excluded.access_token,
-      access_token_iv = excluded.access_token_iv,
-      refresh_token = excluded.refresh_token,
-      refresh_token_iv = excluded.refresh_token_iv,
-      token_expires_at = excluded.token_expires_at,
-      redirect_uri = excluded.redirect_uri,
-      vrn = coalesce(excluded.vrn, accounting.firs_credentials.vrn)
-  `;
+  const installDefault = installVrnDefault();
+
+  await (sql.begin(async (tx) => {
+    // Serialise the adoption of the installation's number. The lock is
+    // transaction-scoped, so the COMMIT releases it.
+    if (installDefault) {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`mtd-vrn:${installDefault}`}, 0))`;
+    }
+
+    const current = (await tx`
+      select vrn from accounting.firs_credentials where tenant_id = ${args.tenantId}::uuid
+    `) as Array<{ vrn: string | null }>;
+    const existing = current[0]?.vrn ?? null;
+
+    // An explicit number wins. Otherwise the tenant keeps the one it has, and
+    // adopts the installation's only if it has none and nobody else does.
+    let effective: string | null = args.vrn?.trim() || null;
+    if (!effective && !existing && installDefault) {
+      const holder = await vrnHolder(tx, installDefault, args.tenantId);
+      if (!holder) effective = installDefault;
+    }
+
+    await tx`
+      insert into accounting.firs_credentials
+        (tenant_id, mtd_client_id, access_token, access_token_iv, refresh_token, refresh_token_iv,
+         token_expires_at, redirect_uri, vrn)
+      values (${args.tenantId}::uuid, ${args.mtdClientId},
+              ${accessEnc.ciphertext}, ${accessEnc.iv},
+              ${refreshEnc.ciphertext}, ${refreshEnc.iv},
+              ${expiresAt.toISOString()}::timestamptz, ${args.redirectUri},
+              ${effective})
+      on conflict (tenant_id) do update set
+        mtd_client_id = excluded.mtd_client_id,
+        access_token = excluded.access_token,
+        access_token_iv = excluded.access_token_iv,
+        refresh_token = excluded.refresh_token,
+        refresh_token_iv = excluded.refresh_token_iv,
+        token_expires_at = excluded.token_expires_at,
+        redirect_uri = excluded.redirect_uri,
+        vrn = coalesce(excluded.vrn, accounting.firs_credentials.vrn)
+    `;
+  }) as unknown as Promise<void>);
 }
 
 /**
@@ -516,10 +729,21 @@ export async function persistCredentials(args: {
  * the connection, so a tenant that has never connected has nothing to
  * attach it to — and a caller that reported "saved" for a write that
  * changed no row would be telling the operator a lie.
+ *
+ * A number another tenant already holds is REFUSED, with the tenant that
+ * holds it named. A VAT registration number belongs to one organisation, and
+ * a tenant is an organisation: two tenants filing under the same number is a
+ * second return for one organisation, and one tenant's figures on another's
+ * HMRC record. The check happens here, where the mistake is made, rather
+ * than at filing time, where it would only be visible as a rejected return.
  */
 export async function setVrn(tenantId: string, vrn: string | null): Promise<boolean> {
   const sql = await localDb();
   const value = vrn === null ? null : vrn.trim();
+  if (value) {
+    const holder = await vrnHolder(sql, value, tenantId);
+    if (holder) throw new MtdVrnInUseError(holder.tenantId, holder.name);
+  }
   const rows = (await sql`
     update accounting.firs_credentials
        set vrn = ${value}
@@ -536,6 +760,18 @@ export interface SubmitArgs {
   month: number;
   userId: string;
   tenantId: string;
+  /**
+   * Take over a filing that started and never finished.
+   *
+   * A filing that died between the claim and the answer may or may not have
+   * reached HMRC, so it is not repeated automatically. The operator can force
+   * it once they have checked HMRC's filing history — and only once the
+   * attempt is old enough that "it is still running" is no longer a
+   * reasonable explanation.
+   *
+   * It never overrides a return HMRC has accepted: that one is filed.
+   */
+  force?: boolean;
 }
 
 /** What a submission that HMRC accepted leaves behind. */
@@ -599,12 +835,16 @@ export async function submitVatReturn(
   // ── 1–3. the connection, the VRN and the application ────────────────────
   //
   // The VRN is in the URL path — POST /organisations/vat/{vrn}/returns — so
-  // without one there is nowhere to file the return. The tenant's own column
-  // wins; `HMRC_MTD_VRN` is the install-level fallback for a single-tenant
-  // install that does not want to type it in.
+  // without one there is nowhere to file the return.
+  //
+  // It is the TENANT'S OWN number and nothing else. The installation-wide
+  // `HMRC_MTD_VRN` is a default a tenant adopts when it connects (see
+  // `persistCredentials`); it is never consulted here, because a tenant that
+  // has not adopted a number of its own must not file under one that belongs
+  // to somebody else.
   const credentials = await loadCredentials(args.tenantId);
   const config = readHmrcConfig();
-  const vrn = (credentials?.vrn ?? process.env.HMRC_MTD_VRN?.trim() ?? '').trim();
+  const vrn = credentials?.vrn?.trim() || '';
 
   const refusal = submissionRefusal({
     connected: credentials !== null,
@@ -652,11 +892,24 @@ export async function submitVatReturn(
   // nothing lost.
   await assertPeriodOpenForPosting(args.tenantId, args.year, args.month, sql);
 
-  // Record the attempt BEFORE calling HMRC. If HMRC accepts and the process
-  // dies before the journal is posted, the pending row is the evidence that
-  // something was sent. The old code persisted only at the end, so a failed
-  // call left no record at all.
-  const submissionId = await upsertSubmission(args, 'pending_submission', '', null, payload);
+  // Claim the period BEFORE calling HMRC.
+  //
+  // If HMRC accepts and the process dies before the journal is posted, the
+  // pending row is the evidence that something was sent. The old code
+  // persisted only at the end, so a failed call left no record at all.
+  //
+  // The claim is also what stops a return being filed twice. A VAT return is
+  // filed for a PERIOD and HMRC takes one return per period, so a second
+  // filing of the same period is a duplicate return at HMRC and a second
+  // posting in the books.
+  const claim = await claimSubmission(args, payload);
+  if (!claim.claimed) {
+    if (claim.reason === 'already_filed') {
+      throw new MtdAlreadyFiledError(claim.correlationId);
+    }
+    throw new MtdFilingInProgressError(claim.startedAt, claim.reason === 'never_finished');
+  }
+  const submissionId = claim.id;
 
   const ctx: HmrcCallContext = {
     baseUrl: options.baseUrl ?? hmrcConfig.baseUrl,
@@ -675,17 +928,37 @@ export async function submitVatReturn(
   try {
     result = await call(payload, ctx);
   } catch (e) {
-    await upsertSubmission(
-      args,
+    await settleSubmission(
+      args.tenantId,
+      submissionId,
       'rejected',
       '',
       { reason: e instanceof Error ? e.message : String(e), responseBody: null, correlationId: '' },
-      payload,
     );
     throw e;
   }
 
   if (result.status === 'submitted') {
+    // HMRC's reference is written onto the record NOW, before the journal is
+    // posted.
+    //
+    // The posting can fail — a closed period, a missing account — and the
+    // operator will need HMRC's reference to ask about the return HMRC has
+    // already accepted. Settling the whole row afterwards would lose it
+    // exactly when it is needed, because the row is still 'pending' until
+    // the posting succeeds.
+    await settleSubmission(
+      args.tenantId,
+      submissionId,
+      'pending_submission',
+      result.hmtrCorrelationId,
+      {
+        reason: null,
+        responseBody: result.responseBody ?? null,
+        correlationId: result.hmtrCorrelationId,
+      },
+    );
+
     // §2 Rule #5 — post the journal entry now that HMRC accepted.
     // The source of the entry is the submission row itself, so the id has to
     // be a real uuid: `accounting.journal_entries.source_id` is a uuid column
@@ -717,8 +990,9 @@ export async function submitVatReturn(
         );
       });
     }
-    await upsertSubmission(
-      args,
+    await settleSubmission(
+      args.tenantId,
+      submissionId,
       'submitted',
       result.hmtrCorrelationId,
       {
@@ -726,15 +1000,15 @@ export async function submitVatReturn(
         responseBody: result.responseBody ?? null,
         correlationId: result.hmtrCorrelationId,
       },
-      payload,
     );
     return { status: 'submitted', correlationId: result.hmtrCorrelationId };
   } else {
     // A refusal. Nothing is settled in the books, HMRC's own words are kept,
     // and the operator is told what HMRC said.
     const reason = result.reason ?? 'unknown';
-    await upsertSubmission(
-      args,
+    await settleSubmission(
+      args.tenantId,
+      submissionId,
       'rejected',
       result.hmtrCorrelationId,
       {
@@ -742,7 +1016,6 @@ export async function submitVatReturn(
         responseBody: result.responseBody ?? null,
         correlationId: result.hmtrCorrelationId,
       },
-      payload,
     );
 
     // Three different refusals, because they need three different answers:
@@ -822,7 +1095,41 @@ type SubmissionResponse = {
 };
 
 /**
- * Create or update the submission row for (tenant, period).
+ * How long a claim on a period survives without an answer.
+ *
+ * A filing claims its period before HMRC is called, so a process that dies
+ * between the claim and the answer leaves the period claimed. Thirty minutes
+ * is far longer than a return takes to file — it is one HTTP request — and
+ * short enough that a stuck claim is not the operator's problem for the rest
+ * of the day.
+ */
+const CLAIM_WINDOW_MINUTES = 30;
+
+/** What a claim attempt found. */
+type Claim =
+  | { claimed: true; id: string }
+  | {
+      claimed: false;
+      reason: 'already_filed' | 'in_progress' | 'never_finished';
+      /** HMRC's reference, when the period has already been filed. */
+      correlationId: string;
+      /** When the outstanding attempt started. */
+      startedAt: Date | null;
+    };
+
+/**
+ * Claim the period for this filing, or refuse.
+ *
+ * The claim is ONE statement, and it decides atomically whether this caller
+ * owns the filing. `on conflict … do update … where` is a compare-and-set:
+ * when the WHERE is false the row is left alone and NO row comes back, which
+ * is how the refusal is detected.
+ *
+ *   * no row yet                    → this caller claims it
+ *   * 'rejected'                    → a previous attempt failed; this one retries
+ *   * 'pending_submission', stale   → an attempt died; this one takes over
+ *   * 'pending_submission', in hand → another filing is running — REFUSED
+ *   * 'submitted'                   → HMRC has taken this return — REFUSED, always
  *
  * The conflict target is `(tenant_id, period_id)` — migration 0069 dropped
  * the old `(period_id)` constraint, so `on conflict (period_id)` was rejected
@@ -842,20 +1149,15 @@ type SubmissionResponse = {
  * `sql.json()` is postgres.js's own API — it tags the parameter with the
  * jsonb OID rather than leaving the server to infer it from the cast.
  *
- * The response payload is PRESERVED when a new attempt does not carry one.
- * The old code overwrote it with `{"reason": null}` on every attempt, so the
- * record of why the last attempt was refused was wiped the moment a retry
- * started — which is exactly when the operator most needs to read it.
- *
- * Returns the submission's uuid, which is the source id of the journal entry.
+ * The response payload is PRESERVED while an attempt is in flight. The old
+ * code overwrote it with `{"reason": null}` on every attempt, so the record
+ * of why the last attempt was refused was wiped the moment a retry started —
+ * which is exactly when the operator most needs to read it.
  */
-async function upsertSubmission(
+async function claimSubmission(
   args: SubmitArgs,
-  status: 'pending_submission' | 'submitted' | 'rejected',
-  hmtrCorrelationId: string,
-  response: SubmissionResponse | null,
   returnPayload: Record<string, string | number>,
-): Promise<string> {
+): Promise<Claim> {
   const sql = await localDb();
 
   // The period row must exist — the submission references it. The old code
@@ -871,22 +1173,97 @@ async function upsertSubmission(
 
   // The payload actually sent to HMRC — not a summary of it. The record of
   // what was filed has to be the thing that was filed.
-  const responseParam = response === null ? null : sql.json(response);
-
-  const rows = (await sql`
+  const claimed = (await sql`
     insert into accounting.vat_submissions
       (tenant_id, period_id, hmtr_correlation_id, return_payload, response_payload, status)
-    values (${args.tenantId}::uuid, ${periodId}::uuid, ${hmtrCorrelationId},
-            ${sql.json(returnPayload)}::jsonb,
-            ${responseParam}::jsonb,
-            ${status}::accounting.vat_submission_status)
+    values (${args.tenantId}::uuid, ${periodId}::uuid, '',
+            ${sql.json(returnPayload)}::jsonb, null,
+            'pending_submission'::accounting.vat_submission_status)
     on conflict (tenant_id, period_id) do update set
-      hmtr_correlation_id = excluded.hmtr_correlation_id,
+      hmtr_correlation_id = '',
       return_payload = excluded.return_payload,
-      response_payload = coalesce(excluded.response_payload, accounting.vat_submissions.response_payload),
-      status = excluded.status,
+      response_payload = accounting.vat_submissions.response_payload,
+      status = 'pending_submission'::accounting.vat_submission_status,
       submitted_at = now()
+    where accounting.vat_submissions.status <> 'submitted'
+      and (
+        accounting.vat_submissions.status <> 'pending_submission'
+        or (
+          ${args.force === true}::boolean
+          and accounting.vat_submissions.submitted_at
+              < now() - (${CLAIM_WINDOW_MINUTES}::int * interval '1 minute')
+        )
+      )
     returning id
   `) as Array<{ id: string }>;
-  return rows[0].id;
+
+  if (claimed.length) return { claimed: true, id: claimed[0].id };
+
+  // The claim was refused. Which way?
+  const current = (await sql`
+    select status::text as status, hmtr_correlation_id, submitted_at
+      from accounting.vat_submissions
+     where tenant_id = ${args.tenantId}::uuid and period_id = ${periodId}::uuid
+  `) as Array<{ status: string; hmtr_correlation_id: string; submitted_at: string }>;
+  const row = current[0];
+
+  if (row?.status === 'submitted') {
+    return {
+      claimed: false,
+      reason: 'already_filed',
+      correlationId: row.hmtr_correlation_id,
+      startedAt: null,
+    };
+  }
+
+  const startedAt = row?.submitted_at ? new Date(row.submitted_at) : null;
+  const stale =
+    !startedAt || Date.now() - startedAt.getTime() > CLAIM_WINDOW_MINUTES * 60_000;
+  return {
+    claimed: false,
+    reason: stale ? 'never_finished' : 'in_progress',
+    correlationId: '',
+    startedAt,
+  };
+}
+
+/**
+ * Settle the claim — write down what HMRC said.
+ *
+ * The row is addressed BY ID and settled only while it is not already
+ * 'submitted'. Two things follow from that:
+ *
+ *   * a return HMRC has accepted is never un-filed. An attempt that arrives
+ *     after the acceptance cannot drag the record back to 'rejected';
+ *   * the settlement lands on the row this caller claimed, whatever another
+ *     attempt did to the period in the meantime.
+ *
+ * The tenant is named in the WHERE clause as well. The id came from this
+ * tenant's own claim, so the predicate is redundant — and it is here
+ * precisely because it is redundant. The accounting schema is not exposed by
+ * PostgREST and the application connects as a superuser, so RLS filters
+ * nothing: the only thing standing between a bug in the id handling and one
+ * tenant settling another tenant's filing is the tenant in the SQL.
+ *
+ * The response payload is PRESERVED when a settlement does not carry one.
+ */
+async function settleSubmission(
+  tenantId: string,
+  submissionId: string,
+  status: 'pending_submission' | 'submitted' | 'rejected',
+  hmtrCorrelationId: string,
+  response: SubmissionResponse | null,
+): Promise<void> {
+  const sql = await localDb();
+  const responseParam = response === null ? null : sql.json(response);
+  await sql`
+    update accounting.vat_submissions
+       set status = ${status}::accounting.vat_submission_status,
+           hmtr_correlation_id = ${hmtrCorrelationId},
+           response_payload = coalesce(${responseParam}::jsonb, response_payload),
+           submitted_at = now()
+     where id = ${submissionId}::uuid
+       and tenant_id = ${tenantId}::uuid
+       and status <> 'submitted'
+  `;
 }

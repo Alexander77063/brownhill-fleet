@@ -660,6 +660,11 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
      against the wrong organisation, and you can set it on
      `/admin/accounting/mtd` once the tenant is connected. It is **not** the
      Nigerian FIRS tax identification number that the same table also carries.
+     It is the installation's **default**: the first tenant to connect to
+     HMRC adopts it, and no other tenant can take it afterwards — a VAT
+     registration number belongs to one organisation. A return is always
+     filed under the tenant's own number, so this value never files on its
+     own.
    - `HMRC_MTD_BASE_URL` may be left **empty**: the application then uses
      HMRC's own address for the environment named by `HMRC_ENV`. The chaos
      drills set it, briefly, to point the application at a stub.
@@ -692,8 +697,16 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
    number HMRC issued, 3 to 15 digits. HMRC files a return at
    `POST /organisations/vat/{vrn}/returns`, so the number is in the path: it
    decides which organisation the return belongs to. It is stored against the
-   tenant's HMRC connection and overrides the installation-wide
-   `HMRC_MTD_VRN`.
+   tenant's HMRC connection, and a return is always filed under the tenant's
+   own number.
+   - If `HMRC_MTD_VRN` is set in `mtd.env` and this tenant has not connected
+     yet, the page offers that number and the box is pre-filled with it:
+     press **Save the VAT registration number** to adopt it. That is the
+     step that makes the installation's default real — until then the
+     tenant has no number of its own and the application refuses to file.
+     Only one tenant can hold a given number, so if the page says the number
+     is already in use by another tenant on this installation, type this
+     tenant's own number instead.
 2. Navigate to `/admin/accounting/reports/vat-return?period=YYYY-MM`.
 3. Review the box figures; if correct, click **Submit to HMRC**.
 4. The submit handler calls `aggregateVatReturn` + `submitVatReturn` (the fail-safe flow): only on HMRC success is the §2 Rule #5 journal entry posted; on rejection or token expiry, no journal entry is written and the operator gets an inline error.
@@ -708,6 +721,13 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
      reconnecting.
    - **HMRC could not be reached** — nothing was sent and nothing was posted.
      Filing again is safe.
+   - **Already filed** — HMRC has this return for this period and it has
+     been posted to the ledger. A return cannot be filed twice for the same
+     period; file an adjustment return with HMRC if it needs correcting.
+   - **Already in progress** — another filing of this period is under way.
+     Wait for it to finish. If the filing started and never finished, the
+     page offers **File it again** — check HMRC's filing history first,
+     because HMRC may already have it.
 
 ### Step A.4 — Reconcile bank statements
 
