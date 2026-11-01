@@ -12,6 +12,7 @@
  * off the AI-report path so the figures are computed, auditable, and downloadable.
  */
 import { createServiceClient } from '@/lib/supabase/server';
+import { csvCell } from '@/lib/csv';
 
 export interface VatReturn {
   quarterStart: string; // YYYY-MM-DD
@@ -185,10 +186,6 @@ export function vatReturnBoxes(r: VatReturn): { n: number; label: string; value:
       : (pence / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return { n: b.n, label: b.label, value };
   });
-}
-
-function csvCell(v: string): string {
-  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
 /** HMRC 9-box return as CSV for the accountant. */

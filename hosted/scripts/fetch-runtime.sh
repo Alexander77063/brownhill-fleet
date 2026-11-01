@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # hosted/scripts/fetch-runtime.sh — install PostgreSQL 16.4 + PostgREST 12.2.3 + Node 22.11
-# onto a hosted Brownhill VPS. Versions are pinned in hosted/scripts/runtime.sha256.
+# + the Backblaze B2 CLI onto a hosted Brownhill VPS. Versions are pinned in
+# hosted/scripts/runtime.sha256.
 #
 # Two PostgreSQL install paths:
 #
@@ -26,6 +27,7 @@ RUNTIME_DIR=/opt/brownhill
 PGSQL_DIR=$RUNTIME_DIR/pgsql
 POSTGREST_DIR=$RUNTIME_DIR/bin
 NODE_DIR=$RUNTIME_DIR/node
+B2_DIR=$RUNTIME_DIR/bin
 
 # shellcheck disable=SC1090
 source "$MANIFEST"
@@ -111,9 +113,36 @@ if [[ ! -x "$NODE_DIR/node" ]]; then
   rm -rf "$TMP"
 fi
 
+# ── Backblaze B2 CLI ─────────────────────────────────────────────────────────
+# The nightly backup copies its dump off the box with this tool. Nothing
+# installed it before, so the off-host copy could never have run: the dump
+# stayed on the box and the backup script's own error handler swallowed the
+# failure every single night.
+echo "==> Backblaze B2 CLI $B2_VERSION"
+if [[ ! -x "$B2_DIR/b2" ]]; then
+  TMP=$(mktemp -d)
+  curl -fsSL -o "$TMP/b2" "$B2_URL"
+  echo "$B2_SHA256  $TMP/b2" | sha256sum -c -
+  mkdir -p "$B2_DIR"
+  install -m 0755 "$TMP/b2" "$B2_DIR/b2"
+  rm -rf "$TMP"
+fi
+# The backup unit and the chaos drill both look for the tool at
+# /usr/local/bin/b2 — the drill replaces it with /bin/false to force a sync
+# failure, so it has to be a real file at that path, not only on the unit's
+# PATH.
+ln -sf "$B2_DIR/b2" /usr/local/bin/b2
+
 # ── Application SQL + tools staged under runtime/ ───────────────────────────
 mkdir -p /opt/brownhill/sql /opt/brownhill/migrations
 install -m 0644 standalone/sql/0000_supabase_shim.sql /opt/brownhill/sql/
+# The RLS proof is replayed by the weekly backup-verify unit against a
+# restored copy of the database. It used to be read out of the operator's git
+# working copy at /opt/brownhill/repo, which does not exist on a box deployed
+# from a tarball — so the verify unit failed every Sunday. Staging it with the
+# rest of the SQL makes the verify unit independent of how the box was
+# deployed.
+install -m 0644 standalone/sql/portable-rls-proof.sql /opt/brownhill/sql/
 install -m 0644 supabase/migrations/*.sql          /opt/brownhill/migrations/
 echo "==> staged shim + $(ls /opt/brownhill/migrations | wc -l) migrations"
 

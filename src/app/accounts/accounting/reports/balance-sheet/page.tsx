@@ -25,7 +25,7 @@ export default async function BalanceSheetPage({ searchParams }: { searchParams:
 
   const sp = await searchParams;
   const asOf = sp.asOf ? new Date(sp.asOf) : new Date();
-  const r = await renderBalanceSheet(asOf);
+  const r = await renderBalanceSheet(ctx.tenantId, asOf);
   return (
     <>
       <h1 className="text-2xl font-semibold mb-4">Balance Sheet</h1>

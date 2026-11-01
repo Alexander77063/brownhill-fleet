@@ -23,7 +23,7 @@ export interface VatReturnBoxes {
   box9_totalPurchases: Pounds;         // box 5 + box 6 (gross-of-VAT)
 }
 
-export async function aggregateVatReturn(year: number, month: number): Promise<VatReturnBoxes> {
+export async function aggregateVatReturn(tenantId: string, year: number, month: number): Promise<VatReturnBoxes> {
   const sql = await localDb();
   // Pull net + VAT totals per vat_code for invoices issued in the period.
   // (Box 1 = T1 net; Box 2 = T0 net; Box 3 = T9 net; Box 4 base = all net;
@@ -33,25 +33,42 @@ export async function aggregateVatReturn(year: number, month: number): Promise<V
   // `paid` / `part_paid` / `overdue` invoices, so a quarter with mostly-paid
   // invoices submitted a near-zero box 1. The spec (and the report's name)
   // mean "issued in the period"; we now include every non-void invoice.
+  //
+  // TENANT SCOPE: the accounting schema is not exposed by PostgREST and the
+  // app connects as a superuser, so RLS never filters this query — the
+  // tenant has to be named in the SQL.
+  //
+  // The invoice date column is `issued_on` (a `date`), not `issued_at`. The
+  // old name does not exist on public.invoices, so Postgres rejected the
+  // whole query with 42883 and the VAT return page showed an error for
+  // every user.
   const rows = (await sql`
     select vc.code, sum(coalesce(i.net_pence, 0))::bigint as net_pence,
                   sum(coalesce(i.vat_pence, 0))::bigint as vat_pence
       from public.invoices i
       left join accounting.vat_codes vc on vc.id = i.vat_code_id
      where i.status <> 'void'
-       and date_trunc('month', i.issued_at) = date_trunc('month', make_date(${year}::int, ${month}::int, 1))
+       and i.tenant_id = ${tenantId}::uuid
+       and date_trunc('month', i.issued_on::timestamp) = date_trunc('month', make_date(${year}::int, ${month}::int, 1))
      group by vc.code
   `) as Array<{ code: string | null; net_pence: string; vat_pence: string }>;
 
-  let t1 = 0n, t0 = 0n, t9 = 0n, allNet = 0n;
+  let t1 = 0n, t0 = 0n, t9 = 0n, allNet = 0n, t1Vat = 0n;
   for (const r of rows) {
     const n = BigInt(r.net_pence), v = BigInt(r.vat_pence);
     allNet += n;
-    if (r.code === 'T1') t1 = n;
+    if (r.code === 'T1') { t1 = n; t1Vat = v; }
     else if (r.code === 'T0') t0 = n;
     else if (r.code === 'T9') t9 = n;
   }
-  const box1 = t1 * 20n / 100n;        // 20% of T1
+  // Box 1 is the output VAT DUE on standard-rated sales — the VAT actually
+  // charged on those invoices. The previous code re-derived it as 20% of the
+  // net figure, which silently disagreed with the invoice whenever the
+  // invoice carried a different amount (a discount, a credit note, a
+  // correction) and posted a VAT journal that did not match the sales
+  // invoices it was supposed to settle. Where the invoice carries no VAT at
+  // all, fall back to the standard rate so the return is still populated.
+  const box1 = t1Vat !== 0n ? t1Vat : (t1 * 20n) / 100n;
   const box4Base = allNet;
   const box5Base = 0n;
   const box6Base = 0n;

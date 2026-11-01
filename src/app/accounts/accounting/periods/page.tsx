@@ -1,7 +1,7 @@
 import { PageHeader, Card, CardTitle, Table, Th, Td, EmptyState, Button } from '@/components/ui';
 import { formatDate } from '@/lib/display';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
-import { listPeriods, REOPEN_WINDOW_DAYS, reopenStatus, reopenDeadline } from '@/lib/accounting/periods';
+import { listPeriods, reopenWindowDays, reopenStatus, reopenDeadline } from '@/lib/accounting/periods';
 import { closePeriodAction, reopenPeriodAction } from '@/lib/actions/accounting-periods';
 
 export const dynamic = 'force-dynamic';
@@ -35,7 +35,9 @@ export default async function PeriodsPage() {
     );
   }
 
-  const periods = await listPeriods();
+  const periods = await listPeriods(ctx.tenantId);
+  // The reopen window is per-tenant (migration 0070), not a hard-coded 7.
+  const windowDays = await reopenWindowDays(ctx.tenantId);
   // Sort newest first; listPeriods already does this.
   const now = new Date();
 
@@ -44,7 +46,7 @@ export default async function PeriodsPage() {
       <PageHeader
         eyebrow="Accounts · Accounting"
         title="Periods"
-        subtitle={`Monthly close + reopen window (${REOPEN_WINDOW_DAYS} days per UK accounting convention). Once a period is locked, it cannot be reopened.`}
+        subtitle={`Monthly close + reopen window (${windowDays} days). Once a period is locked, it cannot be reopened.`}
       />
 
       {periods.length === 0 ? (
@@ -72,8 +74,8 @@ export default async function PeriodsPage() {
                 const closedAt = p.closedAt;
                 // Reopen-window rule (pure, lives in periods.ts so both the
                 // admin and the accountant page show the same controls).
-                const reopen = reopenStatus(p.closedAt, p.lockedAt, now);
-                const deadline = reopenDeadline(p.closedAt);
+                const reopen = reopenStatus(p.closedAt, p.lockedAt, now, windowDays);
+                const deadline = reopenDeadline(p.closedAt, windowDays);
                 return (
                   <tr key={p.id}>
                     <Td className="font-mono text-cream">{ym}</Td>
@@ -118,7 +120,7 @@ export default async function PeriodsPage() {
         <CardTitle>How this works</CardTitle>
         <ul className="mt-3 space-y-2 text-sm text-muted">
           <li><span className="text-cream">Close</span> — sets <code>closed_at = now()</code>. The journal-bridge (<code>src/lib/accounting/journal-bridge.ts</code>) then refuses any new post whose period is this (year, month).</li>
-          <li><span className="text-cream">Reopen</span> — clears <code>closed_at</code>. Only available for {REOPEN_WINDOW_DAYS} days after close; after that the window is locked.</li>
+          <li><span className="text-cream">Reopen</span> — clears <code>closed_at</code>. Only available for {windowDays} days after close; after that the window is locked.</li>
           <li><span className="text-cream">Lock</span> — sets <code>locked_at = now()</code>. <span className="text-cream">Permanent</span>; cannot be undone. Not exposed in v1; the operator can run an SQL <code>UPDATE</code> on the live DB to set it after monthly close is final.</li>
         </ul>
       </Card>

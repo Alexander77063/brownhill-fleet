@@ -1,0 +1,15 @@
+# The Docker build copies the repository in. Without this, `COPY . .` brings
+# the host's node_modules, the host's .next, and the whole .git history into
+# the build context — slow, and the host's Linux-incompatible binaries
+# overwrite the ones the image just installed.
+node_modules
+.next
+.git
+.gitignore
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.claude
+worktrees

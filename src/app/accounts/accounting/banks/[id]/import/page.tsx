@@ -17,14 +17,20 @@ interface BankAccountRow {
   gl_account_code: string;
 }
 
-async function loadBankAccount(id: string): Promise<BankAccountRow | null> {
+async function loadBankAccount(id: string, tenantId: string): Promise<BankAccountRow | null> {
   const sql = await localDb();
+  // Tenant-scoped: this connection is the superuser one, which bypasses RLS,
+  // and the accounting schema is not exposed by PostgREST — so the tenant is
+  // named here rather than left to a policy that will never run.
+  // `chart_of_accounts` is global reference data and is deliberately NOT
+  // filtered: a tenant-scoped lookup would find nothing.
   const rows = (await sql`
     select ba.id, ba.name, ba.sort_code, ba.account_number, ba.iban,
            coa.code as gl_account_code
       from accounting.bank_accounts ba
       join accounting.chart_of_accounts coa on coa.id = ba.gl_account_id
      where ba.id = ${id}::uuid
+       and ba.tenant_id = ${tenantId}::uuid
   `) as unknown as BankAccountRow[];
   return rows[0] ?? null;
 }
@@ -45,7 +51,7 @@ export default async function BankImportPage({ params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
-  const bank = await loadBankAccount(id);
+  const bank = await loadBankAccount(id, ctx.tenantId);
   if (!bank) notFound();
 
   return (

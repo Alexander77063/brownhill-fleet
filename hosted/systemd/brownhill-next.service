@@ -8,16 +8,77 @@ Type=simple
 User=brownhill
 Group=brownhill
 WorkingDirectory=/var/lib/brownhill/app
+# jwt.env   — JWT_SHARED_SECRET, the signing secret PostgREST verifies with.
+# app.env   — DATABASE_URL, BOOTSTRAP_TOKEN, POSTGREST_URL.
+#
+# The unit used to load jwt.env alone. The app also needs the database URL to
+# open its own connection (sign-in, the operator surfaces, first-run setup)
+# and the bootstrap token to verify the first-run signature — so on a real box
+# it started with neither, and nobody could sign in or create the first
+# account.
 EnvironmentFile=/etc/brownhill/secrets/jwt.env
+EnvironmentFile=/etc/brownhill/secrets/app.env
+# mtd.env   — the HMRC application's client id, client secret and redirect
+#             URI, and which HMRC environment to talk to (sandbox or
+#             production).
+#
+# The file is OPTIONAL, and the leading '-' is what says so: a box that has
+# not been given HMRC credentials still starts. Without it the unit failed to
+# load its environment and the application never came up at all, which is a
+# far worse answer than a deployment that simply has no HMRC connection yet.
+EnvironmentFile=-/etc/brownhill/secrets/mtd.env
 Environment=DEPLOYMENT_PROFILE=hosted
 Environment=NODE_ENV=production
 Environment=PORT=55431
 Environment=HOST=127.0.0.1
-ExecStart=/usr/bin/node server.js
+# The pinned runtime that hosted/scripts/fetch-runtime.sh installs, not
+# whatever node the distribution happens to ship. The unit pointed at
+# /usr/bin/node, which the box does not necessarily have — the runtime
+# installer puts Node 22.11 under /opt/brownhill/node — so on a freshly
+# provisioned box the unit failed with "status=203/EXEC" before it ever
+# reached the application.
+Environment=PATH=/opt/brownhill/node/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/brownhill/node/bin/node server.js
 Restart=on-failure
 RestartSec=5
 RestartPreventExitStatus=2
-NoNewPrivileges=true
+# NoNewPrivileges is deliberately NOT set here.
+#
+# It used to be, and it broke the restore console in a way nothing in the
+# application could show. The restore script runs as root — it stops and
+# starts the services and replays the database as the postgres superuser —
+# and the application reaches it through `sudo -n`. sudo is a setuid binary,
+# and NoNewPrivileges makes the kernel refuse to grant a setuid binary any
+# extra privilege. Under it, the call fails with:
+#
+#     sudo: The "no new privileges" flag is set, which prevents sudo from
+#     running as root.
+#
+# So the restore console could never restore anything, and the failure looked
+# like a permission problem rather than a hardening conflict.
+#
+# The trade-off, stated plainly: with NoNewPrivileges off, the application
+# process can run a setuid binary. What it can actually DO with that is
+# bounded by the sudoers rule, which grants exactly one command — this one
+# script, with one argument — and by the script, which accepts only a
+# well-formed backup id and refuses anything else. The application's own
+# compromise would therefore buy an attacker the ability to replay a backup
+# that is already on the box, which is the capability the operator already
+# has, and nothing more.
+#
+# The compensating control, in place of the flag that was removed:
+#
+#   * ProtectHome — the application has no business in /home, /root or
+#     /run/user, so those are hidden from it. Nothing in the application
+#     reads them.
+#   * ProtectSystem=full — /usr, /boot and /etc are read-only to it.
+#   * The sudoers rule — one script, one argument shape, root-owned, mode
+#     0750. The rule is checked by hosted/tests/restore-privilege-contract.sh
+#     on every build, so it cannot quietly widen.
+#
+# If the restore ever stops needing root, put NoNewPrivileges back. The gate
+# that checks this contract will then have to change with it.
+ProtectHome=true
 ProtectSystem=full
 PrivateTmp=true
 

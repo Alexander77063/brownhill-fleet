@@ -7,6 +7,11 @@ import { getAuthContext, requirePermission } from '@/lib/auth/context';
 import { syncBilledVehicles } from '@/lib/catalogue/quantity';
 import { requireEntitlement } from '@/lib/entitlements';
 import { pounds, formatGBP } from '@/lib/money';
+import {
+  ALLOCATABLE_INVOICE_STATUSES,
+  isAllocatableInvoiceStatus,
+} from '@/lib/accounting/invoice-eligibility';
+import { rtbBillingTerms } from '@/lib/rtb-calculator';
 import { sendDriverMessage } from '@/lib/comms';
 import type { Database } from '@/lib/supabase/database.types';
 
@@ -80,17 +85,19 @@ export async function recordPayment(formData: FormData): Promise<void> {
     .single();
   if (payErr || !payment) throw new Error(payErr?.message ?? 'Could not record payment');
 
-  // Allocate FIFO across open invoices, never exceeding each invoice's balance.
+  // Allocate FIFO across the invoices that still owe money, never exceeding
+  // each invoice's balance.
   const { data: invoices } = await sb
     .from('v_invoice_balance')
     .select('id, balance_pence, status')
     .eq('agreement_id', agreementId)
+    .in('status', [...ALLOCATABLE_INVOICE_STATUSES])
     .order('due_on', { ascending: true });
 
   let remaining = amountPence;
   for (const inv of (invoices ?? []) as { id: string; balance_pence: number; status: string }[]) {
     if (remaining <= 0) break;
-    if (inv.status === 'void') continue;
+    if (!isAllocatableInvoiceStatus(inv.status)) continue;
     const balance = inv.balance_pence ?? 0;
     if (balance <= 0) continue;
     const alloc = Math.min(remaining, balance);
@@ -261,6 +268,68 @@ export async function createAgreement(formData: FormData): Promise<void> {
   const sb = await createClient();
 
   const type = (str(formData, 'type') ?? 'standard') as Enums['agreement_type'];
+
+  // ── Rent-to-buy ───────────────────────────────────────────────────────
+  // The rentee signs a monthly figure; the system bills weekly. The weekly
+  // columns are derived by the same engine the calculator uses, so what the
+  // operator saw on screen is what the agreement holds — and what the
+  // directors' report later sums.
+  if (type === 'rtb') {
+    const termMonths = Number(str(formData, 'term_months') ?? '0');
+    const monthlyGross = poundsField(formData, 'monthly_gross');
+    const vatRate = Number(str(formData, 'vat_rate') ?? '20');
+    if (!Number.isFinite(termMonths) || termMonths <= 0) {
+      throw new Error('A rent-to-buy agreement needs a term in months.');
+    }
+    if (monthlyGross <= 0) {
+      throw new Error('A rent-to-buy agreement needs a monthly payment.');
+    }
+    const terms = rtbBillingTerms({
+      termMonths,
+      monthlyGrossPence: monthlyGross,
+      vatRatePct: vatRate,
+      optionCreditMonthlyPence: poundsField(formData, 'option_credit_monthly'),
+    });
+
+    // The monthly contract, written down as it was signed. The database
+    // requires it on a rent-to-buy (migration 0077), and the directors' report
+    // sums these columns rather than rebuilding them from the weekly billing.
+    const vehiclePricePence = poundsField(formData, 'vehicle_price') || null;
+    const vehicleCostPence = poundsField(formData, 'vehicle_cost') || null;
+
+    const { error } = await sb.from('agreements').insert({
+      tenant_id: tenantId,
+      type,
+      vehicle_id: reqStr(formData, 'vehicle_id'),
+      driver_id: reqStr(formData, 'driver_id'),
+      status: (str(formData, 'status') ?? 'active') as Enums['agreement_status'],
+      start_date: str(formData, 'start_date'),
+      term_weeks: terms.termWeeks,
+      weekly_gross_pence: terms.weeklyGrossPence,
+      weekly_net_pence: terms.weeklyNetPence,
+      weekly_vat_pence: terms.weeklyVatPence,
+      deposit_pence: poundsField(formData, 'deposit'),
+      option_credit_weekly_pence: terms.weeklyOptionCreditPence,
+      // The buyout price the rentee pays to take the car at the end of the
+      // term. It was a column nobody wrote; the agreement detail page and
+      // the directors' report both read it.
+      agreed_residual_pence: poundsField(formData, 'agreed_residual'),
+      // The monthly side of the same contract.
+      term_months: termMonths,
+      monthly_gross_pence: monthlyGross,
+      // The price the rentee is buying the car at, and what the car cost us.
+      // Null when the operator did not say: the report then reads the
+      // funder's invoice, and failing that the list value, and says which.
+      agreed_vehicle_price_pence: vehiclePricePence,
+      agreed_vehicle_cost_pence: vehicleCostPence,
+    });
+    if (error) throw new Error(error.message);
+    revalidatePath('/ops/agreements');
+    revalidatePath('/ops/rtb-calculator');
+    return;
+  }
+
+  // ── Standard rental ──────────────────────────────────────────────────
   // Weekly rate is entered VAT-inclusive; split into net + VAT so gross = net + vat.
   const gross = poundsField(formData, 'weekly_gross');
   const vatRate = Number(str(formData, 'vat_rate') ?? '20');
@@ -275,12 +344,12 @@ export async function createAgreement(formData: FormData): Promise<void> {
     driver_id: reqStr(formData, 'driver_id'),
     status: (str(formData, 'status') ?? 'active') as Enums['agreement_status'],
     start_date: str(formData, 'start_date'),
-    term_weeks: termWeeks ? Number(termWeeks) : type === 'rtb' ? 156 : null,
+    term_weeks: termWeeks ? Number(termWeeks) : null,
     weekly_gross_pence: gross,
     weekly_net_pence: net,
     weekly_vat_pence: vat,
     deposit_pence: poundsField(formData, 'deposit'),
-    option_credit_weekly_pence: type === 'rtb' ? poundsField(formData, 'option_credit_weekly') : null,
+    option_credit_weekly_pence: null,
   });
   if (error) throw new Error(error.message);
   revalidatePath('/ops/agreements');

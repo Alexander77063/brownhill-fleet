@@ -12,7 +12,7 @@ import { requirePermission } from '@/lib/auth/context';
 import { renderProfitAndLoss, renderBalanceSheet, renderCashflow, renderArAging } from '@/lib/accounting/reports';
 
 export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ type: string }> }) {
-  await requirePermission('reports.operational');
+  const ctx = await requirePermission('reports.operational');
   const { type } = await ctxRoute.params;
   const url = new URL(req.url);
   const from = url.searchParams.get('from');
@@ -22,19 +22,19 @@ export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ type: 
   try {
     if (type === 'pnl') {
       if (!from || !to) return NextResponse.json({ error: 'from + to required' }, { status: 400 });
-      return NextResponse.json(await renderProfitAndLoss(new Date(from), new Date(to)));
+      return NextResponse.json(await renderProfitAndLoss(ctx.tenantId, new Date(from), new Date(to)));
     }
     if (type === 'balance-sheet') {
       if (!asOf) return NextResponse.json({ error: 'as_of required' }, { status: 400 });
-      return NextResponse.json(await renderBalanceSheet(new Date(asOf)));
+      return NextResponse.json(await renderBalanceSheet(ctx.tenantId, new Date(asOf)));
     }
     if (type === 'cashflow') {
       if (!from || !to) return NextResponse.json({ error: 'from + to required' }, { status: 400 });
-      return NextResponse.json(await renderCashflow(new Date(from), new Date(to)));
+      return NextResponse.json(await renderCashflow(ctx.tenantId, new Date(from), new Date(to)));
     }
     if (type === 'ar-aging') {
       if (!asOf) return NextResponse.json({ error: 'as_of required' }, { status: 400 });
-      return NextResponse.json(await renderArAging(new Date(asOf)));
+      return NextResponse.json(await renderArAging(ctx.tenantId, new Date(asOf)));
     }
     return NextResponse.json({ error: `unknown report type: ${type}` }, { status: 404 });
   } catch (e) {

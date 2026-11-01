@@ -9,6 +9,11 @@ services:
     image: postgres:16
     environment:
       POSTGRES_HOST_AUTH_METHOD: trust
+    # Published so a host-run process — the app under `pnpm dev`, psql, a test
+    # harness — can reach it. Inside the compose network the service name is
+    # enough, but nothing outside can reach it otherwise, and the whole point
+    # of this stack is that a person or a test can talk to it.
+    ports: ["55432:5432"]
     healthcheck:
       test: ["CMD-SHELL", "psql -c 'SELECT 1' -U postgres"]
       interval: 5s
@@ -21,34 +26,83 @@ services:
       PGRST_DB_ANON_ROLE: anon
       PGRST_DB_PRE_REQUEST: auth.pre_request
       PGRST_JWT_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
+    # The app's own origin rewrites /rest/v1 to this server, and the hosted
+    # smoke test curls it directly. Both need it reachable from outside the
+    # compose network.
+    ports: ["55430:3000"]
     depends_on:
       postgres: { condition: service_healthy }
+
+  # The stack provisions itself.
+  #
+  # This is the real bootstrap script — hosted/bootstrap/brownhill-bootstrap.sh
+  # — not a copy of it. It applies the shim and every migration and creates
+  # app_state, and it exits non-zero if any of that fails, so `next` does not
+  # start against a half-built schema.
+  #
+  # Before this service existed the CI schema step applied the shim and the
+  # migrations by hand and never created app_state — a table that no
+  # migration creates, because it used to be created only by this same script
+  # being run by hand on the production host. The app then failed every
+  # request with 42P01 (relation "app_state" does not exist).
+  #
+  # The repository is mounted at /opt/brownhill because that is where it
+  # lives on the production host, and the bootstrap script resolves its own
+  # location relative to that.
+  bootstrap:
+    image: postgres:16
+    volumes:
+      - ../..:/opt/brownhill:ro
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGDATABASE: postgres
+      BROWNHILL_REPO: /opt/brownhill
+    entrypoint: ["/bin/sh", "-c", "bash /opt/brownhill/hosted/bootstrap/brownhill-bootstrap.sh"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
 
   next:
     build:
       context: ../..
       dockerfile: hosted/dev/Dockerfile.next
+      args:
+        # Baked into the bundle: the `/rest/v1` rewrite and the middleware's
+        # drain check both resolve PostgREST's address when the app is built.
+        POSTGREST_URL: http://postgrest:3000
     environment:
       DEPLOYMENT_PROFILE: hosted
       NODE_ENV: production
       PORT: 55431
       HOST: 0.0.0.0
-      PGHOST: postgres
-      PGPORT: 5432
-      PGUSER: postgres
-      PGDATABASE: postgres
+      DATABASE_URL: postgres://postgres@postgres:5432/postgres
+      # The same value, for the code paths that read it at run time.
+      POSTGREST_URL: http://postgrest:3000
+      # The per-install signing secret. The app accepts this name and
+      # LOCAL_JWT_SECRET alike; PostgREST is configured with this one, so the
+      # two must agree or PostgREST rejects every session the app mints.
       JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-ci-bootstrap-token}
-      BROWNILL_FQDN: brownhill.localhost
+      BROWNHILL_FQDN: brownhill.localhost
+    # Published so the app is reachable from the host: the hosted smoke test
+    # curls http://127.0.0.1:55431, and a person driving the stack by hand
+    # needs a URL too. Without this the smoke test skipped itself, silently,
+    # and the job still went green.
+    ports: ["55431:55431"]
     depends_on:
       postgres: { condition: service_healthy }
       postgrest: { condition: service_started }
+      bootstrap: { condition: service_completed_successfully }
 
   nginx:
     image: nginx:1.27-alpine
     ports: ["443:443"]
     volumes:
-      - ../nginx/brownhill.conf:/etc/nginx/nginx.conf:ro
+      # The compose topology, not the production one — see the header of
+      # nginx.dev.conf for why they are two files.
+      - ./nginx.dev.conf:/etc/nginx/nginx.conf:ro
       - ./certs/server.crt:/etc/ssl/certs/server.crt:ro
       - ./certs/server.key:/etc/ssl/private/server.key:ro
     depends_on:

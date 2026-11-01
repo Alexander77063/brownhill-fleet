@@ -77,6 +77,10 @@ standalone/tauri/src-tauri/.cargo/
 .serena/
 .superpowers/
 
+# Scratch working files (ad-hoc SQL, replay scratch). Machine-local by
+# definition — nothing here belongs in a commit.
+.scratch/
+
 # SOPS-encrypted env files are SAFE to commit and MUST be, or the other
 # machine cannot run this project. The negation is explicit because the
 # .env* rules above would otherwise swallow them.
@@ -91,6 +95,23 @@ standalone/tauri/src-tauri/.cargo/
 hosted/dev/.secrets/
 hosted/dev/certs/local-*.pem
 hosted/dev/certs/local-*.key
+# The test CA's own private key. The stack needs the CA CERTIFICATE (ca.pem,
+# committed) and the leaf key (server.key, committed) — it never needs the
+# key that signs for the CA. Regenerate the whole set with
+# hosted/dev/certs/generate-test-cert.sh.
+hosted/dev/certs/ca.key
+# ...and the CA certificate itself, which the blanket `*.pem` rule above
+# swallowed. The comment above says it is committed; it was not — nothing
+# in the repository contradicted the rule, so git simply never saw the file.
+#
+# The consequence was that the portability proof's HTTPS assertion could
+# never run: it verifies the chain against this file, and with the file
+# absent it skipped itself every time, on every machine, forever. A test
+# that skips itself silently is worse than no test — it looks like coverage.
+#
+# This negation is what makes it true. `ca.key` stays ignored, one line
+# above, and only the public certificate is tracked.
+!hosted/dev/certs/ca.pem
 # Hosted static rasterisations are built artefacts (Task 15: pnpm build:icons).
 hosted/static/
 !hosted/static/.gitkeep

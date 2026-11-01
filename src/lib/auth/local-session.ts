@@ -12,19 +12,22 @@
  * install is served over plain HTTP on `127.0.0.1`, and a `Secure` cookie would
  * simply never be stored, presenting as "sign-in does nothing".
  */
+import { cookies } from 'next/headers';
 import { signJwt, verifyJwt, type JwtClaims } from './jwt';
+import { resolveJwtSecret } from './secret';
+import { localDb } from '@/lib/db/local';
+import {
+  SESSION_COOKIE,
+  SESSION_SECONDS,
+  OWNER_SESSION_SECONDS,
+  sessionCookieOptions,
+} from './session-cookie';
 
-export const SESSION_COOKIE = 'bf_session';
-
-/** Eight hours: a working day, so nobody is signed out mid-shift. */
-export const SESSION_SECONDS = 8 * 60 * 60;
-
-/**
- * Thirty days for a vehicle owner. They open a phone app to glance at their
- * car; asking for a new text-message code every morning is the fastest way to
- * lose them. Staff sessions stay at a working day.
- */
-export const OWNER_SESSION_SECONDS = 30 * 24 * 60 * 60;
+// Re-exported so the importers of these names keep working. They live in
+// `./session-cookie` — a module with no imports — because this one opens a
+// Postgres connection, and `supabase/server.ts` needs only the cookie name.
+// See the note at the top of `./session-cookie`.
+export { SESSION_COOKIE, SESSION_SECONDS, OWNER_SESSION_SECONDS, sessionCookieOptions };
 
 /**
  * The signing secret, shared with PostgREST.
@@ -32,16 +35,13 @@ export const OWNER_SESSION_SECONDS = 30 * 24 * 60 * 60;
  * Absent under a customer-facing profile is fatal, on the same reasoning as the
  * storage signing key: this token is what PostgREST trusts to decide which
  * tenant's rows a request may see.
+ *
+ * The resolver lives in `./secret` because three other callers need the same
+ * answer and the deployment only ever sets one of the two names it accepts —
+ * see the note there.
  */
 export function sessionSecret(): string {
-  const secret = process.env.LOCAL_JWT_SECRET;
-  if (!secret) {
-    throw new Error(
-      'LOCAL_JWT_SECRET is not set. It signs the session token PostgREST verifies; ' +
-        'the installer generates one per install.',
-    );
-  }
-  return secret;
+  return resolveJwtSecret();
 }
 
 export async function issueSessionToken(
@@ -69,14 +69,57 @@ export async function readSessionToken(token: string | undefined): Promise<JwtCl
   return res.ok ? res.claims : null;
 }
 
-/** Cookie attributes for `Set-Cookie`, shared by the sign-in and sign-out paths. */
-export function sessionCookieOptions(maxAge: number) {
-  return {
-    httpOnly: true,
-    sameSite: 'lax' as const,
-    // Not `secure`: loopback HTTP would refuse to store it.
-    secure: false,
-    path: '/',
-    maxAge,
-  };
+export interface SessionClaims {
+  /** The signed-in user's id — the JWT's `sub`. */
+  userId: string;
+  /** The tenant the session is acting in, if the token names one. */
+  tenantId: string | null;
+  /**
+   * The IAM role the user holds in that tenant: `owner`, `tenant_admin`, `md`,
+   * `director_exec`, `director_nonexec`, `ops`, `accounts`, `driver` or
+   * `investor`. This is `tenant_memberships.role` — the tenant's view of the
+   * person — and NOT `profiles.role`, which is the portal the account signs
+   * into. The two vocabularies overlap by accident, not by design.
+   */
+  role: string;
+}
+
+/**
+ * Who is signed in, and what are they allowed to be.
+ *
+ * The token says *who*; it does not say *what role they hold*, because the
+ * role is tenant data that changes — somebody is promoted to `owner`, somebody
+ * is disabled — and a token minted eight hours ago would keep asserting the
+ * old answer. So the role is read from the database on every request.
+ *
+ * ## Why the direct connection is safe here
+ *
+ * This query runs on the owner connection, where RLS does not apply, so it
+ * breaks the project's rule that every RLS-bypassing query must filter by
+ * tenant in application code. It cannot: it is the query that decides the
+ * tenant. What makes it safe is where `user_id` comes from — it is never
+ * client-supplied. It is the `sub` of a JWT this server just verified with
+ * the shared secret, so the row it can reach is the signed-in person's own
+ * membership and no one else's. The same reasoning as `primaryTenantId`.
+ */
+export async function readSessionClaims(): Promise<SessionClaims | null> {
+  const jar = await cookies();
+  const claims = await readSessionToken(jar.get(SESSION_COOKIE)?.value);
+  if (!claims?.sub) return null;
+
+  const tenantId = claims.tenant_id ?? null;
+  const db = await localDb();
+  const rows = (await db`
+    select role::text as role
+    from tenant_memberships
+    where user_id = ${claims.sub}
+      and status = 'active'
+      and (${tenantId}::uuid is null or tenant_id = ${tenantId}::uuid)
+    order by created_at
+    limit 1
+  `) as Array<{ role: string }>;
+
+  const role = rows[0]?.role;
+  if (!role) return null;
+  return { userId: claims.sub, tenantId, role };
 }

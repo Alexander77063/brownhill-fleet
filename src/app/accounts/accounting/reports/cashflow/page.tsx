@@ -26,7 +26,7 @@ export default async function CashflowPage({ searchParams }: { searchParams: Pro
   const sp = await searchParams;
   const to = sp.to ? new Date(sp.to) : new Date();
   const from = sp.from ? new Date(sp.from) : new Date(to.getTime() - 30 * 86400000);
-  const r = await renderCashflow(from, to);
+  const r = await renderCashflow(ctx.tenantId, from, to);
   return (
     <>
       <h1 className="text-2xl font-semibold mb-4">Cashflow</h1>

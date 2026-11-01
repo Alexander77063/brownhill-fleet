@@ -1,8 +1,8 @@
 # Elite Fleet Management — Test Plan & Test Script
 
 **Product:** Elite Fleet Management — multi-tenant SaaS for UK PCO / chauffeur-vehicle rental operators
-**Document version:** 1.1
-**Date:** 3 August 2026
+**Document version:** 1.2
+**Date:** 31 October 2026
 **Audience:** QA testers (manual), with automation notes for engineers
 
 ---
@@ -52,20 +52,26 @@ network response, timestamp).
 
 ```bash
 pnpm install
-supabase start                 # Docker must be running
-node scripts/seed-auth.mjs     # creates the demo logins below
+supabase start                          # Docker must be running
+SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs   # creates the demo logins below
 pnpm dev
 ```
 
 ### 1.3 Demo accounts
 
-Password for all: `Elite Fleet Management123!`
+Password for all: **the value you set in `SEED_PASSWORD`**. No password is published in
+this repository and the seed refuses to run without one — you choose it, it is never
+echoed back, and every demo account gets it so one value signs you in as any role.
 
-| Role | Email | Sees |
-|---|---|---|
-| Ops (owner) | `ops@elitefleetmanagement.test` | Full operator console + admin settings |
-| Driver | `driver@elitefleetmanagement.test` | Driver portal only |
-| Investor | `investor@elitefleetmanagement.test` | Investor reporting only |
+| Role | Email | Portal | Sees |
+|---|---|---|---|
+| Ops | `ops@brownhill.test` | `/ops` | Full operator console + admin settings |
+| Accounts | `accounts@brownhill.test` | `/accounts` | Accounting console |
+| MD | `md@brownhill.test` | `/investor` | Investor reporting (md) |
+| Director | `director@brownhill.test` | `/investor` | Investor reporting (director_exec) |
+| Investor | `investor@brownhill.test` | `/investor` | Investor reporting only |
+| Driver | `driver@brownhill.test` | `/driver` | Driver portal only |
+| Owner | `owner@brownhill.test` | `/owner` | Vehicle owner portal |
 
 > **You will need a second tenant** for the isolation tests in section 3. Ask engineering
 > to provision one, or create it through `/platform` if you have super-admin access.
@@ -152,6 +158,15 @@ driver, agreement, charge, expense and document.
 | TC-AUTH-07 | Visit any `/ops`, `/driver`, `/admin` or `/platform` URL while signed out | Redirected to `/login` |
 | TC-AUTH-08 | Sign in as a driver, then manually visit `/ops` | Redirected to `/driver`, not shown ops data |
 | TC-AUTH-09 | Leave the session idle past expiry, then act | Handled gracefully — re-prompt to sign in, no silent data loss or blank screen |
+| TC-AUTH-10 | Open `/driver/login` while signed out | **The page renders.** It used to sit under the driver portal's layout, whose `requireRole` guard redirected it away before it could draw — the URL the operations app puts in its invitation was a dead end |
+| TC-AUTH-11 | Open `/owner/login` while signed out | **The page renders**, same as TC-AUTH-10 |
+| TC-AUTH-12 | Open `/login` and compare the offered methods with the deployment's capabilities | The set matches what the build can honour: **SaaS** — email link, password, phone code; **managed / managed-shared** — phone code, password; **hosted / standalone** — password only. The hosted box has no vehicle owners and no account provider behind it, and `resolveOwnerSignIn` refuses both a staff sign-in and an unknown number, so offering those methods is a button that cannot work |
+| TC-AUTH-13 | On the code screen, press **"Didn't get a code? Send another"** | A second code is requested and sent; the screen says so. The old screen offered no way back from a code that never arrived |
+| TC-AUTH-14 | As an operator, open **Drivers → a driver → Sign-in → Reset password** | A temporary password is issued and shown **once**, with a Copy button; the driver can sign in with it and change it from their profile page. The reset also clears a lockout |
+| TC-AUTH-15 | As an operator, try to reset a password for somebody in **another organisation** | Refused — "That person is not a member of this organisation", and nothing changes. Same for an owner account when the caller is not an owner |
+| TC-AUTH-16 | Reset a password for somebody who **also belongs to a second organisation** the operator has no authority in | Refused — the credential is one credential for the whole user, so authority has to exist in every tenant the reset lands in. Nothing changes |
+| TC-AUTH-17 | Read the temporary password on a **phone-sized screen** | The 32-character password wraps inside its box; the page does not scroll sideways |
+| TC-AUTH-18 | Reset a password while the **database cannot be reached** | Refused — "Could not check that account. Nothing has changed — try again". **No** password is written and nothing is handed out. A read that fails is never read as "this person belongs to one organisation", because that would skip the cross-organisation check |
 
 ---
 
@@ -690,7 +705,7 @@ Raise **S1 immediately**, do not batch it to the end of the run.
 |---|---|---|---|---|---|---|
 | 2. Legal consent | 6 | | | | | |
 | 3. Multi-tenant isolation | 8 | | | | | |
-| 4. Authentication | 9 | | | | | |
+| 4. Authentication | 18 | | | | | |
 | 5. Onboarding | 6 | | | | | |
 | 6.1–6.3 Fleet, drivers, documents | 29 | | | | | |
 | 6.4 Agreements & signing | 23 | | | | | |

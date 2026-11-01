@@ -8,5 +8,5 @@ modes that the spec promises it does.
 
 - [ ] **01-power-loss.sh** — pass/fail, time to recover
 - [ ] **02-postgres-restart.sh** — pass/fail, alert triggered?
-- [ ] **03-mid-restore-crash.sh** — pass/fail, drain state retained?
+- [ ] **03-corrupt-dump-rejected.sh** — pass/fail, box untouched and drain released?
 - [ ] **04-b2-sync-stale.sh** — pass/fail, marker cleared after restore?

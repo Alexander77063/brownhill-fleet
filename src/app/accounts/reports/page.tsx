@@ -1,6 +1,9 @@
 import { PageHeader, Card, CardTitle, Money, Stat, EmptyState } from '@/components/ui';
 import { requireTenantContext, contextCan } from '@/lib/auth/context';
 import { assembleBoardReport } from '@/lib/reports';
+import { assembleRtbReportFor } from '@/lib/reports/rtb-data';
+import { RtbReportSection } from '@/components/rtb/RtbReportSection';
+import { RtbReportActions } from '@/components/rtb/RtbReportActions';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +27,15 @@ export default async function AccountsReportsPage() {
     );
   }
 
-  const board = canBoard || canOperational
-    ? await assembleBoardReport(ctx.tenantId).catch(() => null)
+  // The board pack already carries the rent-to-buy book, priced — so the
+  // directors' report sums the rent-to-buy operations rather than sitting
+  // beside them.
+  const board =
+    canBoard || canOperational ? await assembleBoardReport(ctx.tenantId).catch(() => null) : null;
+
+  // The investor's book: the same figures, the rentees' names removed.
+  const investorRtb = canInvestor
+    ? await assembleRtbReportFor(ctx.tenantId, 'investor').catch(() => null)
     : null;
 
   return (
@@ -80,12 +90,25 @@ export default async function AccountsReportsPage() {
         </section>
       )}
 
-      {canInvestor && (
+      {canBoard && board?.rtb && (
         <section className="mt-4">
-          <h2 className="mb-3 font-display text-xl text-cream">Investor reports</h2>
-          <EmptyState
-            title="No investor reports yet"
-            hint="The board/investor reports are generated on demand from /ops/reports. Grant reports.board for live KPIs."
+          <RtbReportSection
+            report={board.rtb}
+            title="Rent-to-buy book — directors' report"
+            subtitle="Every rent-to-buy agreement, what the rentee pays, what Brownhill earns, and the rate the book returns."
+            actions={<RtbReportActions audience="board" label="directors' report" />}
+          />
+        </section>
+      )}
+
+      {canInvestor && investorRtb && (
+        <section className="mt-4">
+          <RtbReportSection
+            report={investorRtb}
+            showNames={false}
+            title="Rent-to-buy book — investors' report"
+            subtitle="The same figures the board sees, with the rentees' names removed."
+            actions={<RtbReportActions audience="investor" label="investors' report" />}
           />
         </section>
       )}

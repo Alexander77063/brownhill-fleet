@@ -1,5 +1,6 @@
 // src/app/admin/accounting/reports/balance-sheet/page.tsx
 import { renderBalanceSheet } from '@/lib/accounting/reports';
+import { requirePermission } from '@/lib/auth/context';
 
 function fmt(p: bigint): string {
   const sign = p < 0n ? '-' : '';
@@ -8,9 +9,11 @@ function fmt(p: bigint): string {
 }
 
 export default async function BalanceSheetPage({ searchParams }: { searchParams: Promise<{ asOf?: string }> }) {
+  // Same owner-side gate as the rest of /admin/accounting/*.
+  const ctx = await requirePermission('tenant.settings');
   const sp = await searchParams;
   const asOf = sp.asOf ? new Date(sp.asOf) : new Date();
-  const r = await renderBalanceSheet(asOf);
+  const r = await renderBalanceSheet(ctx.tenantId, asOf);
   return (
     <main className="p-6">
       <h1 className="text-2xl font-semibold mb-4">Balance Sheet</h1>

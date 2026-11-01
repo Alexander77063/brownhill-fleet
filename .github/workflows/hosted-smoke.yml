@@ -1,13 +1,28 @@
 # .github/workflows/hosted-smoke.yml
 #
-# Hosted stack smoke — spins up Postgres + PostgREST via docker compose,
-# applies every migration, runs the integration / portability / migrations-
-# regression / hosted-smoke shell suites. Requires a runner with Docker
-# AND a Pulsar-shaped environment (Postgres reachable, PostgREST image,
-# the supabase shim), so it's pinned to `runs-on: [self-hosted, pulsar]`
-# — the standard `ubuntu-latest` GH runner cannot satisfy these. The
-# unit-tests workflow runs everywhere and gives a fast signal; this one
-# is the real one when you can run it.
+# Hosted stack smoke — spins up Postgres + PostgREST + the Next app via docker
+# compose, and runs the integration / portability / migrations-regression /
+# hosted-smoke suites against it.
+#
+# Two jobs, and the split is about what each environment can actually prove.
+#
+#   hosted-smoke            — ubuntu-latest. Everything in the compose stack is
+#                             self-contained, so this job can run the whole
+#                             migration replay, the row-level-security proof and
+#                             the application smoke on a standard runner. It
+#                             runs on every PR that touches the schema.
+#
+#   hosted-smoke-production — the self-hosted `pulsar` runner, which is the
+#                             only place the production-shaped assertions can
+#                             run: the ones that need systemd, the real
+#                             backup service, the b2 CLI and the actual
+#                             certificate. It is opt-in (workflow_dispatch)
+#                             because there is no runner registered to the
+#                             repository, and a job pinned to a runner that
+#                             does not exist sits queued forever and gates
+#                             nothing.
+#
+# The `unit-tests` workflow runs everywhere and gives the fast signal.
 
 name: hosted-smoke
 
@@ -16,51 +31,239 @@ on:
     paths:
       - 'supabase/migrations/**'
       - 'standalone/sql/**'
+      - 'standalone/scripts/**'
       - 'hosted/**'
       - 'package.json'
       - '.github/workflows/hosted-smoke.yml'
   workflow_dispatch:
+    inputs:
+      production:
+        description: 'Also run the production-shaped job (needs the self-hosted pulsar runner)'
+        type: boolean
+        default: false
 
 concurrency:
   group: hosted-smoke-${{ github.ref }}
-  cancel-in-progress: false
+  # Cancel the previous run when a new one starts.
+  #
+  # This was `false`, and it cost this repository its hosted smoke entirely.
+  # A run that was queued for a runner that does not exist holds its
+  # concurrency group for as long as it is queued — GitHub cancels such a run
+  # after 24 hours — so every later run for the same pull request waited
+  # behind it, and no run for the pull request ever reached a runner at all.
+  # The unit-tests workflow has always cancelled duplicates for exactly this
+  # reason.
+  cancel-in-progress: true
 
 jobs:
   hosted-smoke:
-    runs-on: [self-hosted, pulsar]
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    # The job runs four suites against a real stack: the compose build, the
+    # migration replay, the bootstrap-idempotency gate and the application
+    # smoke. Each of the last three replays the whole migration history
+    # against its own database, and the replay is not fast. 45 minutes was
+    # enough for two of them; there are now four, so the ceiling is 90.
+    #
+    # The number is deliberately generous. This job had never once reached a
+    # runner, so there is no measured duration to budget against — the only
+    # honest guess is the one taken from the same suites run on a developer
+    # machine (the replay alone is over half an hour there, and a CI runner
+    # is faster, but not by an order of magnitude). A ceiling that is too low
+    # costs a whole cycle: the run is killed at 59 minutes and the next one
+    # starts from nothing. A ceiling that is too high costs nothing — the job
+    # ends when it ends.
+    timeout-minutes: 90
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
     steps:
       - uses: actions/checkout@v4
+      - name: The migration ledger's fingerprint
+        # The ledger's fingerprint — the set of objects each migration
+        # creates — is what makes a baseline CHECKABLE rather than merely
+        # asserted. It has to see tables, enum types AND functions, because
+        # the early migrations create all three.
+        #
+        # It used to see tables only: the three greps shared one stdin, so
+        # the first consumed the whole stream and the other two matched
+        # nothing. The consequence was a baseline that claimed a migration
+        # creating only enums being ACCEPTED against an empty database — and
+        # the ledger then recorded it as applied, so the schema was left
+        # silently broken.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/schema-ledger-fingerprint.sh
+      - name: Environment-variable names and wiring
+        # The deployment's settings are environment variables, and a variable
+        # that is SET under one spelling and READ under another does not
+        # fail — it is ignored, and the script carries on with a fallback that
+        # works on the developer's machine and not on the box. This check
+        # asserts there is one spelling, that everything read is provided and
+        # that everything provided is read.
+        #
+        # It is a static check over the repository: no docker, no database, a
+        # second of work. It runs first because it is the cheapest gate that
+        # can catch the most expensive mistake.
+        run: bash hosted/tests/env-var-names.sh
+      - name: The off-host backup's path prefix
+        # The copy that leaves the box is the reason a backup exists. It is
+        # filed under a path built from the deployment's hostname, and that
+        # variable was read under a name nobody provided — so every dump
+        # landed under a placeholder path nobody looks in. This drives the
+        # real backup script with a stubbed b2: the right path, the
+        # pre-rename name still working, and a loud refusal when there is no
+        # hostname at all.
+        run: bash hosted/tests/backup-offhost-target.sh
+      - name: The bootstrap waiter can find the bootstrap
+        # A step that waits for the stack's bootstrap has to be able to FIND
+        # it, and the obvious way to find a container does not work:
+        # `docker compose ps` lists only the project's RUNNING containers, so
+        # a oneshot that has already exited is invisible to it — and a
+        # bootstrap that has exited is exactly what the step is looking for.
+        # The hosted smoke's own wait step did exactly that on 2026-10-31 and
+        # failed a job whose bootstrap had applied all 81 migrations and
+        # exited cleanly.
+        #
+        # This gate builds a real compose project with a real oneshot and
+        # proves the waiter finds it, reports a failure with the service's
+        # own log, and waits for one that is still running. It needs only
+        # docker, so it runs before the build.
+        run: bash hosted/tests/bootstrap-wait.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
+      - name: The portability proof's own guards
+        # The proof decides whether a deployment is fit to hand over, so its
+        # own guards have to be trustworthy. Four of them could never pass:
+        # the backup assertion asked for `systemctl` rather than for the
+        # Brownhill unit; the HTTPS assertion passed `-k` (skip
+        # verification) AND `--cacert` together, so the CA was decorative;
+        # the tenant assertion loaded a package this project does not
+        # depend on; and the off-host assertion synced to a bucket named
+        # "test" instead of reading the box's own recorded state.
+        #
+        # A guard that can never pass is not a guard — in a build log a
+        # skipped assertion is indistinguishable from a passing one. This
+        # gate holds those guards to their promises: off the deployed box
+        # they SKIP and the proof still exits 0; on a box a missing backup
+        # unit FAILS; a job told it must be on the box FAILS when it is
+        # not; the proof loads nothing the project does not have; the CA it
+        # verifies against is actually tracked in git; the HTTPS assertion
+        # really verifies; and the token it presents carries the claims the
+        # application itself mints.
+        #
+        # It needs no docker, no database and no stack, and it runs BEFORE
+        # the compose build so a regression in the proof costs a second
+        # rather than the whole image build.
+        run: bash hosted/tests/portability-guards.sh
       - name: Spin up hosted stack
-        run: docker compose -f hosted/dev/docker-compose.yml up -d
-      - name: Wait for hosted Postgres to accept queries
+        # `--build` is not optional. `docker compose up` reuses an existing
+        # `dev-next` image when there is one, so a stack that was brought up
+        # before a source change keeps running the OLD bundle — and every
+        # assertion afterwards is testing yesterday's code. On a fresh CI
+        # runner the flag is free; on a developer machine it is the
+        # difference between testing the change and testing a memory of it.
+        #
+        # If the stack does not come up, the bootstrap's own log is printed
+        # here. Compose's message is terse — "service "bootstrap" didn't
+        # complete successfully: exit 3" — and it does not say WHY. The
+        # reason is in the bootstrap's output, and the operator should not
+        # have to go and find it.
         run: |
-          for _ in $(seq 1 30); do
-            docker exec -u postgres $(docker compose -f hosted/dev/docker-compose.yml ps -q postgres) psql -c 'SELECT 1' && break
-            sleep 1
-          done
-      - name: Apply hosted schema + shim
-        run: |
-          PG=$(docker compose -f hosted/dev/docker-compose.yml ps -q postgres)
-          docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < standalone/sql/0000_supabase_shim.sql
-          for f in $(ls -1 supabase/migrations/*.sql | sort); do
-            docker exec -u postgres "$PG" psql -v ON_ERROR_STOP=1 -f /dev/stdin < "$f"
-          done
-      - name: Run hosted integration tests (DEPLOYMENT_PROFILE=hosted)
-        run: DEPLOYMENT_PROFILE=hosted pnpm --filter @brownhill/webapp test
-      - name: Hosted portability proof (assertions 0–14)
+          if ! docker compose -f hosted/dev/docker-compose.yml up -d --build --wait; then
+            echo "the stack did not come up; the bootstrap's own log follows:"
+            docker compose -f hosted/dev/docker-compose.yml logs bootstrap || true
+            exit 1
+          fi
+      # The stack provisions itself: the `bootstrap` service runs the real
+      # hosted/bootstrap/brownhill-bootstrap.sh, which applies the shim, every
+      # migration and the app_state table, and exits non-zero if any of that
+      # fails. `next` waits for it, so by the time this step runs the schema
+      # is there.
+      - name: Wait for the bootstrap to finish
+        # Waiting for the bootstrap and LOOKING FOR the bootstrap are not the
+        # same thing. `docker compose ps -q` lists only the project's
+        # RUNNING containers, so a oneshot that has already exited is
+        # invisible to it — and a bootstrap that has exited is exactly what
+        # this step is looking for. This step used to do the lookup itself,
+        # and on 2026-10-31 it failed a job whose bootstrap had in fact
+        # applied all 81 migrations and exited cleanly: the job's log carried
+        # the bootstrap's successful output right beside the failure.
+        #
+        # The script finds the container with `--all` and blocks on its exit
+        # code, so the wait is exactly as long as the bootstrap takes.
+        run: bash hosted/scripts/wait-for-bootstrap.sh --compose-file hosted/dev/docker-compose.yml
+      - name: Run the integration suite (DEPLOYMENT_PROFILE=hosted)
+        run: DEPLOYMENT_PROFILE=hosted pnpm test
+      - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh
+      - name: The chain assertion can fail
+        # The proof's assertion 14 verifies nginx's certificate chain against
+        # the test CA. A verification that cannot fail is not a verification.
+        # This runs the proof against the same live stack with a CA that
+        # signed nothing, and requires the proof to FAIL on assertion 14.
+        #
+        # It is here because assertion 14 failed this very job on 2026-10-31
+        # while the stack was healthy: it judged the chain by an HTTP status
+        # whitelist that did not include the 307 nginx answers for /. An
+        # assertion that cries wolf at a healthy server is a guard nobody can
+        # trust to catch a sick one.
+        run: bash hosted/tests/tls-assertion-negative.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
+      - name: Bootstrap idempotency (a re-run applies nothing)
+        # The bootstrap is a systemd oneshot that runs on every boot, so it has
+        # to be a no-op against a database that is already provisioned. It was
+        # not: it applied every migration from the top and died on 0001, which
+        # creates the `user_role` enum without a guard.
+        run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
       - name: Tear down
         if: always()
-        run: docker compose -f hosted/dev/docker-compose.yml down
+        run: docker compose -f hosted/dev/docker-compose.yml down -v
+
+  hosted-smoke-production:
+    # Opt-in only. The assertions this job runs need a machine shaped like
+    # the production VM — systemd, the backup unit, the b2 CLI — so it runs
+    # on the self-hosted `pulsar` runner and only when a human asks for it.
+    if: github.event_name == 'workflow_dispatch' && inputs.production
+    runs-on: [self-hosted, pulsar]
+    # The same three suites as the job above — the replay, the idempotency
+    # gate and the smoke — minus the compose build, which the box already
+    # has. The replay and the gate are the bulk of it, so the ceiling is
+    # the same reasoning with the build taken off.
+    timeout-minutes: 60
+    env:
+      JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
+      BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+    steps:
+      - uses: actions/checkout@v4
+      - name: The migration ledger's fingerprint
+        run: bash hosted/tests/schema-ledger-fingerprint.sh
+      - name: Environment-variable names and wiring
+        run: bash hosted/tests/env-var-names.sh
+      - name: The off-host backup's path prefix
+        run: bash hosted/tests/backup-offhost-target.sh
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: The portability proof's own guards
+        # The same gate as the hosted job above. It matters more here: this
+        # is the job that runs the proof against the REAL box, where the
+        # box-shaped assertions are supposed to PASS rather than skip. A
+        # guard that silently skipped there would turn this job into a job
+        # that proves nothing while still going green.
+        run: bash hosted/tests/portability-guards.sh
+      - name: The bootstrap waiter can find the bootstrap
+        run: bash hosted/tests/bootstrap-wait.sh
+      - name: Hosted portability proof against the live stack
+        run: bash hosted/tests/verify-hosted-portability.sh
+      - name: Migrations-regression
+        run: bash hosted/tests/migrations-regression.sh
+      - name: Bootstrap idempotency (a re-run applies nothing)
+        run: bash hosted/tests/hosted-bootstrap-idempotency.sh
+      - name: Hosted smoke
+        run: bash hosted/tests/smoke/hosted-smoke.sh

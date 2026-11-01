@@ -1,6 +1,9 @@
 -- Seed: realistic Elite Fleet Management demo data drawn from the investor memorandum.
 -- Domain rows only. Demo auth users (ops/driver/investor) are created by
--- `node scripts/seed-auth.mjs` which links the demo driver to DRIVER #1 below.
+-- `SEED_PASSWORD='choose-one' node scripts/seed-auth.mjs`, which links the demo
+-- driver to DRIVER #1 below. The seed needs a password you choose: none is
+-- published in this repository, and it will not run against a server that is not
+-- on this machine unless SEED_ALLOW_REMOTE=1.
 -- Money is in pence.
 
 -- ── tenant attribution ──────────────────────────────────────────────────────
@@ -63,18 +66,27 @@ values
  ('d3333333-3333-3333-3333-333333333333','Marcus Bell','marcus.b@example.test','+447700900003','88 Kensington High St, London W8','1982-07-21','active','PCO-330942','2026-07-05','BELLM820721MB3QR','Ij90 Kl12','2026-02-18'),
  ('d4444444-4444-4444-4444-444444444444','Aisha Rahman','aisha.r@example.test','+447700900004','3 Shoreditch High St, London E1','1994-02-28','vetting','PCO-441276','2027-01-20',null,null,null);
 
+-- The monthly contract columns (term_months, monthly_gross_pence,
+-- agreed_vehicle_price_pence, agreed_vehicle_cost_pence) are the rentee's
+-- signed side of a rent-to-buy; the weekly columns are what we bill. For the
+-- seeded RTB rows the two are the same contract: 156 weeks is 36 months
+-- (156 * 12 / 52 = 36 exactly) and £1,020 a week over 156 weeks is £4,420 a
+-- month (102000 * 156 / 36 = 442000). agreed_vehicle_cost_pence is left null
+-- so the report falls back to the funder invoice, which is where the cost
+-- really came from.
 insert into agreements (id, type, vehicle_id, driver_id, status, start_date, term_weeks,
   weekly_gross_pence, weekly_net_pence, weekly_vat_pence, deposit_pence,
-  option_credit_weekly_pence, agreed_residual_pence, excess_mile_pence, signed_on)
+  option_credit_weekly_pence, agreed_residual_pence, excess_mile_pence, signed_on,
+  term_months, monthly_gross_pence, agreed_vehicle_price_pence, agreed_vehicle_cost_pence)
 values
  -- a1: RTB on v1, started ~30 weeks ago, rich history (RTB excess is 15p/mile)
- ('a1111111-1111-1111-1111-111111111111','rtb','11111111-1111-1111-1111-111111111111','d1111111-1111-1111-1111-111111111111','active',(current_date - 210),156,102000,85000,17000,500000,16250,3500000,15,(current_date - 212)),
+ ('a1111111-1111-1111-1111-111111111111','rtb','11111111-1111-1111-1111-111111111111','d1111111-1111-1111-1111-111111111111','active',(current_date - 210),156,102000,85000,17000,500000,16250,3500000,15,(current_date - 212),36,442000,11700000,null),
  -- a2: standard on v2 (default £1.00/mile)
- ('a2222222-2222-2222-2222-222222222222','standard','22222222-2222-2222-2222-222222222222','d2222222-2222-2222-2222-222222222222','active',(current_date - 140),null,82500,68750,13750,100000,null,null,100,(current_date - 142)),
+ ('a2222222-2222-2222-2222-222222222222','standard','22222222-2222-2222-2222-222222222222','d2222222-2222-2222-2222-222222222222','active',(current_date - 140),null,82500,68750,13750,100000,null,null,100,(current_date - 142),null,null,null,null),
  -- a3: standard on v3 (custom £1.20/mile — proves the charge is data-driven)
- ('a3333333-3333-3333-3333-333333333333','standard','33333333-3333-3333-3333-333333333333','d3333333-3333-3333-3333-333333333333','active',(current_date - 70),null,82500,68750,13750,100000,null,null,120,(current_date - 72)),
+ ('a3333333-3333-3333-3333-333333333333','standard','33333333-3333-3333-3333-333333333333','d3333333-3333-3333-3333-333333333333','active',(current_date - 70),null,82500,68750,13750,100000,null,null,120,(current_date - 72),null,null,null,null),
  -- a4: RTB draft for v4 + d4 (pending)
- ('a4444444-4444-4444-4444-444444444444','rtb','44444444-4444-4444-4444-444444444444','d4444444-4444-4444-4444-444444444444','draft',null,156,102000,85000,17000,500000,16250,3500000,15,null);
+ ('a4444444-4444-4444-4444-444444444444','rtb','44444444-4444-4444-4444-444444444444','d4444444-4444-4444-4444-444444444444','draft',null,156,102000,85000,17000,500000,16250,3500000,15,null,36,442000,11700000,null);
 
 -- Deposits held
 insert into deposit_ledger (agreement_id, event, amount_pence, reason, occurred_on) values

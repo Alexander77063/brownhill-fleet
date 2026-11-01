@@ -75,6 +75,14 @@ export interface Agreement {
   deposit_pence: number;
   option_credit_weekly_pence: number | null;
   agreed_residual_pence: number | null;
+  /** Rent-to-buy: the monthly term the rentee signed. Null for a standard rental. */
+  term_months: number | null;
+  /** Rent-to-buy: the monthly payment the rentee signed, VAT-inclusive. */
+  monthly_gross_pence: number | null;
+  /** Rent-to-buy: the price the rentee is buying the car at. */
+  agreed_vehicle_price_pence: number | null;
+  /** Rent-to-buy: what the car cost. Null when it was not recorded. */
+  agreed_vehicle_cost_pence: number | null;
   excess_mile_pence: number;
   signed_on: string | null;
 }

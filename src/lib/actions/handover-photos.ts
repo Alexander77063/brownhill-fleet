@@ -8,7 +8,7 @@
 
 import { localDb } from '@/lib/auth/local-store';
 import { createServiceClient } from '@/lib/supabase/server';
-import { storagePut, STORAGE_BUCKETS } from '@/lib/storage';
+import { storagePut, HANDOVER_PHOTO_BUCKET } from '@/lib/storage';
 import { isValidHandoverPhotoKind } from '@/lib/sign/handover-photo';
 
 export interface HandoverUploadResult {
@@ -64,7 +64,7 @@ export async function recordHandoverPhotos(formData: FormData): Promise<void> {
     const path = `tenants/${session.tenant_id}/handover/${session.agreement_id}/${kind}/${Date.now()}-${uploaded}${ext}`;
 
     const buf = new Uint8Array(await f.arrayBuffer());
-    await storagePut(STORAGE_BUCKETS[0], path, buf, f.type || 'image/jpeg');
+    await storagePut(HANDOVER_PHOTO_BUCKET, path, buf, f.type || 'image/jpeg');
 
     const { error } = await sb.from('agreement_handover_photos' as never).insert({
       agreement_id: session.agreement_id,

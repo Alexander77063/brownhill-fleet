@@ -3,8 +3,14 @@
 // /driver/login — driver-specific signin. The driver is invited by ops at
 // /ops/drivers; ops prints a /driver/login URL the driver uses. Same auth
 // endpoint as the generic /login (PBKDF2 in auth.local_credentials, no
-// magic-link on standalone). On success, hard-redirect to /driver — the
-// driver layout's requireRole(['driver']) will accept only driver rows.
+// magic-link off-SaaS). On success, hard-redirect to /driver — the driver
+// portal's requireRole(['driver']) will accept only driver rows.
+//
+// This page is deliberately NOT under the driver portal's layout. That layout
+// demands a session, so a signed-out driver used to be redirected away from
+// this very page before it could render — the URL the operations app hands
+// out was a dead end. The guarded pages live in `src/app/driver/(portal)/`
+// instead; see tests/unit/signin-reachability.test.ts.
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -59,8 +65,7 @@ export default function DriverLoginPage() {
         <p className="eyebrow text-gold">Driver</p>
         <h1 className="mt-1 font-display text-3xl text-cream">Driver sign-in</h1>
         <p className="mt-2 text-sm text-muted">
-          Use the email your operator invited you with. Need help?
-          <Link href="/login" className="ml-1 text-gold-bright hover:underline">talk to your dispatcher</Link>.
+          Use the email your operator invited you with.
         </p>
 
         <label className={labelCls} htmlFor="drv-email">Email</label>
@@ -107,15 +112,27 @@ export default function DriverLoginPage() {
         ) : null}
 
         <div className="mt-5">
-          <Link href="/driver/profile" className="text-sm text-gold-bright hover:underline">
-            Forgot password?
-          </Link>
-        </div>
-
-        <div className="mt-4">
           <Button type="submit" disabled={busy} className="w-full">
             {busy ? 'Signing in…' : 'Sign in'}
           </Button>
+        </div>
+
+        {/* The recovery route, said plainly.
+            This used to be a "Forgot password?" link to /driver/profile — a
+            page behind the driver layout, so a driver who had forgotten their
+            password was bounced straight back here, in a loop. And the link
+            labelled "talk to your dispatcher" pointed at /login, which is not
+            a dispatcher. Both were dead ends wearing the costume of help.
+            The truth is that a driver's password is reset by the operator,
+            from the driver's record in the operations app. */}
+        <div className="mt-5 rounded-[var(--radius)] border border-hair-soft bg-[rgba(255,255,255,0.03)] p-3">
+          <p className="text-sm text-parchment">Forgotten your password?</p>
+          <p className="mt-1 text-xs text-muted">
+            Ask your dispatcher to reset it. They open your record in the operations
+            app and press <span className="text-cream">Reset password</span>, then read
+            you a temporary password. We cannot reset it from this page — that is
+            what would let anyone take over a driver&apos;s account.
+          </p>
         </div>
       </form>
     </main>

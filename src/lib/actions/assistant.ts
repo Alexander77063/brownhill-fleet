@@ -5,7 +5,11 @@ import { requirePermission } from "@/lib/auth/context";
 import { saveTenantAiConfig, clearTenantAiKey } from "@/lib/ops/assistant";
 import { isAiProvider, type AiProvider } from "@/lib/ai/providers";
 
-const SETTINGS = "/ops/settings/assistant";
+// The assistant settings form lives at /admin/assistant. The path this used
+// to revalidate — "/ops/settings/assistant" — has never existed, so the
+// revalidation was a silent no-op and the page the operator had just saved
+// showed the old configuration until they hard-refreshed.
+const SETTINGS = "/admin/assistant";
 
 /** Save the tenant's Fleet Assistant config. Gated to tenant admins/owners. */
 export async function saveTenantAiConfigAction(formData: FormData): Promise<void> {

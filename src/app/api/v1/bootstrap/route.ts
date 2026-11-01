@@ -8,11 +8,16 @@ import { createFirstUserAndTenant, localDb } from '@/lib/auth/local-store';
 import { issueAccessPair } from '@/lib/auth/access-tokens';
 import { verifyBootstrapSignature } from './_verify';
 import { getAppState, setAppState } from '@/lib/app-state';
+import { deploymentProfile } from '@/lib/deployment/profile';
 
-const HOSTED = process.env.DEPLOYMENT_PROFILE === 'standalone';
+// First-run setup exists only on a box the customer operates. It used to gate
+// on `DEPLOYMENT_PROFILE === 'standalone'` — the *desktop* product — so on the
+// hosted deployment Brownhill actually runs, this answered 404 and a fresh
+// install had no way to create its first account.
+const CUSTOMER_OPS = deploymentProfile().customerOps;
 
 export async function POST(req: NextRequest) {
-  if (!HOSTED) return new NextResponse('Not found', { status: 404 });
+  if (!CUSTOMER_OPS) return new NextResponse('Not found', { status: 404 });
 
   const raw = await req.text();
   const t = Number(req.headers.get('x-bootstrap-t') ?? '0');

@@ -1,0 +1,76 @@
+# syntax=docker/dockerfile:1
+#
+# hosted/dev/Dockerfile.next — the hosted-profile Next.js app, for the local
+# and CI stack.
+#
+# The compose stack pointed at this file from the day it was written, and the
+# file was never written — so `docker compose up` could not build the `next`
+# service, and the CI job that spins the stack up failed on it before it
+# reached any of the tests.
+#
+# Two build flags matter here and neither is the default:
+#
+#   DEPLOYMENT_PROFILE=hosted  — the profile the deployment runs. It is baked
+#     into the bundle (NEXT_PUBLIC_DEPLOYMENT_PROFILE), so it has to be set at
+#     build time, not just at run time.
+#
+#   BUILD_STANDALONE=1         — turns on next.config.ts's `output:
+#     'standalone'` and its `/rest/v1 → PostgREST` rewrite. The rewrite is
+#     what lets the app's own origin speak Supabase's REST dialect, so the
+#     370 .from() calls in src/ need no changes. Without this flag the app
+#     builds, runs, and then cannot reach its own database through the
+#     PostgREST path.
+#
+# Debian, not Alpine: sharp's prebuilt binaries are glibc builds. On musl the
+# install script has no prebuild to find and falls back to compiling, which
+# needs a toolchain this image does not carry.
+
+FROM node:22-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN corepack enable
+WORKDIR /app
+
+# ── dependencies ─────────────────────────────────────────────────────────────
+# A separate layer so a source change does not re-run the install.
+FROM base AS deps
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+# ── build ────────────────────────────────────────────────────────────────────
+FROM deps AS build
+COPY . .
+ENV DEPLOYMENT_PROFILE=hosted
+ENV BUILD_STANDALONE=1
+#
+# Where PostgREST listens, baked into the bundle.
+#
+# Next resolves `rewrites()` when the app is BUILT, not when it starts, so the
+# POSTGREST_URL in docker-compose.yml's runtime environment has no effect on
+# the `/rest/v1` rewrite — it has to be here, at build time, or the rewrite
+# points at the default 127.0.0.1:55430, which inside this container is
+# nothing at all, and every .from() call in the app fails.
+#
+# The middleware's drain check bakes the same URL through
+# `compiler.defineServer`, so the two cannot drift apart.
+ARG POSTGREST_URL=http://postgrest:3000
+ENV POSTGREST_URL=$POSTGREST_URL
+RUN pnpm build:icons && pnpm exec next build
+
+# ── runtime ─────────────────────────────────────────────────────────────────
+FROM base AS runner
+ENV NODE_ENV=production
+ENV PORT=55431
+ENV HOSTNAME=0.0.0.0
+WORKDIR /app
+
+# The standalone output carries only the node_modules the server actually
+# reached. The two directories below are NOT part of it and have to be copied
+# in by hand, or the app serves HTML with no stylesheets and no icons.
+COPY --from=build /app/public ./public
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+
+EXPOSE 55431
+CMD ["node", "server.js"]

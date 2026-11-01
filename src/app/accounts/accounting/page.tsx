@@ -35,6 +35,10 @@ export default async function AccountingHomePage() {
   const tiles: { href: string; label: string; perm: string; icon: 'wallet' | 'check' | 'trending' | 'doc' | 'clock' | 'receipt' | 'shield' | 'pound' }[] = [
     { href: '/accounts/accounting/banks', label: 'Bank accounts', perm: 'billing.write', icon: 'wallet' },
     { href: '/accounts/accounting/reconcile', label: 'Reconcile', perm: 'billing.write', icon: 'check' },
+    // Chart of accounts and periods were reachable only by typing the URL —
+    // they existed, they were never linked from the hub or the nav.
+    { href: '/accounts/accounting/coa', label: 'Chart of accounts', perm: 'billing.read', icon: 'doc' },
+    { href: '/accounts/accounting/periods', label: 'Periods', perm: 'billing.write', icon: 'clock' },
     { href: '/accounts/accounting/reports/pnl', label: 'Profit & Loss', perm: 'reports.operational', icon: 'trending' },
     { href: '/accounts/accounting/reports/balance-sheet', label: 'Balance sheet', perm: 'reports.operational', icon: 'doc' },
     { href: '/accounts/accounting/reports/cashflow', label: 'Cashflow', perm: 'reports.operational', icon: 'trending' },

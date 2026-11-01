@@ -1,0 +1,81 @@
+// tests/unit/safe-next.test.ts
+//
+// `safeNextPath` decides where a user is sent after a sign-in or an OAuth
+// round trip. If it accepts something it should not, the product has an open
+// redirect; if it rejects something it should accept, a legitimate operator
+// lands on a dead page. Both directions are asserted here.
+//
+// The `allowedPrefixes` argument is what keeps a redirect inside the console
+// it started in — an operator deep in /accounts/ must not be bounced into a
+// part of the app they cannot reach.
+
+import { describe, expect, it } from 'vitest';
+import { safeNextPath } from '../../src/lib/safe-next';
+
+describe('safeNextPath', () => {
+  it('accepts a path on this origin', () => {
+    expect(safeNextPath('/accounts/accounting/mtd')).toBe('/accounts/accounting/mtd');
+    expect(safeNextPath('/admin/status?tab=db')).toBe('/admin/status?tab=db');
+    expect(safeNextPath('/dashboard#top')).toBe('/dashboard#top');
+  });
+
+  it('rejects anything that could leave this origin', () => {
+    expect(safeNextPath('https://evil.example/x')).toBe('/');
+    expect(safeNextPath('//evil.example/x')).toBe('/');
+    // Browsers normalise a backslash to a slash, so `/\evil.example` becomes
+    // `//evil.example` by the time the browser acts on it.
+    expect(safeNextPath('/\\evil.example/x')).toBe('/');
+    expect(safeNextPath('http://evil.example')).toBe('/');
+    expect(safeNextPath('javascript:alert(1)')).toBe('/');
+    expect(safeNextPath('data:text/html,<script>')).toBe('/');
+  });
+
+  it('rejects control characters, whitespace and non-strings', () => {
+    expect(safeNextPath('/path\x00/x')).toBe('/');
+    expect(safeNextPath('/path\n/x')).toBe('/');
+    expect(safeNextPath('/path\r\nSet-Cookie: x')).toBe('/');
+    expect(safeNextPath('/path /x')).toBe('/');
+    expect(safeNextPath(null)).toBe('/');
+    expect(safeNextPath(undefined)).toBe('/');
+    expect(safeNextPath(42)).toBe('/');
+    expect(safeNextPath({})).toBe('/');
+    expect(safeNextPath('')).toBe('/');
+    expect(safeNextPath('/' + 'a'.repeat(4096))).toBe('/');
+  });
+
+  it('uses the fallback when the candidate is rejected', () => {
+    expect(safeNextPath('https://evil.example', '/accounts/accounting/mtd')).toBe('/accounts/accounting/mtd');
+  });
+
+  describe('with allowedPrefixes', () => {
+    const allowed = ['/accounts/accounting', '/admin/accounting'];
+
+    it('accepts a path inside an allowed prefix', () => {
+      expect(safeNextPath('/accounts/accounting/mtd', '/', allowed)).toBe('/accounts/accounting/mtd');
+      expect(safeNextPath('/accounts/accounting/reports/vat-return?period=2026-10', '/', allowed)).toBe(
+        '/accounts/accounting/reports/vat-return?period=2026-10',
+      );
+      expect(safeNextPath('/admin/accounting/banks', '/', allowed)).toBe('/admin/accounting/banks');
+    });
+
+    it('accepts the prefix itself', () => {
+      expect(safeNextPath('/accounts/accounting', '/', allowed)).toBe('/accounts/accounting');
+    });
+
+    it('rejects a path outside every allowed prefix', () => {
+      expect(safeNextPath('/accounts/dashboard', '/', allowed)).toBe('/');
+      expect(safeNextPath('/admin/restore', '/', allowed)).toBe('/');
+      expect(safeNextPath('/driver', '/', allowed)).toBe('/');
+    });
+
+    it('does not match a prefix that is only a string prefix of the path', () => {
+      // `/accounts/accounting-evil` starts with the characters of
+      // `/accounts/accounting` but is a different route.
+      expect(safeNextPath('/accounts/accounting-evil/x', '/', allowed)).toBe('/');
+    });
+
+    it('still rejects an off-origin URL even when its path would match', () => {
+      expect(safeNextPath('https://evil.example/accounts/accounting', '/', allowed)).toBe('/');
+    });
+  });
+});

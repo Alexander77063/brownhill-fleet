@@ -98,6 +98,16 @@ const ENTRIES = {
     body: 'Create standard rentals and rent-to-buy contracts, then generate a branded contract to e-sign. Weekly billing starts once an agreement is Active. Contracts are issued under your company, so set your Branding first.',
     steps: ['Add your company details in Settings → Branding', 'Pick a vehicle, a driver and the weekly terms', 'Create the agreement, then generate the contract to sign'],
   },
+  'page.rtb': {
+    title: 'Rent-to-buy calculator',
+    body: 'Price a rent-to-buy deal before you commit to it. Set the car’s price, the deposit, the term and the monthly payment, and the calculator works out what the rentee ends up paying, how much of the car they own at the end, what they still owe to take it, and what the deal earns Brownhill. You can also work backwards: give it a target rate and it solves the monthly payment or the buyout price.',
+    steps: [
+      'Pick a car from the fleet, or type its price in',
+      'Set the deposit, the term in months and the monthly payment (VAT included)',
+      'Read the cost to the rentee, the equity they build and Brownhill’s own yield',
+      'Work backwards from a target rate to solve the payment or the buyout price',
+    ],
+  },
   'page.fleet': {
     title: 'Your fleet',
     body: 'Every vehicle with its hire status, occupancy and contracted economics. Enter a registration and the DVLA lookup fills the details for you. Select a vehicle for its full finance and history.',

@@ -6,6 +6,8 @@ import { getMember } from '@/lib/tenancy';
 import { groupPermissions } from '@/app/admin/permissions-catalog';
 import { updateMemberAction } from '@/lib/actions/admin';
 import { effectivePermissions, type Role } from '@/lib/iam';
+import { localHasPassword } from '@/lib/auth/local-store';
+import { PasswordResetPanel } from '@/components/PasswordResetPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +38,12 @@ export default async function MemberEditPage({
 
   const member = await getMember(ctx.tenantId, userId);
   if (!member) notFound();
+
+  // Whether this account holds a password at all. A vehicle owner on the
+  // Nigerian builds signs in with a code sent to their phone, and there is
+  // nothing to reset for them. The database is asked directly because
+  // `auth.local_credentials` is not a table PostgREST serves.
+  const hasPassword = await localHasPassword(member.user_id).catch(() => true);
 
   // Effective permissions = role defaults ∪ the extras stored on the membership.
   // We render the union so the admin sees what the user currently has and can
@@ -105,6 +113,18 @@ export default async function MemberEditPage({
           </ul>
         </Card>
       </div>
+
+      <Card className="mt-4 max-w-2xl">
+        <CardTitle>Password</CardTitle>
+        <div className="mt-3">
+          <PasswordResetPanel
+            userId={hasPassword ? member.user_id : null}
+            who={member.full_name ?? member.email ?? 'this member'}
+            noAccount="This account signs in with a code sent to their phone number — there is no password to reset."
+            intro="Forgotten their password? Reset it here and read the temporary password out to them. They will be asked to change it once they are in."
+          />
+        </div>
+      </Card>
 
       <Card className="mt-4">
         <CardTitle>Extra permissions</CardTitle>

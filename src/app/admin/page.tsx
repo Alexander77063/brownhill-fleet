@@ -83,12 +83,19 @@ export default async function AdminPage() {
         actions={<Badge tone={tenant.status === 'active' ? 'profit' : 'loss'}>{tenant.status}</Badge>}
       />
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        <Button href="/admin/assistant" variant="outline" size="sm">Fleet Assistant</Button>
-        <Button href="/admin/branding" variant="outline" size="sm">Branding</Button>
-        <Button href="/admin/notifications" variant="outline" size="sm">Email & alerts</Button>
-        <Button href="/admin/tracking-rules" variant="outline" size="sm">Tracking rules</Button>
-      </div>
+      {canSettings && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          <Button href="/admin/assistant" variant="outline" size="sm">Fleet Assistant</Button>
+          <Button href="/admin/branding" variant="outline" size="sm">Branding</Button>
+          <Button href="/admin/notifications" variant="outline" size="sm">Email & alerts</Button>
+          <Button href="/admin/tracking-rules" variant="outline" size="sm">Tracking rules</Button>
+          {/* Accounting, the audit log and payment settings were reachable only
+              by typing the URL — nothing in the app linked to them. */}
+          <Button href="/admin/accounting" variant="outline" size="sm">Accounting</Button>
+          <Button href="/admin/audit" variant="outline" size="sm">Audit log</Button>
+          <Button href="/admin/payments" variant="outline" size="sm">Payments</Button>
+        </div>
+      )}
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {canSettings && (

@@ -44,7 +44,10 @@ create table booking_series (
   updated_at       timestamptz not null default now(),
   check (cardinality(days_of_week) between 1 and 7),
   check (end_date is null or end_date >= start_date),
-  check (every (d in days_of_week) (d between 0 and 6))
+  -- Every day must be 0..6. Postgres has no `every (d in arr) (pred)` scalar;
+  -- `<@` is the array "is contained by" operator, so this holds exactly when
+  -- every element of days_of_week is one of 0..6.
+  check (days_of_week <@ array[0,1,2,3,4,5,6])
 );
 
 create index booking_series_tenant_idx on booking_series (tenant_id, status);
@@ -55,8 +58,12 @@ create trigger trg_booking_series_updated before update on booking_series
 
 alter table booking_series enable row level security;
 
+-- is_tenant_member() comes from 0016_tenancy.sql -- the same tenant predicate
+-- 0017_tenant_scope.sql applies to every domain table. The file originally
+-- called current_tenant(), which no migration has ever defined, so these
+-- policies could not be created and this table never existed in any install.
 create policy tenant_select on booking_series for select to authenticated
-  using (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id));
 create policy tenant_modify on booking_series for all to authenticated
-  using (current_tenant() = tenant_id)
-  with check (current_tenant() = tenant_id);
+  using (is_tenant_member(tenant_id))
+  with check (is_tenant_member(tenant_id));

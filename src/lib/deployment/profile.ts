@@ -32,6 +32,20 @@ export interface DeploymentProfile {
   readonly supabaseAuth: boolean;
   /** This build has vehicle owners: the /owner portal and phone sign-in exist. */
   readonly ownerPortal: boolean;
+  /**
+   * The customer operates this instance themselves.
+   *
+   * True for the two Brownhill products, where the customer runs the box and
+   * therefore needs the operator surfaces that only make sense on a machine
+   * they control: first-run setup (`/api/v1/bootstrap`), the operator status
+   * surface (`/admin/status`) and the restore console (`/admin/restore`).
+   *
+   * False everywhere else. On `saas` the platform operator runs the backups;
+   * on the Nigerian `managed` profiles we provision the tenant by hand and run
+   * the instance for the customer, so there is no first-run flow to expose and
+   * no customer-owned box to restore.
+   */
+  readonly customerOps: boolean;
 }
 
 const PROFILES: Record<ProfileId, DeploymentProfile> = {
@@ -44,6 +58,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     region: 'uk',
     supabaseAuth: true,
     ownerPortal: false,
+    customerOps: false,
   },
   standalone: {
     id: 'standalone',
@@ -54,6 +69,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     region: 'uk',
     supabaseAuth: false,
     ownerPortal: false,
+    customerOps: true,
   },
   // Brownhill hosted: a single tenant's deployment on their own Linux server.
   // Behaviourally the same as standalone (no Supabase Auth, single tenant,
@@ -70,6 +86,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     region: 'uk',
     supabaseAuth: false,
     ownerPortal: false,
+    customerOps: true,
   },
   // A fleet operator or an insurer. We provision the tenant by hand, and they
   // pay us a per-vehicle subscription — the product IS the subscription, so
@@ -83,6 +100,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     region: 'ng',
     supabaseAuth: false,
     ownerPortal: true,
+    customerOps: false,
   },
   // Individual owners with one or two vehicles cannot justify an instance each,
   // so they share one. Self-serve signup is on because nobody will hand-onboard
@@ -96,6 +114,7 @@ const PROFILES: Record<ProfileId, DeploymentProfile> = {
     region: 'ng',
     supabaseAuth: false,
     ownerPortal: true,
+    customerOps: false,
   },
 };
 
@@ -108,6 +127,21 @@ function isRegionId(v: string): v is RegionId {
 }
 
 /**
+ * The first of `values` that is actually set.
+ *
+ * An empty string is "not set" — a deploy config that defines the variable but
+ * leaves it blank is the same as one that never mentions it — so it is skipped
+ * rather than returned and then rejected as an unknown profile.
+ */
+function firstSet(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+/**
  * Resolve the active profile.
  *
  * Unset means `saas`, because the deployed product must keep working untouched
@@ -115,9 +149,24 @@ function isRegionId(v: string): v is RegionId {
  * falling back — a typo in a deploy config silently shipping the full SaaS
  * surface (self-serve signup, subscription checkout, the cross-tenant console)
  * to a standalone customer is precisely the failure worth being loud about.
+ *
+ * ## Why the public name is consulted too
+ *
+ * `DEPLOYMENT_PROFILE` is a runtime variable, and the Edge runtime has no
+ * runtime environment: Next gives the middleware sandbox only its own build-id
+ * keys, so `process.env.DEPLOYMENT_PROFILE` is `undefined` there and the
+ * middleware silently believed it was running as `saas`.
+ *
+ * `NEXT_PUBLIC_DEPLOYMENT_PROFILE` is the same value inlined into the bundle at
+ * build time by next.config.ts, and it is the only one the Edge can see. So
+ * the runtime name wins where it exists (the Node runtime, where it can
+ * change without a rebuild) and the public name covers the Edge.
  */
 export function deploymentProfile(): DeploymentProfile {
-  const raw = (process.env.DEPLOYMENT_PROFILE ?? 'saas').trim();
+  const raw = firstSet(
+    process.env.DEPLOYMENT_PROFILE,
+    process.env.NEXT_PUBLIC_DEPLOYMENT_PROFILE,
+  ) ?? 'saas';
   if (!isProfileId(raw)) {
     throw new Error(
       `Unknown DEPLOYMENT_PROFILE "${raw}". Expected one of: saas, standalone, managed, managed-shared.`,
@@ -125,9 +174,10 @@ export function deploymentProfile(): DeploymentProfile {
   }
   const base = PROFILES[raw];
 
-  // An empty string is "not set" (a deploy config that defines the variable but
-  // leaves it blank), not a value to validate.
-  const regionRaw = process.env.DEPLOYMENT_REGION?.trim();
+  const regionRaw = firstSet(
+    process.env.DEPLOYMENT_REGION,
+    process.env.NEXT_PUBLIC_DEPLOYMENT_REGION,
+  );
   if (!regionRaw) return base;
   if (!isRegionId(regionRaw)) {
     throw new Error(`Unknown DEPLOYMENT_REGION "${regionRaw}". Expected one of: uk, ng.`);

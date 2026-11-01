@@ -8,6 +8,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { getBlockedEntities } from '@/lib/compliance';
 import { expenseSummaryByCategory } from '@/lib/expenses';
 import { driverRecoverySummary } from '@/lib/reconciliation';
+import { assembleRtbReport, type RtbReport } from '@/lib/reports/rtb-data';
 
 export interface BoardReport {
   fleet: { vehicles: number; on_hire: number; off_road: number; utilisation_pct: number };
@@ -20,6 +21,13 @@ export interface BoardReport {
     charges_to_recover_pence: number;
   };
   expenses_by_category: { category: string; total_pence: number }[];
+  /**
+   * The rent-to-buy book, priced: what each rentee pays, what Brownhill earns,
+   * and the rate the whole book returns. Null when it cannot be assembled —
+   * an older database without the rent-to-buy contract still renders the rest
+   * of the pack.
+   */
+  rtb: RtbReport | null;
 }
 
 const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
@@ -27,7 +35,7 @@ const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 :
 export async function assembleBoardReport(tenantId: string): Promise<BoardReport> {
   const sb = createServiceClient();
 
-  const [vehicles, drivers, agreements, payments, obligations, blocked, expensesByCat, recovery] = await Promise.all([
+  const [vehicles, drivers, agreements, payments, obligations, blocked, expensesByCat, recovery, rtb] = await Promise.all([
     sb.from('vehicles').select('status').eq('tenant_id', tenantId),
     sb.from('drivers').select('status').eq('tenant_id', tenantId),
     sb.from('agreements').select('status').eq('tenant_id', tenantId),
@@ -36,6 +44,9 @@ export async function assembleBoardReport(tenantId: string): Promise<BoardReport
     getBlockedEntities(tenantId),
     expenseSummaryByCategory(tenantId),
     driverRecoverySummary(tenantId),
+    // The rent-to-buy book is a separate read: it prices every agreement, so
+    // it is worth a query of its own rather than a column on the fleet counts.
+    assembleRtbReport(tenantId).catch(() => null),
   ]);
 
   const vRows = (vehicles.data ?? []) as { status: string }[];
@@ -63,5 +74,6 @@ export async function assembleBoardReport(tenantId: string): Promise<BoardReport
       charges_to_recover_pence: toRecover,
     },
     expenses_by_category: expensesByCat,
+    rtb,
   };
 }

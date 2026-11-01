@@ -2,8 +2,13 @@
 #
 # Fast, runnable-on-anything CI: install deps, typecheck, run vitest.
 # Always green if the repo typechecks and the unit suite passes.
-# The hosted Pulsar / docker-compose smoke is in hosted-smoke.yml and
-# only runs on a self-hosted runner labelled `pulsar`.
+# The hosted stack's smoke is in hosted-smoke.yml, which runs on
+# ubuntu-latest too; its production-shaped job needs the self-hosted
+# `pulsar` runner and is opt-in.
+#
+# It also runs the repository's no-credential gate, because that gate is
+# about the repository and not about the deployment: it has to run on every
+# pull request, including the ones that touch nothing under hosted/.
 
 name: unit-tests
 
@@ -39,3 +44,142 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+      - name: Accessibility gates
+        # The design system claims WCAG 2.1 AA conformance for the colour
+        # tokens and that every control sits inside a <label>, and the
+        # accessibility statement on /accessibility is made on the strength
+        # of exactly these two checks.
+        #
+        # Both were promises in a document. `pnpm test:a11y` pointed at a
+        # test file that did not exist and failed with "No test files found",
+        # so the contrast claim was never checked by anything. The form audit
+        # existed but ran nowhere, so a new unlabelled control would have
+        # landed without anyone noticing.
+        run: |
+          pnpm a11y:forms
+          pnpm test:a11y
+      - name: The contrast gate can fail
+        # A gate that cannot fail is not a gate. This runs the real contrast
+        # test against three deliberately broken stylesheets and requires it
+        # to fail on each — including one where the light theme's block is
+        # gone, which would otherwise leave the gate checking the dark theme
+        # twice and calling it a pass.
+        run: bash hosted/tests/a11y-contrast-negative.sh
+      - name: No credential in the tree
+        # This repository is PUBLIC, and it has already published two
+        # credentials in plain text: the box's database superuser password,
+        # and the customer's own login password. Both were tracked files.
+        #
+        # Deleting the lines removed them from the checkout, not from the
+        # history — so the other half of that fix is ROTATION on the box,
+        # which the handover says how to do. This gate is the half that
+        # lives in the repository: it makes sure the NEXT one does not
+        # happen, and it runs on every pull request because a credential can
+        # land in any file at all.
+        run: bash hosted/tests/no-committed-credentials.sh
+      - name: The no-credential gate can fail
+        # A gate that cannot fail is not a gate. This runs it against a tree
+        # that really does hold a value of the hunted shape, and requires it
+        # to fail on the right rule.
+        #
+        # It earns its place. The first version of this gate passed every
+        # tree in the repository, including the ones it was written for: a
+        # greedy regular expression stripped the hit it had found, so the
+        # rule reported "no fallback" on a file that had one in plain text.
+        # The gate looked green for as long as it existed.
+        run: bash hosted/tests/no-committed-credentials-negative.sh
+      - name: The deployment's settings reach the application
+        # The application reads HMRC_MTD_CLIENT_ID, HMRC_MTD_CLIENT_SECRET,
+        # HMRC_MTD_REDIRECT_URI, HMRC_ENV and NEXT_PUBLIC_APP_URL. Nothing
+        # on the deployed box provided any of them, the handover named three
+        # of them differently, and the redirect URI it gave was a path the
+        # application does not serve.
+        #
+        # A variable that is SET under one spelling and READ under another
+        # does not fail — it is ignored, and the deployment says "not
+        # connected" with nothing anywhere saying why.
+        run: bash hosted/tests/mtd-env-wiring.sh
+      - name: The settings gate can fail
+        # A gate that cannot fail is not a gate. This runs it against four
+        # copies of the tree that each carry one of the faults the gate
+        # exists to catch, and requires it to fail on the right check each
+        # time.
+        run: bash hosted/tests/mtd-env-wiring-negative.sh
+      - name: The credential files are never readable by anybody else
+        # The installer writes the box's credentials: the database superuser
+        # password, the JWT signing secret, the HMAC key the first-run setup
+        # verifies against, the HMRC client secret and the off-host backup
+        # credentials.
+        #
+        # They were written straight to their final path, so for the length
+        # of the write each of them existed there — empty, and readable by
+        # every account on the box, because the redirect creates a file with
+        # the process umask and only the chmod afterwards narrows it.
+        #
+        # The writer now goes through a temporary file and a rename, and this
+        # gate watches the target path while the write is in progress, to
+        # prove it never holds an incomplete file — or a file with the wrong
+        # mode. The mode matters as much as the size: a credential that is
+        # world-readable for the length of one `chown` and one `chmod` has
+        # been exposed, and nothing checked that, because the gate looked at
+        # the file afterwards, by which time the trailing chmod had put the
+        # mode back.
+        run: bash hosted/tests/secret-file-permissions.sh
+      - name: The credential-file gate can fail
+        # A gate that cannot fail is not a gate. This runs it against three
+        # copies of the tree, each carrying one of the faults the gate
+        # exists to catch, and requires it to fail on the right check each
+        # time.
+        #
+        # It earns its place. The first version of this gate ran a probe
+        # that deleted only the narrowing before the rename — and the
+        # narrowing afterwards put the mode back, so the tree legitimately
+        # passed and the probe proved nothing but that the probe was wrong.
+        run: bash hosted/tests/secret-file-permissions-negative.sh
+      - name: The deployment gate can fail
+        # A gate that cannot fail is not a gate. The table that decides which
+        # URL prefixes a build does not serve — the cross-tenant console, the
+        # SaaS's own signup form, the subscription API — had no call site
+        # anywhere in the repository. It was complete, correct-looking, and
+        # never consulted, so all of it was reachable on Brownhill's box.
+        #
+        # This runs the gate's own test against a gate that blocks everything
+        # and against one that blocks nothing, and requires it to fail on the
+        # right family of checks each time: the first must catch the console
+        # being served, the second must catch the operator's own console and
+        # the rent collection being taken away with it.
+        run: bash hosted/tests/deployment-gate-negative.sh
+      - name: The acceptance bar's own arithmetic
+        # hosted/tests/acceptance.sh decides whether a deployment is fit to
+        # hand over, and that decision is arithmetic. The arithmetic asked
+        # "did the accounting gate pass?" instead of "how many gates ran?", so
+        # a deployment whose accounting smoke FAILED dropped back to the
+        # five-gate bar and was reported as five of five — met.
+        #
+        # This runs the real acceptance script against stubbed gates and
+        # holds the counting to its promise.
+        run: bash hosted/tests/acceptance-arithmetic.sh
+      - name: The restore survives the application being stopped
+        # The restore script stops the application to replay the database.
+        # It used to be a child of the application process, so it started
+        # inside the application's own control group — and systemd stops a
+        # unit by signalling that whole control group. The restore was killed
+        # by the stop it had itself asked for, half way through a pg_restore,
+        # with the database dismantled and nothing serving.
+        #
+        # This runs the real restore.sh in a container that models systemd's
+        # control-group semantics, and requires the restore to COMPLETE.
+        run: bash hosted/tests/restore-survives-app-stop.sh
+      - name: The restore's privilege contract holds
+        # The restore console reaches root through one narrow sudoers rule,
+        # and the application's own systemd unit must not block it. sudo is
+        # a setuid binary, and NoNewPrivileges makes the kernel refuse to
+        # honour that — so the two settings have to agree, and the unit
+        # says why in a comment.
+        #
+        # This checks the rule is still one command, that the unit does not
+        # set a flag that would break setuid sudo, that the script stays
+        # beyond the application's reach — and it proves the mechanism with
+        # a real sudo in a container, so the check cannot pass on a
+        # misunderstanding.
+        run: bash hosted/tests/restore-privilege-contract.sh

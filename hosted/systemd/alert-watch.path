@@ -2,7 +2,15 @@
 Description=Watch for alert markers under /run/brownhill/alerts/
 
 [Path]
-PathExists=/run/brownhill/alerts/active
+# The marker directory, watched for a marker APPEARING or being CLEARED.
+#
+# This used to watch for a single sentinel file, /run/brownhill/alerts/active,
+# that nothing ever created — so the path unit never fired and the whole
+# alerting chain was inert. The unit now watches the directory itself, which
+# is what the documentation has always said it did ("watches
+# /run/brownhill/alerts/ for marker files"), and which the nightly backup
+# actually drives when its off-host copy succeeds or fails.
+PathChanged=/run/brownhill/alerts
 
 [Install]
 WantedBy=multi-user.target

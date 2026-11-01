@@ -147,3 +147,33 @@ export function assertAssignableRole(role: string, callerRole: string | null | u
     throw new Error('Only an owner or admin can assign the admin role.');
   }
 }
+
+/**
+ * Guard a password reset against privilege escalation.
+ *
+ * Resetting somebody's password lets you sign in as them, so the rule is the
+ * same rule that governs handing out the role in the first place: you may
+ * reset the password of a member whose role you could have assigned. Without
+ * this, the role-assignment guard would be a door with no lock on it — an ops
+ * user who could not make somebody an owner could still take the owner's
+ * password and be one.
+ *
+ * The two rules are deliberately kept in step; a test asserts that this
+ * function refuses exactly the combinations `assertAssignableRole` refuses.
+ */
+export function assertCanResetPassword(
+  memberRole: string,
+  callerRole: string | null | undefined,
+): void {
+  if (!isValidRole(memberRole)) throw new Error(`Invalid role: ${memberRole}`);
+  if (memberRole === 'owner' && callerRole !== 'owner') {
+    throw new Error('Only an owner can reset the password for an owner account.');
+  }
+  if (
+    memberRole === 'tenant_admin' &&
+    callerRole !== 'owner' &&
+    callerRole !== 'tenant_admin'
+  ) {
+    throw new Error('Only an owner or admin can reset the password for an admin account.');
+  }
+}

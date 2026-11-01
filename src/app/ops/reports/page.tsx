@@ -2,7 +2,10 @@ import Link from 'next/link';
 import { getTenantAiStatus } from '@/lib/ops/assistant';
 import { ReportGenerator } from '@/components/ops/ReportGenerator';
 import { PageHeader, Card, CardTitle, Table, Th, Td } from '@/components/ui';
-import { requireTenantContext } from '@/lib/auth/context';
+import { RtbReportSection } from '@/components/rtb/RtbReportSection';
+import { RtbReportActions } from '@/components/rtb/RtbReportActions';
+import { contextCan, requireTenantContext } from '@/lib/auth/context';
+import { assembleRtbReportFor } from '@/lib/reports/rtb-data';
 import { createServiceClient } from '@/lib/supabase/server';
 import { periodLabel } from '@/lib/owner-report-run';
 import type { OwnerReportData } from '@/lib/owner-report';
@@ -12,6 +15,13 @@ export const dynamic = 'force-dynamic';
 export default async function ReportsPage() {
   const [status, ctx] = await Promise.all([getTenantAiStatus().catch(() => null), requireTenantContext()]);
   const ready = !!status?.ready;
+  const canBoard = contextCan(ctx, 'reports.board');
+
+  // The rent-to-buy book: every agreement priced, with the rate the rentee
+  // pays and the rate Brownhill earns on it.
+  const rtb = canBoard
+    ? await assembleRtbReportFor(ctx.tenantId, 'board').catch(() => null)
+    : null;
 
   // The insurer's roll-up of the owners' monthly protection reports — the
   // latest period on file, sorted by the things an underwriter looks at.
@@ -43,6 +53,17 @@ export default async function ReportsPage() {
       />
 
       <ReportGenerator ready={ready} />
+
+      {canBoard && rtb && (
+        <section className="mt-6">
+          <RtbReportSection
+            report={rtb}
+            title="Rent-to-buy book"
+            subtitle="Every rent-to-buy agreement, what the rentee pays, what Brownhill earns, and the rate the book returns."
+            actions={<RtbReportActions audience="board" label="directors' report" />}
+          />
+        </section>
+      )}
 
       {period && portfolio.length > 0 && (
         <Card className="mt-6 p-0">

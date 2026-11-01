@@ -26,7 +26,7 @@ export default async function PnLPage({ searchParams }: { searchParams: Promise<
   const sp = await searchParams;
   const to = sp.to ? new Date(sp.to) : new Date();
   const from = sp.from ? new Date(sp.from) : new Date(to.getTime() - 30 * 86400000);
-  const r = await renderProfitAndLoss(from, to);
+  const r = await renderProfitAndLoss(ctx.tenantId, from, to);
   return (
     <>
       <h1 className="text-2xl font-semibold mb-4">Profit & Loss</h1>

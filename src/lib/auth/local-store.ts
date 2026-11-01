@@ -222,6 +222,23 @@ export async function setLocalPassword(userId: string, password: string): Promis
   `;
 }
 
+/**
+ * Does this account hold a password at all?
+ *
+ * False for an account that signs in with a code sent to its phone — the
+ * vehicle owners on the Nigerian builds — and for an account that has only
+ * ever existed on Supabase Auth. The operator's password reset uses this to
+ * say "there is no password to reset" rather than silently creating one for
+ * an account that will never be asked for it.
+ */
+export async function localHasPassword(userId: string): Promise<boolean> {
+  const db = await localDb();
+  const rows = (await db`
+    select 1 from auth.local_credentials where user_id = ${userId} limit 1
+  `) as unknown as unknown[];
+  return rows.length > 0;
+}
+
 /** True when no account exists yet, so the app can offer first-run setup. */
 export async function hasAnyUser(): Promise<boolean> {
   const db = await localDb();
@@ -332,15 +349,4 @@ export async function createFirstUserAndTenant(args: {
   `;
 
   return { user, tenantId };
-}
-
-
-/**
- * Stub: returns the role of the current request for admin routes that gate on
- * owner status. Real implementation should read the JWT from the session cookie
- * and return its claims. For now, returns null so admin routes correctly refuse
- * access until proper session handling is wired in.
- */
-export async function getClaims(): Promise<{ role: string } | null> {
-  return null;
 }
