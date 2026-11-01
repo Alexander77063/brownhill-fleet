@@ -294,6 +294,106 @@ describe('resetMemberPassword', () => {
   });
 });
 
+describe('a store that cannot answer is a refusal, not a pass', () => {
+  // The cross-tenant guard works by asking the store for EVERY membership the
+  // target holds. If that read fails and the failure is mistaken for "no other
+  // memberships", the guard is skipped — and the reset goes ahead exactly as
+  // it did before the guard existed. The check that closes the vulnerability
+  // would fail OPEN.
+  //
+  // So every read the reset depends on has to fail closed: a store that
+  // throws produces a refusal, never a write. And a failed read must never be
+  // reported as a different kind of refusal — "that person is not a member of
+  // this organisation" would be a lie about a database that was merely
+  // unreachable, and it would send the operator looking in the wrong place.
+
+  it('fails closed when the memberships cannot be read', async () => {
+    const { store, calls } = makeStore({
+      async findMemberships() {
+        throw new Error('connection reset');
+      },
+    });
+
+    const result = await resetMemberPassword({
+      tenantId: 'tenant-a',
+      userId: MEMBER.userId,
+      callerRole: 'ops',
+      store,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('failed');
+    // Nothing was written, and nothing was handed out.
+    expect(calls.setPassword).toEqual([]);
+    expect(calls.deliver).toEqual([]);
+  });
+
+  it('fails closed when the member cannot be read', async () => {
+    const { store, calls } = makeStore({
+      async findMember() {
+        throw new Error('connection reset');
+      },
+    });
+
+    const result = await resetMemberPassword({
+      tenantId: 'tenant-a',
+      userId: MEMBER.userId,
+      callerRole: 'ops',
+      store,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    // Not 'not_found': the database did not say this person is not a member,
+    // it said nothing at all.
+    expect(result.reason).toBe('failed');
+    expect(calls.setPassword).toEqual([]);
+    expect(calls.deliver).toEqual([]);
+  });
+
+  it('fails closed when the password lookup fails', async () => {
+    const { store, calls } = makeStore({
+      async hasPassword() {
+        throw new Error('connection reset');
+      },
+    });
+
+    const result = await resetMemberPassword({
+      tenantId: 'tenant-a',
+      userId: MEMBER.userId,
+      callerRole: 'ops',
+      store,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.reason).toBe('failed');
+    expect(calls.setPassword).toEqual([]);
+    expect(calls.deliver).toEqual([]);
+  });
+
+  it('says that nothing changed, so the operator knows to retry', async () => {
+    // The house voice: a failure says what did not happen.
+    const { store } = makeStore({
+      async findMemberships() {
+        throw new Error('connection reset');
+      },
+    });
+
+    const result = await resetMemberPassword({
+      tenantId: 'tenant-a',
+      userId: MEMBER.userId,
+      callerRole: 'ops',
+      store,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.message).toMatch(/nothing has changed/i);
+  });
+});
+
 describe('resetting a password does not escalate privilege', () => {
   const member = (role: string): ResetMember => ({ ...MEMBER, role });
 

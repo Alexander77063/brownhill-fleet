@@ -137,6 +137,11 @@ export type PasswordResetOutcome =
  *
  * A failure to email is not a failure of the reset — the password has already
  * been changed by then, and the operator can read it off the screen.
+ *
+ * A failure to READ is a failure of the reset. Every read is guarded, so a
+ * store that cannot answer produces a refusal and no write: a check that
+ * cannot fail must never fail open, because the checks here decide who may
+ * open somebody else's account.
  */
 export async function resetMemberPassword(args: {
   tenantId: string;
@@ -157,7 +162,32 @@ export async function resetMemberPassword(args: {
   const { tenantId, userId, store } = args;
   const generate = args.generate ?? generateTemporaryPassword;
 
-  const member = await store.findMember(tenantId, userId);
+  // Every read the reset depends on fails CLOSED.
+  //
+  // The cross-tenant guard below works by asking the store for every
+  // membership the target holds. If that read fails and the failure is
+  // mistaken for "no other memberships", the guard is skipped and the reset
+  // proceeds exactly as it did before the guard existed — the check that
+  // closes the vulnerability would fail OPEN, which is the one direction a
+  // security check must never fail in.
+  //
+  // So a store that throws produces a refusal, never a write. And a failed
+  // read is reported as a failure, not as a different kind of refusal:
+  // "that person is not a member of this organisation" would be a lie about
+  // a database that was merely unreachable, and it would send the operator
+  // looking in the wrong place.
+
+  let member: ResetMember | null;
+  try {
+    member = await store.findMember(tenantId, userId);
+  } catch (err) {
+    console.error('[auth] could not read the member', userId, err);
+    return {
+      ok: false,
+      reason: 'failed',
+      message: 'Could not check that account. Nothing has changed — try again.',
+    };
+  }
   if (!member) {
     return {
       ok: false,
@@ -187,7 +217,17 @@ export async function resetMemberPassword(args: {
   // On the single-tenant profiles — standalone, hosted, managed — there is no
   // other tenant, so this loop is empty and nothing changes. It matters on
   // `managed-shared`, which is multi-tenant and uses these local credentials.
-  const memberships = await store.findMemberships(userId);
+  let memberships: Array<{ tenantId: string; role: string; status: string }>;
+  try {
+    memberships = await store.findMemberships(userId);
+  } catch (err) {
+    console.error('[auth] could not read the memberships', userId, err);
+    return {
+      ok: false,
+      reason: 'failed',
+      message: 'Could not check that account. Nothing has changed — try again.',
+    };
+  }
   for (const other of memberships) {
     if (other.tenantId === tenantId) continue; // already guarded above
     if (other.status !== 'active') continue; // grants nothing, so withholds nothing
@@ -213,7 +253,18 @@ export async function resetMemberPassword(args: {
     }
   }
 
-  if (!(await store.hasPassword(userId))) {
+  let hasPassword: boolean;
+  try {
+    hasPassword = await store.hasPassword(userId);
+  } catch (err) {
+    console.error('[auth] could not read the credential', userId, err);
+    return {
+      ok: false,
+      reason: 'failed',
+      message: 'Could not check that account. Nothing has changed — try again.',
+    };
+  }
+  if (!hasPassword) {
     return {
       ok: false,
       reason: 'no_password',

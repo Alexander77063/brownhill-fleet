@@ -163,6 +163,7 @@ The rules the reset holds to:
 | An account with **no password** — a vehicle owner who signs in with a code — cannot be reset | There is nothing to reset, and saying so is more use than pretending |
 | A **failed email is not a failed reset** | The password has already changed by then; the operator reads it off the screen |
 | A failed **write** changes nothing | The old password still works |
+| A failed **read** changes nothing, and is reported as a failure | The checks that decide whether one operator may open another person's account must never fail open. A database that could not be reached is not a table that happened to be empty |
 | Every reset is **audited** (`member.password_reset`) | An audit trail for a change that hands over an account |
 
 Both portal sign-in pages say so plainly. Each used to carry a "Forgot
@@ -189,6 +190,7 @@ operator's own account, which has no in-app reset path — and it needs SSH.
 | The reset names somebody in another tenant | "That person is not a member of this organisation" — nothing is changed |
 | The person belongs to a **second tenant** the operator has no authority in | The reset is refused — the credential is shared, so authority has to be shared too |
 | The person belongs to a second tenant where the operator **is** a member but ranks below the person's role there | The reset is refused on that tenant's grounds |
+| The database **cannot be reached** while the reset is being checked | "Could not check that account. Nothing has changed — try again" — and no password is written. A read that fails is never read as "no other memberships" |
 | The reset names an owner and the caller is not an owner | "Only an owner can reset the password for an owner account" — nothing is changed |
 | The reset names an account with no password | "This account signs in with a code sent to their phone number — there is no password to reset" |
 | The deployment is the SaaS | The reset refuses: Supabase Auth owns password resets there |

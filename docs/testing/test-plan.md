@@ -166,6 +166,7 @@ driver, agreement, charge, expense and document.
 | TC-AUTH-15 | As an operator, try to reset a password for somebody in **another organisation** | Refused — "That person is not a member of this organisation", and nothing changes. Same for an owner account when the caller is not an owner |
 | TC-AUTH-16 | Reset a password for somebody who **also belongs to a second organisation** the operator has no authority in | Refused — the credential is one credential for the whole user, so authority has to exist in every tenant the reset lands in. Nothing changes |
 | TC-AUTH-17 | Read the temporary password on a **phone-sized screen** | The 32-character password wraps inside its box; the page does not scroll sideways |
+| TC-AUTH-18 | Reset a password while the **database cannot be reached** | Refused — "Could not check that account. Nothing has changed — try again". **No** password is written and nothing is handed out. A read that fails is never read as "this person belongs to one organisation", because that would skip the cross-organisation check |
 
 ---
 
@@ -704,7 +705,7 @@ Raise **S1 immediately**, do not batch it to the end of the run.
 |---|---|---|---|---|---|---|
 | 2. Legal consent | 6 | | | | | |
 | 3. Multi-tenant isolation | 8 | | | | | |
-| 4. Authentication | 17 | | | | | |
+| 4. Authentication | 18 | | | | | |
 | 5. Onboarding | 6 | | | | | |
 | 6.1–6.3 Fleet, drivers, documents | 29 | | | | | |
 | 6.4 Agreements & signing | 23 | | | | | |

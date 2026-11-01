@@ -35,6 +35,10 @@ import {
   type PasswordResetStore,
   type ResetMember,
 } from '@/lib/auth/password-reset';
+import {
+  makePasswordResetStore,
+  type PostgrestReader,
+} from '@/lib/auth/password-reset-store';
 import { recordAudit } from '@/lib/audit';
 import { createServiceClient } from '@/lib/supabase/server';
 import { getBranding, brandDisplayName, brandEmailFrom } from '@/lib/branding';
@@ -77,101 +81,64 @@ async function baseUrl(): Promise<string> {
 /**
  * The real store: the membership lookup is tenant-scoped, and the password
  * write goes through the direct connection that owns `auth.local_credentials`.
+ *
+ * The store itself lives in `src/lib/auth/password-reset-store.ts`, with the
+ * database client injected, so its fail-closed behaviour — a read that errors
+ * must abort the reset rather than look like an empty table — is unit-tested
+ * against the production code rather than asserted in a comment. This file
+ * supplies the real dependencies.
  */
 function makeStore(tenantId: string): PasswordResetStore {
-  return {
-    async findMember(scopeTenantId, userId) {
-      const sb = createServiceClient();
-      // The tenant filter is what makes this safe: a user id from another
-      // tenant simply is not a member here, and nothing is reset.
-      const { data: membership } = await sb
-        .from('tenant_memberships')
-        .select('user_id, role, status')
-        .eq('tenant_id', scopeTenantId)
-        .eq('user_id', userId)
-        .maybeSingle();
-      if (!membership) return null;
+  return makePasswordResetStore({
+    // The real Supabase client satisfies the narrow reader shape; this cast is
+    // the one place the two meet. `supabase-js` types its query builder
+    // conditionally on the table name, so the subset the store uses cannot be
+    // expressed as a structural subtype of the client's own type.
+    reader: createServiceClient() as unknown as PostgrestReader,
+    hasPassword: localHasPassword,
+    // setLocalPassword also clears `failed_attempts` and `locked_until`, so a
+    // reset un-locks an account that was locked out for too many attempts.
+    setPassword: setLocalPassword,
+    deliver: (member, password) => deliverTemporaryPassword(tenantId, member, password),
+  });
+}
 
-      const { data: profile } = await sb
-        .from('profiles')
-        .select('full_name, email')
-        .eq('id', userId)
-        .maybeSingle();
+/**
+ * Send the temporary password to the member.
+ *
+ * The tenant's own email first, then the platform's — the same order the
+ * driver invite uses, so onboarding and recovery behave identically.
+ */
+async function deliverTemporaryPassword(
+  tenantId: string,
+  member: ResetMember,
+  password: string,
+): Promise<{ sent: boolean; reason?: string }> {
+  if (!member.email) return { sent: false, reason: 'no email address on file' };
 
-      const m = membership as { user_id: string; role: string; status: string };
-      const p = profile as { full_name: string | null; email: string | null } | null;
-      return {
-        userId: m.user_id,
-        role: m.role,
-        status: m.status,
-        fullName: p?.full_name ?? null,
-        email: p?.email ?? null,
-      } satisfies ResetMember;
-    },
+  const branding = await getBranding(tenantId);
+  const brand = brandDisplayName(branding);
+  const base = await baseUrl();
+  const signInUrl = `${base}${SIGN_IN_PATH[member.role] ?? '/login'}`;
+  const settingsUrl = `${base}${SETTINGS_PATH[member.role] ?? '/ops/profile'}`;
+  const who = member.fullName || member.email;
 
-    async hasPassword(userId) {
-      return localHasPassword(userId);
-    },
+  const subject = `Your ${brand} password has been reset`;
+  const html =
+    `<p>Hi ${escapeHtml(who)},</p>` +
+    `<p>${escapeHtml(brand)} has reset the password on your account.</p>` +
+    `<p>Your temporary password is <code>${escapeHtml(password)}</code></p>` +
+    `<p>Sign in at <a href="${signInUrl}">${signInUrl}</a> and change it straight away ` +
+    `from <a href="${settingsUrl}">your profile page</a>.</p>` +
+    `<p>If you did not expect this, tell the operator who reset it.</p>`;
 
-    async findMemberships(userId) {
-      // Every tenant this person belongs to, not just this one.
-      //
-      // The password row is keyed by user id, so the credential is shared
-      // across every tenant they hold. The guard needs the whole list to
-      // know whether the caller has authority everywhere the reset lands.
-      const sb = createServiceClient();
-      const { data } = await sb
-        .from('tenant_memberships')
-        .select('tenant_id, role, status')
-        .eq('user_id', userId);
-      const rows = (data ?? []) as Array<{
-        tenant_id: string;
-        role: string;
-        status: string;
-      }>;
-      return rows.map((m) => ({
-        tenantId: m.tenant_id,
-        role: m.role,
-        status: m.status,
-      }));
-    },
-
-    async setPassword(userId, password) {
-      // setLocalPassword also clears `failed_attempts` and `locked_until`, so a
-      // reset un-locks an account that was locked out for too many attempts.
-      await setLocalPassword(userId, password);
-    },
-
-    async deliverTemporaryPassword(member, password) {
-      if (!member.email) return { sent: false, reason: 'no email address on file' };
-
-      const branding = await getBranding(tenantId);
-      const brand = brandDisplayName(branding);
-      const base = await baseUrl();
-      const signInUrl = `${base}${SIGN_IN_PATH[member.role] ?? '/login'}`;
-      const settingsUrl = `${base}${SETTINGS_PATH[member.role] ?? '/ops/profile'}`;
-      const who = member.fullName || member.email;
-
-      const subject = `Your ${brand} password has been reset`;
-      const html =
-        `<p>Hi ${escapeHtml(who)},</p>` +
-        `<p>${escapeHtml(brand)} has reset the password on your account.</p>` +
-        `<p>Your temporary password is <code>${escapeHtml(password)}</code></p>` +
-        `<p>Sign in at <a href="${signInUrl}">${signInUrl}</a> and change it straight away ` +
-        `from <a href="${settingsUrl}">your profile page</a>.</p>` +
-        `<p>If you did not expect this, tell the operator who reset it.</p>`;
-
-      // The tenant's own email first, then the platform's — the same order the
-      // driver invite uses, so onboarding and recovery behave identically.
-      let res = await sendTenantEmail(tenantId, member.email, subject, html);
-      if (res.skipped) {
-        const platformFrom =
-          process.env.NOTIFY_FROM_EMAIL || 'Elite Fleet Management <fleet@elitefleetmanagement.co.uk>';
-        res = await sendEmail(member.email, subject, html, brandEmailFrom(branding, platformFrom));
-      }
-      return { sent: res.sent, reason: res.skipped ? 'email is not configured' : res.error };
-    },
-  };
+  let res = await sendTenantEmail(tenantId, member.email, subject, html);
+  if (res.skipped) {
+    const platformFrom =
+      process.env.NOTIFY_FROM_EMAIL || 'Elite Fleet Management <fleet@elitefleetmanagement.co.uk>';
+    res = await sendEmail(member.email, subject, html, brandEmailFrom(branding, platformFrom));
+  }
+  return { sent: res.sent, reason: res.skipped ? 'email is not configured' : res.error };
 }
 
 /** Escape a value before it goes into an email body. */

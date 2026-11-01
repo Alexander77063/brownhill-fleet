@@ -268,7 +268,10 @@ rules.
 - **A failure says what did not happen.** "Could not set the new password.
   Nothing has changed — try again." And when the email fails but the password
   has already changed, it says that instead of reporting a failure that did
-  not happen.
+  not happen. A read that failed says the same thing — "Could not check that
+  account. Nothing has changed — try again" — and never claims the person was
+  not a member, because a database that could not be reached is not a
+  membership that does not exist.
 
 The alphabet of a spoken secret is part of the voice: the temporary password
 avoids `1 i l O o`, because it is read out over the telephone and those are
