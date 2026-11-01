@@ -56,7 +56,6 @@ export interface InvoiceForPosting {
   net: Pounds;
   vat: Pounds;
   gross: Pounds;
-  vatCodeId: string;
   chartOfAccounts: { ar: { id: string }; revenue: { id: string }; vatOutput: { id: string } };
 }
 

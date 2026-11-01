@@ -48,12 +48,22 @@ interface RawRow {
 
 export async function listSeries(opts?: { status?: SeriesStatus }): Promise<BookingSeriesRow[]> {
   const sql = await localDb();
+  // The dates are cast to text AT THE SOURCE. This module reads through
+  // postgres.js, which hands a raw `date` back as a JavaScript Date — and
+  // `expandSeries` parses 'YYYY-MM-DD' with `.split('-')`, so a Date threw
+  // `TypeError: yyyyMmDd.split is not a function` and took /ops and
+  // /ops/series down with it. The created-at stamp is rendered as an ISO
+  // instant for the same reason: it is typed as a string, so it must be one.
   const rows = (await sql`
     select s.id, s.driver_id, d.full_name as driver_name,
            s.vehicle_id, v.registration as vehicle_reg,
            s.pickup, s.dropoff, s.start_time, s.fare_pence, s.passenger_name,
-           s.days_of_week, s.start_date, s.end_date, s.horizon_weeks,
-           s.status, s.created_at
+           s.days_of_week,
+           s.start_date::text as start_date,
+           s.end_date::text as end_date,
+           s.horizon_weeks,
+           s.status,
+           to_char(s.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at
       from booking_series s
       left join drivers  d on d.id = s.driver_id
       left join vehicles v on v.id = s.vehicle_id

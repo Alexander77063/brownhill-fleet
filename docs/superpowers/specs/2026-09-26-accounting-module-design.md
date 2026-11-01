@@ -1,7 +1,8 @@
 # In-app Accounting Module — Design Spec
 
 **Date:** 2026-09-26
-**Status:** Draft for review — implementation pending
+**Status:** Implemented. Rules #1 and #2 are live (2026-11-01); the invoice
+void reversal is the next piece out. See §2 for what each rule's call site is.
 **Builds on:** `docs/superpowers/specs/2026-09-24-brownhill-hosted-on-namecheap-design.md` (PR #79, merged), `docs/superpowers/plans/2026-09-24-brownhill-hosted-on-namecheap.md`, and the existing `docs/superpowers/specs/2026-07-19-sp-b-connect-payments-design.md` (the payments design that this module extends).
 
 ---
@@ -100,6 +101,27 @@ Three layers so the domain can be unit-tested without HTTP / DB mocks, and so th
 ### §2 — Auto-posting rules
 
 Six events drive GL postings in v1.
+
+**Where they are called from (2026-11-01).** Rules #1 and #2 had generators
+in `src/lib/accounting/journal.ts` and **no call sites at all** — the rent
+cron raised invoices and the payment ingest took money without either
+reaching the ledger, so the trial balance contained none of the business and
+the VAT return reported £0 of output VAT. Both are now live, through one
+module (`src/lib/accounting/gl-posting.ts`) so that the accounts come from
+the chart of accounts, the period is the one the **document** belongs to
+rather than the month the posting happened to be made in, and the posting is
+idempotent on the journal's `(tenant, source_type, source_id)` key:
+
+| Rule | Called from | Notes |
+| --- | --- | --- |
+| #1 | `src/app/api/cron/generate-rent/route.ts` | The invoice and its ledger entry are **one transaction**. `issued_on` is the rent week it bills, not the day the cron ran. The VAT code is resolved *before* the invoice is written, so an invoice can never be invisible to the VAT return. |
+| #2 | `src/lib/payments/ingest.ts` | The payment and its ledger entry are **one transaction**, so a receipt cannot exist without its ledger entry — and a receipt cannot be recorded into a period the ledger has shut. |
+| #1 (historical) | `supabase/migrations/0086_accounting_gl_backfill.sql` | The same two rules, applied to the invoices and payments a deployment **already had**. Idempotent: a second run changes nothing. |
+
+The reversal below (invoice voided) is still to come — `journal_source_type`
+already carries `invoice_void` and `audit_action` already carries
+`invoice_voided`, so the schema has the vocabulary and the product does not
+yet have the path.
 
 | # | Trigger | Lines (Dr / Cr) | Source link |
 |---|---|---|---|

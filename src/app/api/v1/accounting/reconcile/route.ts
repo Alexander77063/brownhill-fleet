@@ -34,17 +34,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { safeNextPath } from '@/lib/safe-next';
-import { findAccountId } from '@/lib/accounting/chart-of-accounts';
+import { findAccountId, MissingChartOfAccountsError } from '@/lib/accounting/chart-of-accounts';
 import { periodRefusal } from '@/lib/accounting/periods';
 import {
   postVatPaymentJournal,
   postBankFeeJournal,
-  postPaymentJournal,
   type Pounds,
 } from '@/lib/accounting/journal';
+import { postPaymentToLedger } from '@/lib/accounting/gl-posting';
 import {
   commitJournalForBankTransaction,
-  commitJournalForPayment,
   withJournalTx,
 } from '@/lib/accounting/journal-bridge';
 import { invoiceAllocationRejection } from '@/lib/accounting/invoice-eligibility';
@@ -112,8 +111,18 @@ export async function POST(req: NextRequest) {
 
   // Load the bank line. Tenant-scoped on both sides of the join: a bank
   // account id from another tenant must not drag its transactions in.
+  //
+  // `posted_on` is the day the BANK posted the line, rendered as text.
+  // postgres.js hands a `timestamptz` column back as a JavaScript Date, and
+  // this route needs the day as a string: the payment's `received_on` is a
+  // `date`, and the ledger entry belongs to the month the bank posted the
+  // money — not the month the operator happened to press the button.
+  //
+  // UTC on both sides, so the day here and the month in
+  // `bankTransactionPeriod` agree about where the boundary is.
   const rows = (await sql`
-    select bt.id, bt.bank_account_id, bt.amount_pence, bt.description, bt.posted_at,
+    select bt.id, bt.bank_account_id, bt.amount_pence, bt.description,
+           to_char(bt.posted_at at time zone 'UTC', 'YYYY-MM-DD') as posted_on,
            bt.status::text as status,
            ba.gl_account_id as bank_gl_id
       from accounting.bank_transactions bt
@@ -126,7 +135,7 @@ export async function POST(req: NextRequest) {
     amount_pence: string;
     bank_gl_id: string;
     description: string;
-    posted_at: string;
+    posted_on: string;
     status: string;
   }>;
   if (!rows.length) return NextResponse.json({ error: 'unknown bank_tx' }, { status: 404 });
@@ -234,14 +243,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // The trade-debtors account is reference data, not a posting: it is read
-  // outside the transaction. The lookup prefers this tenant's own account
-  // over the global one, and returns null rather than an empty array, so a
-  // missing account is named instead of crashing on `[0].id`.
-  const arId = await findAccountId(sql, '1100', ctx.tenantId);
-  if (!arId) {
-    return NextResponse.json({ error: 'Trade Debtors account missing' }, { status: 500 });
-  }
+  // The trade-debtors account is resolved inside the transaction, by the same
+  // chart-of-accounts lookup the other posting paths use, so a missing
+  // account is named by its code instead of crashing on an undefined id.
+  // The lookup prefers this tenant's own account over the global one.
 
   const idempotencyKey = `bank-match-${bankTxId}`;
   // The handle that ties an operator's "it said it failed" to the detail on
@@ -307,7 +312,7 @@ export async function POST(req: NextRequest) {
            received_on, status, external_ref, tenant_id)
         values (${inv.driver_id}::uuid, ${inv.agreement_id}::uuid, 'bank_transfer',
                 ${idempotencyKey}, ${amountPence.toString()},
-                ${row.posted_at.slice(0, 10)}::date, 'confirmed',
+                ${row.posted_on}::date, 'confirmed',
                 ${bankTxId}, ${ctx.tenantId}::uuid)
         on conflict (source, idempotency_key) do nothing
         returning id
@@ -338,14 +343,26 @@ export async function POST(req: NextRequest) {
       `;
 
       // 4. Post the receipt: Dr Bank / Cr Trade Debtors, for the money that
-      //    arrived.
-      const result = postPaymentJournal({
-        paymentId,
-        gross: amountPence,
-        bankAccountGlId: bankGlId,
-        arAccountId: arId,
-      });
-      const journalId = await commitJournalForPayment(tx, ctx, result, paymentId);
+      //    arrived — into the month the BANK posted it, which is the month the
+      //    payment's `received_on` names.
+      //
+      //    The shared poster resolves the accounts from the chart of accounts
+      //    and refuses a posting into a closed period, so this route and the
+      //    rent cron and the payment ingest cannot drift apart on where a
+      //    receipt lands.
+      const journalId = await postPaymentToLedger(
+        tx,
+        ctx,
+        {
+          id: paymentId,
+          amountPence,
+          receivedOn: row.posted_on,
+        },
+        { bankAccountGlId: bankGlId },
+      );
+      if (!journalId) {
+        throw new Error('The payment was not posted to the ledger.');
+      }
 
       // 5. Point the bank line at the invoice it was matched to and at the
       //    journal it produced.
@@ -371,6 +388,16 @@ export async function POST(req: NextRequest) {
     // operator needs.
     const refusal = periodRefusalResponse(err);
     if (refusal) return refusal;
+    // A missing account is the installation's problem, not the operator's, and
+    // it is named by its code so whoever fixes it knows which one. The account
+    // code is a chart-of-accounts constant, not a secret and not a detail of
+    // the request, so it is safe to say.
+    if (err instanceof MissingChartOfAccountsError) {
+      return NextResponse.json(
+        { error: `Chart of accounts: no account with code ${err.code}.`, requestId },
+        { status: 500 },
+      );
+    }
     // Anything else is unexpected. The detail stays on the server — it can
     // name a column, a constraint or a file path, none of which belong in a
     // response the operator's browser reads — and the request id is the handle

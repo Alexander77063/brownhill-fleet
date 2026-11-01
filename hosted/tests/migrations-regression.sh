@@ -127,6 +127,52 @@ else
   done
 
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -d backfill -f /tmp/backfill-assert.sql
+
+  # ── The ledger backfill is idempotent ─────────────────────────────────────
+  # Migration 0086 restores the ledger for the invoices and payments that
+  # already exist. It is replayed by this harness, by the portability proof
+  # and by any operator who runs it by hand, so a second run that added a
+  # SECOND set of journal lines would double the business's revenue while
+  # every individual posting still looked correct.
+  #
+  # It is found by CONTENT, not by number, for the same reason the split
+  # point above is: the history grows, and renumbering a migration is not a
+  # reason for this guard to stop guarding.
+  echo "== the GL backfill is idempotent =="
+  gl_migration=""
+  for f in $(ls -1 supabase/migrations/*.sql | sort); do
+    if grep -q 'accounting.ensure_period' "$f"; then
+      gl_migration=$(basename "$f")
+      break
+    fi
+  done
+
+  if [ -z "$gl_migration" ]; then
+    echo "no migration creates accounting.ensure_period — the GL backfill is not there to test"
+  else
+    echo "the GL backfill is $gl_migration"
+
+    gl_counts() {
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.journal_entries' | tr -d '\r'
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.journal_lines' | tr -d '\r'
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.audit_log' | tr -d '\r'
+    }
+
+    before="$(gl_counts | tr '\n' '/')"
+    docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -d backfill -f "/tmp/migrations/$gl_migration"
+    after="$(gl_counts | tr '\n' '/')"
+
+    if [ "$before" != "$after" ]; then
+      echo "FAIL: a second run of $gl_migration changed the ledger"
+      echo "  before: $before"
+      echo "  after : $after"
+      exit 1
+    fi
+    echo "ok: a second run of $gl_migration changed nothing ($after)"
+  fi
 fi
 
 # ── Phase 3: the migration runner is idempotent ──────────────────────────────

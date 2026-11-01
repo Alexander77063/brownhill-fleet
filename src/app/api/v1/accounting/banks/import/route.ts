@@ -21,28 +21,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
-import { parseBankCsv, bestMatch, type MatchCandidate, type Pounds } from '@/lib/accounting/bank-rec';
+import {
+  parseBankCsv,
+  bestMatch,
+  issuedAtFromDbValue,
+  type MatchCandidate,
+  type Pounds,
+} from '@/lib/accounting/bank-rec';
 import { summarizeImport } from '@/lib/accounting/bank-import-summary';
 import { commitJournalForBankTransaction } from '@/lib/accounting/journal-bridge';
 import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import { postBankReceiptJournal } from '@/lib/accounting/journal';
-import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
+import { loadAutoMatchCandidates } from '@/lib/accounting/reconcile-queue';
 import { insertBankLines } from '@/lib/accounting/bank-import';
 
 export const runtime = 'nodejs';
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB — same cap as driver docs
 const AUTO_MATCH_THRESHOLD = 0.9;
-
-interface OpenInvoiceRow {
-  invoice_id: string; // the matcher is keyed on "paymentId"; here that is the invoice
-  gross_pence: string;
-  allocated_pence: string;
-  invoice_no: string | null;
-  issued_on: string;
-  agreement_id: string | null;
-  driver_id: string | null;
-}
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
 
@@ -195,35 +191,18 @@ export async function POST(req: NextRequest) {
   // Build candidate list from the invoices that still owe money and haven't
   // already been matched. An invoice that has been voided is never a
   // candidate — it has been cancelled, so money must not land on it.
-  const candidates = (await sql`
-    select i.id as invoice_id,
-           i.gross_pence,
-           i.number as invoice_no,
-           i.issued_on,
-           i.agreement_id,
-           a.driver_id,
-           coalesce((select sum(pa.amount_pence)
-                       from public.payment_allocations pa
-                      where pa.invoice_id = i.id
-                        and pa.tenant_id = ${tenantId}::uuid), 0)::bigint as allocated_pence
-      from public.invoices i
-      left join public.agreements a
-             on a.id = i.agreement_id
-            and a.tenant_id = ${tenantId}::uuid
-     where i.status = any(${ALLOCATABLE_INVOICE_STATUSES}::invoice_status[])
-       and i.tenant_id = ${tenantId}::uuid
-       and not exists (
-         select 1 from accounting.bank_transactions bt
-          where bt.matched_payment_id = i.id
-            and bt.tenant_id = ${tenantId}::uuid
-       )
-     order by i.issued_on desc
-  `) as OpenInvoiceRow[];
+  //
+  // The issue day arrives as 'YYYY-MM-DD' (the loader casts the `date`
+  // column), and `issuedAtFromDbValue` turns it into the Date the scorer
+  // compares against. It used to be built by concatenating the raw column,
+  // which postgres.js hands over as a Date — and the result was an Invalid
+  // Date, so the 30-day window in the score never fired.
+  const candidates = await loadAutoMatchCandidates(sql, tenantId);
   const candidateShapes: MatchCandidate[] = candidates.map((c) => ({
     paymentId: c.invoice_id,
     grossPence: BigInt(c.gross_pence) as Pounds,
     invoiceNo: c.invoice_no ?? '',
-    issuedAt: new Date(c.issued_on + 'T00:00:00Z'),
+    issuedAt: issuedAtFromDbValue(c.issued_on),
   }));
 
   // Score + auto-match. We re-key by the inserted bank_tx id (not parsed

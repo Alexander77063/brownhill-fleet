@@ -55,20 +55,44 @@ import { localDb } from '@/lib/auth/local-store';
 import { assertPeriodOpenForPosting, ensurePeriodRow } from './periods';
 import { takePeriodLock } from './period-lock';
 import type { PostResult } from './journal';
-import type { ISql } from 'postgres';
+import type { ISql, TransactionSql } from 'postgres';
 
 /**
- * A transaction-scoped connection: the handle `begin()` hands to its callback.
+ * A transaction-scoped connection that can take a SAVEPOINT: the handle
+ * `begin()` hands to its callback.
  *
  * This is `ISql` rather than postgres.js's concrete `Sql` on purpose. The
  * concrete interface is the one that carries `begin()`, so a transaction
  * handle — typed as `ISql` — has no `begin` at all. Nesting a transaction
  * inside a transaction is therefore a type error, not a runtime surprise.
+ *
+ * `savepoint` is added deliberately: it is on `TransactionSql` and not on
+ * `ISql`, and the allocation path needs it. A savepoint is not a nested
+ * transaction — it is a rollback point INSIDE this one — so adding it here
+ * does not weaken the guarantee above. `begin` is still absent, and that is
+ * the one that matters.
+ *
+ * The commit functions below take a plain `ISql`. None of them takes a
+ * savepoint, and demanding one would refuse an ordinary transaction handle
+ * for no reason.
  */
-export type Sql = ISql;
+export type Sql = ISql & Pick<TransactionSql, 'savepoint'>;
 
-interface UserCtx {
-  userId: string;
+/**
+ * Who is posting, and for which tenant.
+ *
+ * `userId` is NULLABLE on purpose. A machine-originated posting — the rent
+ * cron raising a week's invoice, a payment provider webhook confirming money
+ * — has no signed-in user behind it, and inventing one (or refusing to post
+ * without one) would be wrong in both directions. The columns it reaches are
+ * nullable for exactly this reason:
+ *
+ *   accounting.journal_entries.posted_by_user_id → uuid references auth.users(id)
+ *   accounting.audit_log.user_id                 → uuid references auth.users(id)
+ */
+export interface UserCtx {
+  /** null when the posting was made by a machine, not by a person. */
+  userId: string | null;
   tenantId: string;
 }
 
@@ -115,7 +139,7 @@ export async function withJournalTx<T>(fn: (tx: Sql) => Promise<T>): Promise<T> 
  * that period's ledger.
  */
 async function persistJournal(
-  sql: Sql,
+  sql: ISql,
   ctx: UserCtx,
   result: PostResult,
   description: string,
@@ -176,7 +200,29 @@ async function persistJournal(
   // 6. Insert each journal_line. The deferred trigger journal_balanced() runs
   //    at COMMIT time. If the lines are unbalanced, the whole transaction
   //    rolls back and we throw.
-  for (const line of result.lines) {
+  //
+  //    ZERO-AMOUNT LINES ARE DROPPED, and that is not a cosmetic filter.
+  //    `journal_lines` carries:
+  //
+  //      check ((debit_pence > 0) <> (credit_pence > 0))
+  //
+  //    so a line that is zero on BOTH sides is not a zero line — it is an
+  //    ILLEGAL line. Rule #1 always emits three lines (debtors, revenue,
+  //    VAT output), so a zero-rated invoice produced a VAT line of (0, 0),
+  //    the whole invoice posting rolled back, and the rent for that week was
+  //    never billed. Filtering here rather than in each generator means
+  //    every rule is covered by the same rule: a line that would move no
+  //    money is not written.
+  //
+  //    An entry whose lines are ALL zero has nothing to post, and it is
+  //    refused rather than written as an empty entry.
+  const lines = result.lines.filter((l) => l.debitPence !== 0n || l.creditPence !== 0n);
+  if (!lines.length) {
+    throw new Error(
+      `Nothing to post: every line of the ${result.sourceType} entry for ${result.sourceId} is zero.`,
+    );
+  }
+  for (const line of lines) {
     await sql`
       insert into accounting.journal_lines
         (journal_id, account_id, debit_pence, credit_pence, tenant_id,
@@ -220,14 +266,21 @@ async function persistJournal(
  * `tx` is a transaction handle — see the note at the top of this file. The
  * invoice's own `posted_journal_id` is set inside the same transaction, so a
  * posting and the pointer to it either both land or neither does.
+ *
+ * `period` overrides the month the entry lands in. An invoice belongs to the
+ * month it was ISSUED — not the month the posting happened to be made. A
+ * rent invoice raised on the 1st for a week that began on the 28th of the
+ * month before belongs to the month before, and that is where the operator's
+ * VAT return and year-end accounts will look for it.
  */
 export async function commitJournalForInvoice(
-  tx: Sql,
+  tx: ISql,
   ctx: UserCtx,
   result: PostResult,
   invoiceId: string,
+  period?: JournalPeriod,
 ): Promise<string> {
-  const journalId = await persistJournal(tx, ctx, result, `Invoice ${invoiceId} issued`);
+  const journalId = await persistJournal(tx, ctx, result, `Invoice ${invoiceId} issued`, period);
   await tx`
     update public.invoices
     set posted_journal_id = ${journalId}::uuid
@@ -239,14 +292,19 @@ export async function commitJournalForInvoice(
 /**
  * Public: commit a journal result for a payment. Called from the existing
  * `local-store.ts` payment confirmation path.
+ *
+ * `period` overrides the month the entry lands in — a payment belongs to the
+ * month the money was RECEIVED, which is not necessarily the month the
+ * posting was made.
  */
 export async function commitJournalForPayment(
-  tx: Sql,
+  tx: ISql,
   ctx: UserCtx,
   result: PostResult,
   paymentId: string,
+  period?: JournalPeriod,
 ): Promise<string> {
-  const journalId = await persistJournal(tx, ctx, result, `Payment ${paymentId} confirmed`);
+  const journalId = await persistJournal(tx, ctx, result, `Payment ${paymentId} confirmed`, period);
   await tx`
     update public.payments
     set posted_journal_id = ${journalId}::uuid
@@ -281,7 +339,7 @@ export async function commitJournalForPayment(
  * than refusing to categorise the line at all.
  */
 export async function bankTransactionPeriod(
-  tx: Sql,
+  tx: ISql,
   tenantId: string,
   bankTxId: string,
 ): Promise<JournalPeriod | undefined> {
@@ -310,7 +368,7 @@ export async function bankTransactionPeriod(
  * `bankTransactionPeriod`.
  */
 export async function commitJournalForBankTransaction(
-  tx: Sql,
+  tx: ISql,
   ctx: UserCtx,
   result: PostResult,
   bankTxId: string,
@@ -342,7 +400,7 @@ export async function commitJournalForBankTransaction(
  * VAT return.
  */
 export async function commitJournalForVatSubmission(
-  tx: Sql,
+  tx: ISql,
   ctx: UserCtx,
   result: PostResult,
   submissionId: string,

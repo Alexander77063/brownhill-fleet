@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-11-01. Read from `supabase/migrations/` (84 files)
+*Status: current as of 2026-11-01. Read from `supabase/migrations/` (85 files)
 and `supabase/seed.sql`. The most recent migration is
-`0085_accounting_mtd_filing_state.sql`.*
+`0086_accounting_gl_backfill.sql`.*
 
 ---
 
@@ -736,6 +736,76 @@ ledger entry has not landed yet"* — because the books are behind the return
 and the return cannot be filed again. The warning is not a block: the HMRC
 connection is the operator's, so an install without one would otherwise have
 every month close refused.
+
+### 5.7 Restoring the ledger for the business that already happened (migration 0086)
+
+Migration 0086 exists because the two automatic posting rules the design
+spec names — **rule #1** (invoice issued: Dr 1100 / Cr 4000 / Cr 2200) and
+**rule #2** (payment confirmed: Dr bank / Cr 1100) — had generators in
+`src/lib/accounting/journal.ts` and **no call sites in the product at all**.
+The rent cron raised invoices; the payment ingest took money; neither wrote to
+the ledger. So a live deployment's trial balance contained none of the
+business it was actually running — it contained the handful of bank lines
+somebody had reconciled by hand, and nothing else. The VAT return was worse
+than empty: it reported **£0 of output VAT** against £40,000 of rentals,
+because `public.invoices.vat_code_id` had been null on every invoice since
+migration 0067 and the return groups on it.
+
+0086 repairs the history for a deployment that already holds data. It is a
+**migration**, not a script an operator runs by hand, because it has to be
+applied atomically with the rest of the schema and it has to be
+**idempotent** — it is replayed by the migration runner, by the portability
+proof, and by the CI regression harness.
+
+Four helper functions carry it:
+
+| Function | What it does |
+| --- | --- |
+| `accounting.ensure_period(tenant, year, month) → uuid` | Returns the period row for that month, creating it if it is absent. `accounting.periods` is unique on `(tenant_id, year, month)`, so the create is an upsert. |
+| `accounting.account_id(code, tenant) → uuid` | The chart-of-accounts row for a code — the tenant's own account if it has one, the global row otherwise. **Raises** when the code is not there, naming the code and the tenant. |
+| `accounting.payment_bank_account_id(tenant, bank_account) → uuid` | The GL account a payment is banked into: the bank account's own `gl_account_id`, else the tenant's default bank account, else the seeded `1200`. |
+| `accounting.invoice_vat_code_id(vat_pence, tenant) → uuid` | The VAT code an invoice's VAT implies — `T0` when the VAT is zero, `T1` when it is not. **Raises** when the code is not there. |
+
+A missing chart-of-accounts code is **fatal**, and the whole migration rolls
+back with it. A ledger that cannot carry the business is worse than a ledger
+that is empty, and a half-applied backfill — invoices posted, payments not —
+is worse than both.
+
+The backfill itself is three steps:
+
+1. **Every invoice gets its VAT code.** `public.invoices.vat_code_id` is set
+   from the invoice's own VAT amount. This is the step that makes the VAT
+   return able to see the business at all.
+2. **Every unposted, non-void invoice is posted** as rule #1, into the month
+   the invoice was **issued** — not the month the migration happens to run.
+3. **Every unposted, confirmed payment is posted** as rule #2, into the month
+   the money was **received**.
+
+Three things it deliberately does **not** do:
+
+- **It does not post a void invoice.** A cancelled invoice has no revenue.
+- **It does not post money that did not arrive.** A pending or failed payment
+  is not a receipt.
+- **It does not leave a zero line behind.** `journal_lines` carries
+  `check ((debit_pence > 0) <> (credit_pence > 0))`, so a line that is zero
+  on both sides is **illegal**, not merely empty. A zero-rated invoice is
+  therefore posted as two lines (Dr 1100 / Cr 4000), never three.
+
+**It writes into closed periods on purpose.** The alternative is to leave the
+history out of the ledger, which is the thing being repaired: the rent was
+due in April whether or not April is shut now. The application's guard —
+`assertPeriodOpenForPosting` — still refuses **new** postings into a closed
+period, so this restores history without opening a door.
+
+Each posting is **idempotent** because the journal's own key is
+`(tenant_id, source_type, source_id)`: a second run finds the entry that is
+already there, adds no lines, and changes nothing. A backfill that added a
+*second* set of lines would double the business's revenue while every
+individual posting still looked correct, so the CI harness replays the
+migration and compares the ledger's row counts before and after.
+
+Every posting writes its `accounting.audit_log` row, so the restored history
+is distinguishable from the history the application posted itself.
 
 ## 6. Other invariants worth knowing
 

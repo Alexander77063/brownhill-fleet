@@ -33,14 +33,23 @@ const USER_ID = '44444444-4444-4444-4444-444444444444';
 const BANK_TX_ID = '55555555-5555-5555-5555-555555555555';
 const CLOSER_ID = '66666666-6666-6666-6666-666666666666';
 
-/** The bank line the operator is trying to categorise. */
+/**
+ * The bank line the operator is trying to categorise.
+ *
+ * `posted_on` is the day the BANK posted the line, as text. The route reads
+ * it with `to_char(bt.posted_at at time zone 'UTC', 'YYYY-MM-DD')` — the
+ * raw `timestamptz` column comes back from postgres.js as a JavaScript Date,
+ * and the route needs the day as a string. The fixture matches what the
+ * route actually selects; a `posted_at` here would be a column the route
+ * never asks for.
+ */
 const BANK_TX = {
   id: BANK_TX_ID,
   bank_account_id: '77777777-7777-7777-7777-777777777777',
   amount_pence: '12000',
   bank_gl_id: '88888888-8888-8888-8888-888888888888',
   description: 'VAT PAYABLE HMRC',
-  posted_at: '2026-11-01T00:00:00.000Z',
+  posted_on: '2026-11-01',
   status: 'unmatched',
 };
 

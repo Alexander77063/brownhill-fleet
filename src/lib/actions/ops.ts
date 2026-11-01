@@ -7,10 +7,10 @@ import { getAuthContext, requirePermission } from '@/lib/auth/context';
 import { syncBilledVehicles } from '@/lib/catalogue/quantity';
 import { requireEntitlement } from '@/lib/entitlements';
 import { pounds, formatGBP } from '@/lib/money';
-import {
-  ALLOCATABLE_INVOICE_STATUSES,
-  isAllocatableInvoiceStatus,
-} from '@/lib/accounting/invoice-eligibility';
+import { localDb } from '@/lib/auth/local-store';
+import { allocatePaymentToInvoices } from '@/lib/accounting/allocation';
+import { postPaymentToLedger } from '@/lib/accounting/gl-posting';
+import { withJournalTx } from '@/lib/accounting/journal-bridge';
 import { rtbBillingTerms } from '@/lib/rtb-calculator';
 import { sendDriverMessage } from '@/lib/comms';
 import type { Database } from '@/lib/supabase/database.types';
@@ -52,62 +52,85 @@ export async function recordPayment(formData: FormData): Promise<void> {
   // Permission-based (not role-based): both ops and accounts users with
   // payments.record can record payments; the /accounts portal routes the
   // accountant here when they're granted the perm.
-  await requirePermission('payments.record');
-  const sb = await createClient();
+  //
+  // The context is read BEFORE anything is written, because it carries the
+  // tenant every statement below is scoped to, and the user the ledger entry
+  // is posted by.
+  const ctx = await requirePermission('payments.record');
 
   const agreementId = reqStr(formData, 'agreement_id');
   const amountPence = poundsField(formData, 'amount');
   if (amountPence <= 0) throw new Error('Payment amount must be greater than zero');
   const source = (str(formData, 'source') ?? 'manual') as 'manual' | 'bank_transfer' | 'cash';
-  const receivedOn = str(formData, 'received_on');
+  const receivedOn = str(formData, 'received_on') ?? new Date().toISOString().slice(0, 10);
+  const tenantId = ctx.tenantId;
 
-  // Resolve the agreement's driver so the payment is driver-linked.
-  const { data: agreement } = await sb
-    .from('agreements')
-    .select('driver_id')
-    .eq('id', agreementId)
-    .maybeSingle();
+  const sql = await localDb();
 
-  const tenantId = await currentTenantId();
-  const { data: payment, error: payErr } = await sb
-    .from('payments')
-    .insert({
-      tenant_id: tenantId,
-      agreement_id: agreementId,
-      driver_id: (agreement as { driver_id?: string } | null)?.driver_id ?? null,
-      source,
-      idempotency_key: randomKey(source),
-      amount_pence: amountPence,
-      received_on: receivedOn ?? new Date().toISOString().slice(0, 10),
-      status: 'confirmed',
-    })
-    .select('id')
-    .single();
-  if (payErr || !payment) throw new Error(payErr?.message ?? 'Could not record payment');
-
-  // Allocate FIFO across the invoices that still owe money, never exceeding
-  // each invoice's balance.
-  const { data: invoices } = await sb
-    .from('v_invoice_balance')
-    .select('id, balance_pence, status')
-    .eq('agreement_id', agreementId)
-    .in('status', [...ALLOCATABLE_INVOICE_STATUSES])
-    .order('due_on', { ascending: true });
-
-  let remaining = amountPence;
-  for (const inv of (invoices ?? []) as { id: string; balance_pence: number; status: string }[]) {
-    if (remaining <= 0) break;
-    if (!isAllocatableInvoiceStatus(inv.status)) continue;
-    const balance = inv.balance_pence ?? 0;
-    if (balance <= 0) continue;
-    const alloc = Math.min(remaining, balance);
-    if (alloc <= 0) continue;
-    const { error: allocErr } = await sb
-      .from('payment_allocations')
-      .insert({ tenant_id: tenantId, payment_id: payment.id, invoice_id: inv.id, amount_pence: alloc });
-    if (allocErr) throw new Error(allocErr.message);
-    remaining -= alloc;
+  // The agreement must belong to the operator's tenant. The write below runs
+  // on the direct connection, which bypasses RLS, so the tenant is named here
+  // rather than inherited from a policy.
+  const agreementRows = (await sql`
+    select id, driver_id
+      from public.agreements
+     where id = ${agreementId}::uuid
+       and tenant_id = ${tenantId}::uuid
+  `) as Array<{ id: string; driver_id: string | null }>;
+  if (!agreementRows.length) {
+    throw new Error('That agreement does not exist in your account.');
   }
+  const driverId = agreementRows[0].driver_id;
+
+  // THE RECEIPT AND ITS LEDGER ENTRY ARE ONE TRANSACTION
+  // -----------------------------------------------------
+  // This used to write the payment, then the allocations, as three separate
+  // statements — and never wrote a ledger entry at all, because
+  // `postPaymentJournal` had no call site anywhere in the product. So money
+  // the operator recorded by hand left no trace in the trial balance.
+  //
+  // Now the payment row, its allocations and its ledger entry are one
+  // transaction. That is what makes these two impossible:
+  //
+  //   * a receipt the accounts do not know about;
+  //   * a ledger entry for money nobody recorded.
+  //
+  // It also means a receipt cannot be recorded into a period the ledger has
+  // shut: the whole write is refused and the operator is told which period to
+  // reopen, rather than a receipt sitting in the books with nothing behind
+  // it.
+  await withJournalTx(async (tx) => {
+    const inserted = (await tx`
+      insert into public.payments
+        (driver_id, agreement_id, source, idempotency_key, amount_pence,
+         received_on, status, tenant_id)
+      values (${driverId}::uuid, ${agreementId}::uuid,
+              ${source}::public.payment_source, ${randomKey(source)},
+              ${amountPence.toString()}, ${receivedOn}::date,
+              'confirmed'::public.payment_status, ${tenantId}::uuid)
+      returning id, received_on::text as received_on
+    `) as Array<{ id: string; received_on: string }>;
+    const payment = inserted[0];
+
+    // Allocate FIFO across the invoices that still owe money, never exceeding
+    // each invoice's balance.
+    await allocatePaymentToInvoices(tx, {
+      paymentId: payment.id,
+      agreementId,
+      amountPence: BigInt(amountPence),
+      tenantId,
+    });
+
+    // Dr Bank / Cr Trade Debtors, in the month the money was received.
+    await postPaymentToLedger(
+      tx,
+      { userId: ctx.userId, tenantId },
+      {
+        id: payment.id,
+        amountPence: BigInt(amountPence),
+        receivedOn: payment.received_on,
+      },
+    );
+  });
 
   revalidatePath('/ops/billing');
   revalidatePath('/accounts/billing');

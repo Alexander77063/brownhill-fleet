@@ -26,7 +26,6 @@ describe('postInvoiceJournal (Rule #1)', () => {
     const input: InvoiceForPosting = {
       invoiceId: 'inv-1',
       net: 100_000n, vat: 20_000n, gross: 120_000n,
-      vatCodeId: 'T1',
       chartOfAccounts: { ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput },
     };
     const r = postInvoiceJournal(input);
@@ -47,7 +46,6 @@ describe('postInvoiceJournal (Rule #1)', () => {
     const r = postInvoiceJournal({
       invoiceId: 'inv-2',
       net: 50_000n, vat: 0n, gross: 50_000n,
-      vatCodeId: 'T0',
       chartOfAccounts: { ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput },
     });
     expect(r.sumDebits).toBe(50_000n);
@@ -58,7 +56,6 @@ describe('postInvoiceJournal (Rule #1)', () => {
     expect(() => postInvoiceJournal({
       invoiceId: 'inv-3',
       net: 100_000n, vat: 20_000n, gross: 119_999n,  // off by 1
-      vatCodeId: 'T1',
       chartOfAccounts: { ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput },
     })).toThrow(/Imbalanced/);
   });
@@ -169,7 +166,6 @@ describe('every rule produces a balanced entry', () => {
   it('rule #1: invoice', () => {
     const r = postInvoiceJournal({
       invoiceId: 'x', net: 99_999n, vat: 19_999n, gross: 119_998n,
-      vatCodeId: 'T1',
       chartOfAccounts: { ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput },
     });
     expect(r.sumDebits).toBe(r.sumCredits);
