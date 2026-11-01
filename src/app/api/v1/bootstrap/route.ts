@@ -4,10 +4,9 @@
 // Replay returns 410 Gone. The BOOTSTRAP_TOKEN lives in /etc/brownhill/secrets/bootstrap.env.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createFirstUserAndTenant, localDb } from '@/lib/auth/local-store';
+import { createFirstUserAndTenant, firstRunOpen, localDb } from '@/lib/auth/local-store';
 import { issueAccessPair } from '@/lib/auth/access-tokens';
 import { verifyBootstrapSignature } from './_verify';
-import { getAppState, setAppState } from '@/lib/app-state';
 import { deploymentProfile } from '@/lib/deployment/profile';
 
 // First-run setup exists only on a box the customer operates. It used to gate
@@ -27,8 +26,14 @@ export async function POST(req: NextRequest) {
   }
 
   const sql = await localDb();
-  const pending = await getAppState(sql, 'bootstrap_pending');
-  if (pending !== '1') return NextResponse.json({ error: 'gone' }, { status: 410 });
+  // The first-run window decides whether this door may serve. `firstRunOpen()`
+  // asks the database whether the installation already has an owner as well
+  // as reading the flag, so an installation whose setup completed on the
+  // other door — the browser page at /setup — is closed here too, and a flag
+  // left armed on such an installation is corrected rather than believed.
+  if (!(await firstRunOpen(sql))) {
+    return NextResponse.json({ error: 'gone' }, { status: 410 });
+  }
 
   let body: { email: string; password: string; fullName: string; businessName: string };
   try {
@@ -65,7 +70,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
-  await setAppState(sql, 'bootstrap_pending', '0');
+  // The window is closed by `createFirstUserAndTenant`, in the same
+  // transaction as the owner account it describes — not here, afterwards,
+  // where a failure between the two would leave a green setup on an
+  // installation that still believes it is pending.
   const { access, refresh } = await issueAccessPair({
     sub: created.user.id,
     role: 'authenticated',

@@ -18,7 +18,7 @@ import {
   SESSION_SECONDS,
   sessionCookieOptions,
 } from '@/lib/auth/local-session';
-import { primaryTenantId, signInWithPassword } from '@/lib/auth/local-store';
+import { primaryTenantId, closeStaleFirstRunWindow, signInWithPassword } from '@/lib/auth/local-store';
 
 export const runtime = 'nodejs';
 
@@ -70,6 +70,21 @@ export async function POST(request: Request) {
 
   const tenantId = await primaryTenantId(result.user.id);
   const token = await issueSessionToken(result.user, tenantId);
+
+  // A successful sign-in PROVES this installation has an owner, so the
+  // first-run window cannot still be open. On a box whose first-run setup
+  // completed on a path that did not close it, the flag is stale, and this is
+  // where it is corrected: the owner signs in, and the box heals itself
+  // rather than waiting for a hand-written UPDATE on the customer's server.
+  //
+  // A failure here must not cost the operator their sign-in — the window is
+  // corrected again on the next attempt — but it is logged, because a flag
+  // that cannot be corrected is worth knowing about.
+  try {
+    await closeStaleFirstRunWindow();
+  } catch (e) {
+    console.error('[auth] the first-run window could not be closed', e);
+  }
 
   const response = NextResponse.json({ ok: true });
   response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions(SESSION_SECONDS));

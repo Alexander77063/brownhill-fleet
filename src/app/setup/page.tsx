@@ -13,9 +13,8 @@ import { Button } from '@/components/ui';
  * It is the documented first-run path for the desktop product and for the
  * dedicated Nigerian instance; the sign-in page sends the operator here when
  * the database is empty. A customer-operated server is onboarded through
- * `/api/v1/bootstrap` instead (the handover's step H), because that path also
- * closes the bootstrap window — so this page must not claim to be the way
- * into a hosted box.
+ * `/api/v1/bootstrap` instead (the handover's step H), so this page must not
+ * claim to be the way into a hosted box.
  */
 export default function SetupPage() {
   const [businessName, setBusinessName] = useState('');

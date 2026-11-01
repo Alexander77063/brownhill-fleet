@@ -2,7 +2,7 @@
 // Edge-safe DB helper. Kept minimal so middleware can import it without
 // pulling in Node-only modules from local-store.ts (notably `postgres`).
 
-import type { Sql } from 'postgres';
+import type { ISql, Sql } from 'postgres';
 
 let cached: Sql | null = null;
 
@@ -17,3 +17,15 @@ export async function localDb(): Promise<Sql> {
   cached = postgres(url, { max: 2, idle_timeout: 30 }) as unknown as Sql;
   return cached;
 }
+
+/**
+ * Anything that can run a tagged-template query.
+ *
+ * `postgres.Sql` — the pool — and `postgres.TransactionSql` — a transaction
+ * handle — both extend `ISql`: the pool adds `begin()`, the transaction adds
+ * `savepoint()`. `ISql` is the one type that fits both, and the first-run
+ * setup needs both, because the owner account, the tenant they operate and
+ * the closing of the first-run window are ONE transition and a transaction
+ * is what makes them one transition rather than three.
+ */
+export type Query = ISql;

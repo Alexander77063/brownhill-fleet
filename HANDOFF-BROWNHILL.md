@@ -234,11 +234,20 @@ exited 3 on every boot after the first. That is fixed, and
 
 Two things worth knowing:
 
-- **The first-run flag is a one-way door.** The bootstrap endpoint flips
-  `app_state.bootstrap_pending` to `'0'` when you complete first-run setup
-  (step H), and the bootstrap script does not set it back. Do not be surprised
-  that `bootstrap_pending` is `'0'` on a system that has been set up — that is
-  correct, and the first-run endpoint stays closed.
+- **The first-run flag is a one-way door.** The application flips
+  `app_state.bootstrap_pending` to `'0'` when first-run setup completes —
+  through the signed endpoint (step H) or through the browser setup page at
+  `/setup`, whichever the operator used — and the flip happens in the same
+  transaction as the owner account, so a setup that fails leaves the flag
+  armed and nothing half-made. The bootstrap script does not set it back. Do
+  not be surprised that `bootstrap_pending` is `'0'` on a system that has been
+  set up — that is correct, and the first-run endpoints stay closed.
+
+  If you ever find `bootstrap_pending='1'` on a box that **already has an
+  owner account**, the flag is stale, not the box un-onboarded. The
+  application corrects it by itself: the owner's next sign-in closes the
+  window, and both first-run endpoints refuse to serve. You do not need to
+  write to `app_state` by hand.
 - **A database that was provisioned before the ledger existed** has to be
   adopted once, explicitly:
 
@@ -329,7 +338,7 @@ If any gate fails, the script prints the offending output. The spec's monitoring
 
 ### Step H — Create the owner account (one-time first-run)
 
-The `/api/v1/bootstrap` endpoint is reachable **only when `app_state.bootstrap_pending='1'`**, and only after presenting a valid HMAC signature with `BOOTSTRAP_TOKEN`. From the machine where you have `BOOTSTRAP_TOKEN` available:
+The `/api/v1/bootstrap` endpoint is reachable **only while the first-run window is open** — `app_state.bootstrap_pending='1'` **and** no owner account exists yet — and only after presenting a valid HMAC signature with `BOOTSTRAP_TOKEN`. Either half of the window closing closes the endpoint: a box that has already been onboarded answers 410 Gone even if its flag still says `'1'`. From the machine where you have `BOOTSTRAP_TOKEN` available:
 
 ```bash
 TOKEN=$(sudo cat /etc/brownhill/secrets/bootstrap.env | cut -d= -f2)

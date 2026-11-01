@@ -61,8 +61,7 @@ export default function LoginPage() {
   //
   // Only the builds whose documented first-run path IS `/setup` are sent
   // there. The hosted deployment is onboarded through `/api/v1/bootstrap`,
-  // which also closes the bootstrap window, so it must not be redirected
-  // behind the operator's back.
+  // so it must not be redirected behind the operator's back.
   useEffect(() => {
     if (!CAPS.setupPathBuild) return;
     let cancelled = false;

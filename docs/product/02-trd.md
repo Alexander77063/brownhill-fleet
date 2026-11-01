@@ -63,12 +63,13 @@ nginx  (:443, TLS via certbot, HSTS)          ← only public listener
 - The app talks to PostgREST on **loopback only**. PostgREST never binds a
   public interface.
 - The browser never sees a database URL. Every query goes through the app.
-- `app_state` holds the operational flags the middleware reads:
-  `bootstrap_pending`, `app_draining`. The Node server reads it through
-  `localDb()` — a direct connection as the table owner. The **Edge** middleware
-  cannot open a database connection, so it reads the drain flag over HTTP from
-  PostgREST as `anon`, against a one-row RLS policy that exposes the drain row
-  and nothing else. See §7.1 of the [schema document](./06-database-schema.md).
+- `app_state` holds the operational flags: `bootstrap_pending` — the first-run
+  window, read by the Node server — and `app_draining`, the restore switch.
+  The Node server reads it through `localDb()` — a direct connection as the
+  table owner. The **Edge** middleware cannot open a database connection, so
+  it reads the drain flag over HTTP from PostgREST as `anon`, against a
+  one-row RLS policy that exposes the drain row and nothing else. See §7.1 of
+  the [schema document](./06-database-schema.md).
 
 ### 3.1 The data-access seam (decision D2)
 
