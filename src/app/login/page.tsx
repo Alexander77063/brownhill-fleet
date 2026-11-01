@@ -6,12 +6,13 @@ import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { deploymentBrand } from '@/lib/deployment/brand';
+import { signInCapabilities, type SignInMode } from '@/lib/deployment/signin-modes';
 import { safeNextPath } from '@/lib/safe-next';
 
 /** What this build is called and may say about itself. Constant per build. */
 const BRAND = deploymentBrand();
 
-type Mode = 'email' | 'phone' | 'password';
+type Mode = SignInMode;
 
 /**
  * Which sign-in methods this build can honour.
@@ -19,15 +20,21 @@ type Mode = 'email' | 'phone' | 'password';
  * Only the SaaS has Supabase Auth, so only it offers the email link. Every
  * other build signs in against its own database: password for staff, and — on
  * the builds that have vehicle owners — a text-message code for people who
- * have a phone and not necessarily an email. A self-hosted install is staff
- * only, so it is password only. Offering a button that cannot work is worse
- * than not offering it.
+ * have a phone and not necessarily an email. A build the customer runs
+ * themselves is staff only, so it is password only. Offering a button that
+ * cannot work is worse than not offering it.
+ *
+ * The rule used to be "is the profile called `standalone`?", and the
+ * deployment Brownhill actually runs is called `hosted`. It therefore fell
+ * through to the "this build has owners" branch and led with a phone-code
+ * form for a box with no vehicle owners on it — the operator's first screen
+ * asked for a mobile number nobody had. The rule now follows what the build
+ * can do, not what it is called; see `src/lib/deployment/signin-modes.ts`.
  */
-const PROFILE = process.env.NEXT_PUBLIC_DEPLOYMENT_PROFILE ?? 'saas';
-const LOCAL_AUTH = PROFILE !== 'saas';
-const STANDALONE = PROFILE === 'standalone';
-const MODES: Mode[] = STANDALONE ? ['password'] : LOCAL_AUTH ? ['phone', 'password'] : ['email', 'password', 'phone'];
-const DEFAULT_MODE: Mode = STANDALONE ? 'password' : LOCAL_AUTH ? 'phone' : 'email';
+const CAPS = signInCapabilities(process.env.NEXT_PUBLIC_DEPLOYMENT_PROFILE);
+const LOCAL_AUTH = !CAPS.supabaseAuth;
+const MODES = CAPS.modes;
+const DEFAULT_MODE = CAPS.defaultMode;
 
 async function postJson(url: string, body: unknown): Promise<{ next?: string }> {
   const res = await fetch(url, {
@@ -48,11 +55,16 @@ function nextPath(): string {
 export default function LoginPage() {
   const [mode, setMode] = useState<Mode>(DEFAULT_MODE);
 
-  // A freshly installed self-hosted system has no accounts at all. Showing a
-  // sign-in form there is a dead end — there are no credentials to enter and no
-  // dashboard anywhere to create some — so send them to first-run setup.
+  // A freshly installed system has no accounts at all. Showing a sign-in form
+  // there is a dead end — there are no credentials to enter and no dashboard
+  // anywhere to create some — so send them to first-run setup.
+  //
+  // Only the builds whose documented first-run path IS `/setup` are sent
+  // there. The hosted deployment is onboarded through `/api/v1/bootstrap`,
+  // which also closes the bootstrap window, so it must not be redirected
+  // behind the operator's back.
   useEffect(() => {
-    if (!STANDALONE) return;
+    if (!CAPS.setupPathBuild) return;
     let cancelled = false;
     fetch('/api/auth/local/setup')
       .then((r) => (r.ok ? r.json() : { needsSetup: false }))
@@ -139,6 +151,26 @@ export default function LoginPage() {
       location.href = '/';
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Invalid code.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendCode() {
+    setBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      if (LOCAL_AUTH) {
+        await postJson('/api/auth/local/otp/request', { phone: value });
+      } else {
+        const supabase = createClient();
+        const { error } = await supabase.auth.signInWithOtp({ phone: value });
+        if (error) throw error;
+      }
+      setMsg('We sent another code to your phone.');
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Could not send another code.');
     } finally {
       setBusy(false);
     }
@@ -287,6 +319,20 @@ export default function LoginPage() {
               <Button type="submit" disabled={busy} className="w-full">
                 {busy ? 'Verifying…' : 'Verify & sign in'}
               </Button>
+              {/* "The code did not arrive" used to be a dead end: the screen
+                  showed only "6-digit code", and the only way back was the
+                  method chooser above, which reads as a switch of sign-in
+                  method rather than as "send it again". This is the recovery
+                  route the owner sign-in pages point people to, so it has to
+                  work for someone whose code never landed. */}
+              <button
+                type="button"
+                onClick={resendCode}
+                disabled={busy}
+                className="w-full text-center text-xs text-muted underline hover:text-cream disabled:opacity-60"
+              >
+                Didn&apos;t get a code? Send another
+              </button>
             </form>
           )}
 
@@ -301,7 +347,7 @@ export default function LoginPage() {
           </div>
 
           <p className="mt-8 text-xs text-muted">
-            {LOCAL_AUTH && !STANDALONE
+            {CAPS.ownerBuild
               ? 'Vehicle owners sign in with their mobile number. Staff sign in with a password.'
               : 'Access is by invitation. Contact your fleet administrator if you cannot sign in.'}
           </p>

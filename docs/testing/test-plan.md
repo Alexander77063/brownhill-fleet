@@ -1,8 +1,8 @@
 # Elite Fleet Management — Test Plan & Test Script
 
 **Product:** Elite Fleet Management — multi-tenant SaaS for UK PCO / chauffeur-vehicle rental operators
-**Document version:** 1.1
-**Date:** 3 August 2026
+**Document version:** 1.2
+**Date:** 31 October 2026
 **Audience:** QA testers (manual), with automation notes for engineers
 
 ---
@@ -158,6 +158,12 @@ driver, agreement, charge, expense and document.
 | TC-AUTH-07 | Visit any `/ops`, `/driver`, `/admin` or `/platform` URL while signed out | Redirected to `/login` |
 | TC-AUTH-08 | Sign in as a driver, then manually visit `/ops` | Redirected to `/driver`, not shown ops data |
 | TC-AUTH-09 | Leave the session idle past expiry, then act | Handled gracefully — re-prompt to sign in, no silent data loss or blank screen |
+| TC-AUTH-10 | Open `/driver/login` while signed out | **The page renders.** It used to sit under the driver portal's layout, whose `requireRole` guard redirected it away before it could draw — the URL the operations app puts in its invitation was a dead end |
+| TC-AUTH-11 | Open `/owner/login` while signed out | **The page renders**, same as TC-AUTH-10 |
+| TC-AUTH-12 | Open `/login` and compare the offered methods with the deployment's capabilities | The set matches what the build can honour: **SaaS** — email link, password, phone code; **managed / managed-shared** — phone code, password; **hosted / standalone** — password only. The hosted box has no vehicle owners and no account provider behind it, and `resolveOwnerSignIn` refuses both a staff sign-in and an unknown number, so offering those methods is a button that cannot work |
+| TC-AUTH-13 | On the code screen, press **"Didn't get a code? Send another"** | A second code is requested and sent; the screen says so. The old screen offered no way back from a code that never arrived |
+| TC-AUTH-14 | As an operator, open **Drivers → a driver → Sign-in → Reset password** | A temporary password is issued and shown **once**, with a Copy button; the driver can sign in with it and change it from their profile page. The reset also clears a lockout |
+| TC-AUTH-15 | As an operator, try to reset a password for somebody in **another organisation** | Refused — "That person is not a member of this organisation", and nothing changes. Same for an owner account when the caller is not an owner |
 
 ---
 
@@ -696,7 +702,7 @@ Raise **S1 immediately**, do not batch it to the end of the run.
 |---|---|---|---|---|---|---|
 | 2. Legal consent | 6 | | | | | |
 | 3. Multi-tenant isolation | 8 | | | | | |
-| 4. Authentication | 9 | | | | | |
+| 4. Authentication | 15 | | | | | |
 | 5. Onboarding | 6 | | | | | |
 | 6.1–6.3 Fleet, drivers, documents | 29 | | | | | |
 | 6.4 Agreements & signing | 23 | | | | | |

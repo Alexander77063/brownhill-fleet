@@ -334,6 +334,24 @@ After step H:
 - `app_state.app_draining='0'` — application is live.
 - The owner can sign in via the regular `/api/auth/local/signin` endpoint from the same Pulse.
 
+**Then sign in through the browser.** The `curl` above creates the account; it
+does not prove the account can be used the way a human will use it. Open the
+site in a browser, sign in with the email and password you just chose, and
+confirm you land on the operations dashboard (`/ops`).
+
+```text
+https://brownhill.example.co.uk/login
+```
+
+On the hosted build the sign-in page offers **one** method — a password.
+There is no phone-code button and no email link, because this box has no
+vehicle owners on it and no account provider behind it. If you see a
+phone-code option, the box is running a build from the wrong branch.
+
+Keep that password somewhere safe: it is the only way into the box, and
+there is no "forgot password" email on a self-hosted install — see
+"Forgotten passwords" below.
+
 ## 5. Ongoing operations
 
 ### Updates (v1 — SSH + git pull)
@@ -364,6 +382,43 @@ one is in place, and the script prints the rollback command if the restart
 fails.
 
 A future v2 will host an in-app "click to update" button (out of scope for this PR).
+
+### Forgotten passwords
+
+There is no self-service password reset on this deployment, and that is
+deliberate: a reset link emailed to an address nobody can reach re-creates the
+problem it is meant to solve. **You are the recovery path.** When a driver,
+a member or an owner phones because they cannot sign in:
+
+**A driver** — open **Drivers → the driver → the "Sign-in" card → Reset
+password**. The app issues a temporary password and shows it **once**, on
+your screen. Read it out over the telephone. They sign in at
+`/driver/login` and change it from their profile page.
+
+**Any other member** — open **Administration → the members table → Edit** on
+that person, then the **"Password" card → Reset password**. Same thing: one
+temporary password, shown once, read out over the telephone.
+
+Two things worth knowing:
+
+- **The temporary password is also emailed** if the box has an email provider
+  configured. On a box without one, the on-screen password is the whole
+  recovery path — so do not close the page until you have read it out.
+- **The reset clears a lockout.** Ten wrong passwords locks an account for 30
+  minutes; resetting the password unlocks it at the same time.
+
+The reset is refused in two cases, deliberately:
+
+- **A member of another organisation** — "That person is not a member of this
+  organisation". Nothing is changed.
+- **An owner or admin account**, unless you are an owner (owners and admins
+  for admins). Resetting somebody's password is signing in as them, so it
+  follows the same escalation rule as everything else.
+
+**Last resort — your own operator account.** It has no in-app reset path,
+because the reset is done *by* an operator. If *you* are locked out, use the
+script over SSH, exactly as in Step 2 above, and hand the new password over
+by telephone — never by file, never by email.
 
 ### Backups
 

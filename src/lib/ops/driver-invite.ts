@@ -12,18 +12,26 @@
  * via the direct postgres connection) and set `email_confirmed_at` on the
  * auth.users row so the driver can sign in immediately.
  */
-import { randomBytes } from 'node:crypto';
 import { createServiceClient } from "@/lib/supabase/server";
 import { sendTenantEmail } from "@/lib/email/tenant-email";
 import { sendEmail } from "@/lib/notify";
 import { getBranding, brandDisplayName, brandEmailFrom } from "@/lib/branding";
 import { createLocalUser } from "@/lib/auth/local-store";
+import { generateTemporaryPassword } from "@/lib/auth/password-reset";
 import { localDb } from "@/lib/db/local";
 
 type Sb = ReturnType<typeof createServiceClient>;
 
+/**
+ * The password a newly invited driver signs in with.
+ *
+ * The same generator the operator's password reset uses — one policy for every
+ * temporary password the product hands out, and one place that decides what
+ * those passwords look like. The alphabet avoids the characters people confuse
+ * when reading them aloud, because this one is often read out over the phone.
+ */
 function genTempPassword(): string {
-  return randomBytes(18).toString("base64url").slice(0, 24);
+  return generateTemporaryPassword();
 }
 
 /**

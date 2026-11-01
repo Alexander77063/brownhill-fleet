@@ -237,7 +237,11 @@ the allow-list `requirePlatformAdmin()` checks (`src/lib/auth/context.ts`). The 
 create the user here (§0.2). The working path on a fresh instance is the first-run setup route:
 
 1. Open `https://<domain>/setup`. The sign-in page redirects there itself while
-   `GET /api/auth/local/setup` reports `needsSetup: true` (`src/app/login/page.tsx:57`).
+   `GET /api/auth/local/setup` reports `needsSetup: true` — the redirect is
+   gated on `signInCapabilities(...).setupPathBuild`, which is true for the
+   `standalone` and `managed` builds and false for `hosted` (the hosted box is
+   onboarded through `/api/v1/bootstrap`, which also closes the bootstrap
+   window). See `src/lib/deployment/signin-modes.ts`.
 2. Enter **our** ops email, a password of ≥ 12 characters, and the **customer's** business name.
    `POST /api/auth/local/setup` → `createFirstUserAndTenant` (`src/lib/auth/local-store.ts`) creates the
    `ops` user, the tenant (name, slug from the name, branding seeded with the name) and an `owner`

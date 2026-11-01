@@ -4,6 +4,7 @@ import { Icon } from '@/components/icons';
 import { getDriver, getLookups } from '@/lib/queries';
 import {
   getAgreementsForDriver, getCertificatesForDriver, getChargesForDriver, getPaymentsForDriver,
+  getDriverAccount,
 } from '@/lib/queries-ops';
 import {
   formatDate, daysUntil, titleCase, driverStatusTone, agreementStatusTone, chargeStatusTone,
@@ -14,6 +15,7 @@ import { getAuthContext } from '@/lib/auth/context';
 import { listDriverDocuments } from '@/lib/driver-documents';
 import { DriverDocuments } from '@/components/DriverDocuments';
 import { deleteDriverDocumentAction, uploadDriverDocumentAction } from '@/lib/actions/driver-documents';
+import { PasswordResetPanel } from '@/components/PasswordResetPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,7 +38,7 @@ export default async function DriverDetailPage({ params }: { params: Promise<{ i
   if (!driver) notFound();
 
   const ctx = await getAuthContext();
-  const [agreements, certs, charges, payments, lookups, notifications, documents] = await Promise.all([
+  const [agreements, certs, charges, payments, lookups, notifications, documents, account] = await Promise.all([
     getAgreementsForDriver(id),
     getCertificatesForDriver(id),
     getChargesForDriver(id),
@@ -44,6 +46,7 @@ export default async function DriverDetailPage({ params }: { params: Promise<{ i
     getLookups(),
     ctx?.tenantId ? listDriverNotifications(ctx.tenantId, id) : Promise.resolve([]),
     ctx?.tenantId ? listDriverDocuments(ctx.tenantId, id) : Promise.resolve([]),
+    getDriverAccount(id),
   ]);
 
   const exp = daysUntil(driver.pco_licence_expiry);
@@ -117,6 +120,22 @@ export default async function DriverDetailPage({ params }: { params: Promise<{ i
             <Spec label="Status" value={<Badge tone={driverStatusTone(driver.status)}>{titleCase(driver.status)}</Badge>} />
             <Spec label="Email" value={driver.email ?? '—'} />
             <Spec label="Phone" value={driver.phone ?? '—'} />
+          </div>
+        </Card>
+
+        <Card>
+          <CardTitle>Sign-in</CardTitle>
+          <div className="mt-3">
+            <PasswordResetPanel
+              userId={account?.userId ?? null}
+              who={driver.full_name}
+              noAccount={
+                driver.email
+                  ? `${driver.full_name} has not been invited to sign in yet. Use Invite a driver on the Drivers page to create the account — the invite sends the first password.`
+                  : `${driver.full_name} has no login email on file. Add one on the Drivers page, then invite them.`
+              }
+              intro="Forgotten their password? Reset it here and read the temporary password out to them."
+            />
           </div>
         </Card>
 

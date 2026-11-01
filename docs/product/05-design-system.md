@@ -3,8 +3,8 @@
 Tokens, components, and voice. One source: `src/app/globals.css` and
 `src/components/ui/index.tsx`. Everything else references them.
 
-*Status: current as of 2026-10-30. Read from `globals.css` and
-`src/components/ui/index.tsx`.*
+*Status: current as of 2026-10-31. Read from `globals.css`,
+`src/components/ui/index.tsx`, and the sign-in and recovery surfaces.*
 
 ---
 
@@ -247,6 +247,32 @@ expense. It is the voice of a memorandum.
 | "Cost: N/A" | "Costed at the list price: no funder finance is recorded for this car." |
 | "No rate" | "No positive rate for the rentee: the payments do not cover the amount financed." |
 | "Report sent" | "Sent to 3 recipients." — and, if some failed, which ones and why |
+
+### 6.2 Credentials and recovery
+
+The sign-in pages and the operator's password reset introduced a new class of
+message — credentials, lockouts and temporary secrets — and they follow four
+rules.
+
+- **Never say which half of the pair was wrong.** "Email or password is
+  wrong." A message that says "no such account" hands out the customer list.
+- **Say who can fix it, and how.** "Ask your dispatcher to reset it. They open
+  your record in the operations app and press Reset password." A dead end
+  dressed as a help link is worse than an honest limit, and "ask the
+  administrator" without saying what they do is the same dead end in nicer
+  words.
+- **A temporary secret is shown once and never stored.** The copy says so:
+  "It is shown here once — read it out if they are on the phone." The panel
+  does not keep it, the database does not keep the old one, and pressing the
+  button again issues a new one.
+- **A failure says what did not happen.** "Could not set the new password.
+  Nothing has changed — try again." And when the email fails but the password
+  has already changed, it says that instead of reporting a failure that did
+  not happen.
+
+The alphabet of a spoken secret is part of the voice: the temporary password
+avoids `1 i l O o`, because it is read out over the telephone and those are
+the characters people confuse.
 
 ## 7. The printable document
 

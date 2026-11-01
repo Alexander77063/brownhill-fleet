@@ -1,3 +1,17 @@
+/**
+ * The vehicle-owner portal's shell and its session guard.
+ *
+ * This file lives in the `(portal)` route group for the same reason the driver
+ * portal's does: the sign-in page.
+ *
+ * `/owner/login` used to sit directly under a layout that called
+ * `requireRole(['owner'])`, so a signed-out visitor was redirected to `/login`
+ * before the form could render. A sign-in page cannot live inside the tree
+ * that guards the pages behind it. `(portal)` does not appear in the URL, so
+ * `/owner`, `/owner/billing` and the rest are unchanged.
+ *
+ * `tests/unit/signin-reachability.test.ts` holds this arrangement in place.
+ */
 import { headers } from 'next/headers';
 import { requireRole } from '@/lib/auth';
 import { AppShell } from '@/components/shell/AppShell';

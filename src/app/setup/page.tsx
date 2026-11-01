@@ -4,12 +4,18 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui';
 
 /**
- * First-run setup for a self-hosted install.
+ * First-run setup: create the first account and the tenant it operates.
  *
- * The very first thing a customer sees after the installer finishes. Nothing
- * exists yet — no account, no tenant — so this page creates both and signs
- * them straight in. It exists only in the standalone build; a hosted tenant is
- * onboarded through /admin instead.
+ * Nothing exists yet — no account, no tenant — so this page creates both and
+ * signs the operator straight in. It refuses once any user exists, so it
+ * cannot be replayed to mint a second owner.
+ *
+ * It is the documented first-run path for the desktop product and for the
+ * dedicated Nigerian instance; the sign-in page sends the operator here when
+ * the database is empty. A customer-operated server is onboarded through
+ * `/api/v1/bootstrap` instead (the handover's step H), because that path also
+ * closes the bootstrap window — so this page must not claim to be the way
+ * into a hosted box.
  */
 export default function SetupPage() {
   const [businessName, setBusinessName] = useState('');
@@ -89,8 +95,8 @@ export default function SetupPage() {
         <h1 className="mt-1 font-display text-3xl text-cream">Set up your system</h1>
         <div className="gold-rule mt-3 mb-4" />
         <p className="mb-6 text-sm text-muted">
-          This runs entirely on this computer. Nothing is sent anywhere, and this account is the
-          only way in — so keep the password somewhere safe.
+          Nothing is sent anywhere, and this account is the only way in — so keep the password
+          somewhere safe.
         </p>
 
         <form onSubmit={submit} className="space-y-4">

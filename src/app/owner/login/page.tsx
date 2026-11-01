@@ -2,6 +2,11 @@
 
 // /owner/login — vehicle-owner-specific signin. Same auth flow as the driver
 // login; redirects to /owner on success.
+//
+// This page is deliberately NOT under the owner portal's layout, which demands
+// a session — a sign-in page cannot live inside the tree that guards the
+// pages behind it. The guarded pages live in `src/app/owner/(portal)/`
+// instead; see tests/unit/signin-reachability.test.ts.
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -54,10 +59,7 @@ export default function OwnerLoginPage() {
         </div>
         <p className="eyebrow text-gold">Vehicle owner</p>
         <h1 className="mt-1 font-display text-3xl text-cream">Owner sign-in</h1>
-        <p className="mt-2 text-sm text-muted">
-          Sign in with the email on file. Need help?
-          <Link href="/login" className="ml-1 text-gold-bright hover:underline">contact us</Link>.
-        </p>
+        <p className="mt-2 text-sm text-muted">Sign in with the email on file.</p>
 
         <label className={labelCls} htmlFor="own-email">Email</label>
         <input
@@ -102,16 +104,29 @@ export default function OwnerLoginPage() {
           </div>
         ) : null}
 
-        <div className="mt-5">
-          <Link href="/owner/settings/security" className="text-sm text-gold-bright hover:underline">
-            Forgot password?
-          </Link>
-        </div>
-
         <div className="mt-4">
           <Button type="submit" disabled={busy} className="w-full">
             {busy ? 'Signing in…' : 'Sign in'}
           </Button>
+        </div>
+
+        {/* The recovery route, said plainly.
+            This used to be a "Forgot password?" link to
+            /owner/settings/security — a page behind the owner layout, so an
+            owner who had forgotten their password was bounced straight back
+            here, in a loop. Owners normally sign in with a code sent to their
+            mobile number, so that is the route that actually works; the
+            operator resets a password for anyone who does use one. */}
+        <div className="mt-5 rounded-[var(--radius)] border border-hair-soft bg-[rgba(255,255,255,0.03)] p-3">
+          <p className="text-sm text-parchment">Forgotten your password?</p>
+          <p className="mt-1 text-xs text-muted">
+            Vehicle owners normally sign in with a 6-digit code sent to your mobile number.{' '}
+            <Link href="/login" className="text-gold-bright hover:underline">
+              Sign in with a code
+            </Link>
+            . If that number has changed, ask the fleet operator to update it. If you
+            normally sign in with a password, ask them to reset it for you.
+          </p>
         </div>
       </form>
     </main>

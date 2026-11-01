@@ -150,6 +150,34 @@ export async function getAgreementsForDriver(driverId: string): Promise<Agreemen
   return (data ?? []) as Agreement[];
 }
 
+/**
+ * The sign-in account behind a driver, if they have one.
+ *
+ * `drivers` has no `user_id` column: the link runs the other way, through
+ * `profiles.driver_id`, and it is set when ops invites the driver. So a driver
+ * with no row here has never been invited, and there is no password to reset.
+ *
+ * The driver id is already tenant-scoped by the caller, and `drivers.id` is a
+ * primary key, so the lookup cannot reach another tenant's driver.
+ */
+export interface DriverAccount {
+  userId: string;
+  email: string | null;
+  fullName: string | null;
+}
+
+export async function getDriverAccount(driverId: string): Promise<DriverAccount | null> {
+  const sb = await createClient();
+  const { data } = await sb
+    .from('profiles')
+    .select('id, full_name, email')
+    .eq('driver_id', driverId)
+    .maybeSingle();
+  if (!data) return null;
+  const p = data as { id: string; full_name: string | null; email: string | null };
+  return { userId: p.id, email: p.email, fullName: p.full_name };
+}
+
 /* ── Invoices for an agreement (open, oldest first) ──────────────────────── */
 export async function getOpenInvoicesForAgreement(agreementId: string): Promise<Invoice[]> {
   const sb = await createClient();
