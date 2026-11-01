@@ -118,12 +118,23 @@ jobs:
         #
         # The writer now goes through a temporary file and a rename, and this
         # gate watches the target path while the write is in progress, to
-        # prove it never holds an incomplete file.
+        # prove it never holds an incomplete file — or a file with the wrong
+        # mode. The mode matters as much as the size: a credential that is
+        # world-readable for the length of one `chown` and one `chmod` has
+        # been exposed, and nothing checked that, because the gate looked at
+        # the file afterwards, by which time the trailing chmod had put the
+        # mode back.
         run: bash hosted/tests/secret-file-permissions.sh
       - name: The credential-file gate can fail
-        # A gate that cannot fail is not a gate. This runs it against a copy
-        # of the tree that writes the credential straight to its final path
-        # again, and requires it to fail on the check that watches for it.
+        # A gate that cannot fail is not a gate. This runs it against three
+        # copies of the tree, each carrying one of the faults the gate
+        # exists to catch, and requires it to fail on the right check each
+        # time.
+        #
+        # It earns its place. The first version of this gate ran a probe
+        # that deleted only the narrowing before the rename — and the
+        # narrowing afterwards put the mode back, so the tree legitimately
+        # passed and the probe proved nothing but that the probe was wrong.
         run: bash hosted/tests/secret-file-permissions-negative.sh
       - name: The deployment gate can fail
         # A gate that cannot fail is not a gate. The table that decides which

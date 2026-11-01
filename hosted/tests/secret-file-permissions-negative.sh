@@ -149,28 +149,73 @@ else
   bad "the probe did not take — the writer still writes through a temporary file"
 fi
 
-# ── probe 2: the temporary file is never narrowed ───────────────────────────
+# ── probe 2: the credential never reaches the mode the services need ────────
 #
-# The other half of the property: the file has to ARRIVE at the target path
-# already narrowed. If the temporary file keeps the permissions mktemp gave
-# it, the credential lands as 0600 — readable by the owner alone, so the
-# services that are supposed to read it cannot, and the box does not work.
+# The other half of the property: the file has to be readable by the
+# services that are supposed to read it. If the writer never narrows it to
+# 0640 the credential lands as 0600 — readable by the owner alone, so
+# postgres, postgrest and brownhill cannot read it, and the box does not
+# work.
+#
+# BOTH narrowings have to go for this to be a fault. The writer narrows the
+# temporary file before the rename and narrows the path again afterwards,
+# and the second one is enough on its own: deleting only the first leaves a
+# tree that legitimately ends at 0640, and a probe that expects a failure
+# the tree does not deserve proves nothing but that the probe was wrong.
 #
 # This probe is about a mode, so it can only say anything on a file system
 # that honours modes. Where they are not honoured the probe is skipped out
 # loud, in the same way the gate skips its own mode check.
 
 echo
-echo "== probe 2: the temporary file is never narrowed =="
+echo "== probe 2: the credential never reaches the mode the services need =="
 
 if modes_are_honoured; then
-  P2="$TMP/probe-unnarrowed"
+  P2="$TMP/probe-never-narrowed"
   make_tree "$P2"
-  sed -i '/^    chmod 0640 "\$tmp"$/d' "$P2/hosted/bootstrap/install.sh"
-  if grep -q 'chmod 0640 "\$tmp"' "$P2/hosted/bootstrap/install.sh"; then
-    bad "the probe did not take — the writer still narrows the temporary file"
+  sed -i -e '/^[[:space:]]*chmod 0640 "\$tmp"$/d' \
+         -e '/^[[:space:]]*chmod 0640 "\$path"$/d' \
+    "$P2/hosted/bootstrap/install.sh"
+  if grep -qE 'chmod 0640 "\$(tmp|path)"' "$P2/hosted/bootstrap/install.sh"; then
+    bad "the probe did not take — the writer still narrows the file"
   else
-    run_probe "$P2" unnarrowed 3
+    run_probe "$P2" never-narrowed 3
+  fi
+else
+  skip "this file system does not honour permissions, so the probe cannot say anything here. It runs in CI, where the mode is real"
+fi
+
+# ── probe 3: the credential is world-readable at the path the services read ─
+#
+# The fault the mode check exists for, and the one nobody had caught.
+#
+# The writer narrows the temporary file to 0640 and moves it into place, so
+# the path a reader uses only ever holds a file that is already narrowed.
+# Nothing checked that. The gate looked at the file afterwards, by which
+# time the trailing chmod had put the mode back — so a writer that handed
+# the world the credential for the length of one `chown` and one `chmod`
+# passed every check there was.
+#
+# The probe widens the temporary file to 0644 before the move and slows the
+# narrowing that follows, so the credential sits at the path the services
+# read it from, readable by anybody, long enough to be seen. The gate has
+# to catch it.
+
+echo
+echo "== probe 3: the credential is world-readable at the path the services read =="
+
+if modes_are_honoured; then
+  P3="$TMP/probe-wide-on-arrival"
+  make_tree "$P3"
+  sed -i \
+    -e 's|^[[:space:]]*chmod 0640 "\$tmp"$|      chmod 0644 "$tmp"|' \
+    -e 's|^[[:space:]]*mv -f -- "\$tmp" "\$path"$|    mv -f -- "$tmp" "$path" \&\& sleep 0.5|' \
+    "$P3/hosted/bootstrap/install.sh"
+  if grep -q 'chmod 0644 "\$tmp"' "$P3/hosted/bootstrap/install.sh" \
+     && grep -q 'mv -f -- "\$tmp" "\$path" && sleep' "$P3/hosted/bootstrap/install.sh"; then
+    run_probe "$P3" wide-on-arrival 5
+  else
+    bad "the probe did not take — the writer still narrows the temporary file before the move"
   fi
 else
   skip "this file system does not honour permissions, so the probe cannot say anything here. It runs in CI, where the mode is real"

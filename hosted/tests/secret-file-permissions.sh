@@ -39,7 +39,13 @@
 #   4. The path a reader uses never holds an incomplete file. This is the
 #      property, and it is checked by WATCHING the path while the write is
 #      in progress, not by reading the file afterwards.
-#   5. The installer routes every credential file through the writer, and
+#   5. The path a reader uses never holds a file with the wrong mode
+#      either — the same watch, on the same path, looking at one more
+#      thing. The file has to ARRIVE already narrowed to 0640. A credential
+#      that is world-readable for a moment and corrected a moment later has
+#      been exposed; a credential that is owner-only for a moment cannot be
+#      read by the services that are supposed to read it.
+#   6. The installer routes every credential file through the writer, and
 #      writes nothing into the secrets directory by another route.
 #
 # WHY THE WRITE IS SLOWED DOWN
@@ -77,10 +83,31 @@ INSTALL=hosted/bootstrap/install.sh
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# The mode of a file. `stat` spells this differently on GNU and BSD, so both
-# are tried.
+# `stat` spells this differently on GNU and BSD, and the two are not
+# interchangeable: a GNU `stat` given the BSD options does not FAIL — it
+# prints the FILE SYSTEM's status, which is nonsense when the question was
+# about a file's mode. So the flavour is decided once, by asking, rather
+# than by trying one and falling back to the other.
+if stat -c '%s %a' /dev/null >/dev/null 2>&1; then
+  STAT_FLAVOUR="gnu"
+else
+  STAT_FLAVOUR="bsd"
+fi
+
+# The mode of a file.
 file_mode() {
-  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo ""
+  case "$STAT_FLAVOUR" in
+    gnu) stat -c '%a' "$1" 2>/dev/null ;;
+    bsd) stat -f '%Lp' "$1" 2>/dev/null ;;
+  esac
+}
+
+# The size and the mode of a file, as one line: "<bytes> <mode>".
+stat_size_mode() {
+  case "$STAT_FLAVOUR" in
+    gnu) stat -c '%s %a' "$1" 2>/dev/null ;;
+    bsd) stat -f '%z %Lp' "$1" 2>/dev/null ;;
+  esac
 }
 
 # Does this file system honour permissions at all?
@@ -175,14 +202,41 @@ OBS="$TMP/observations"
 echo
 echo "== 2: the writer puts the secret in the file it is asked to write =="
 
-# The watcher. It records the size of the target every few milliseconds,
-# for as long as the write is in progress.
+# The watcher. It records the size AND the mode of the target every few
+# milliseconds, for as long as the write is in progress.
+#
+# The observation comes BEFORE the stop-marker check, and that order is
+# load-bearing.
+#
+# The writer marks itself done on the line after the rename, so the file's
+# whole life at the target path — in the fixed version — is the gap between
+# one rename and one line of code. On a fast machine that gap is shorter
+# than a single poll, so a watcher that stopped the moment it saw the
+# marker never saw the file at all. It reported "the watcher never saw the
+# credential file at all" against a CORRECT writer: this gate failed the
+# `unit-tests` job on 2026-11-01, on the fast Linux runner and nowhere else.
+# It had passed on a Windows checkout only because the poll happened to land
+# in the gap.
+#
+# So the target is looked at first and the marker second. The iteration that
+# sees the marker therefore also observes the file, which by then is
+# complete. A watcher that is broken, or that never ran at all, still leaves
+# the observations empty — and check 4 fails loudly on that.
 (
-  for _ in $(seq 1 600); do
-    [[ -e "$TMP/write-done" ]] && break
+  deadline=$((SECONDS + 30))
+  while :; do
     if [[ -e "$TARGET" ]]; then
-      wc -c < "$TARGET" 2>/dev/null | tr -d ' \r' >> "$OBS"
+      # One `stat` for both facts: the size says whether the file is whole,
+      # the mode says who can read it. A measurement that comes back empty
+      # is not recorded — a broken `stat` must not be able to manufacture a
+      # passing observation, and must not be able to kill the watch either.
+      size_mode="$(stat_size_mode "$TARGET" 2>/dev/null || true)"
+      if [[ -n "$size_mode" ]]; then
+        printf '%s\n' "$size_mode" >> "$OBS"
+      fi
     fi
+    [[ -e "$TMP/write-done" ]] && break
+    (( SECONDS < deadline )) || break
     sleep 0.005
   done
 ) &
@@ -251,19 +305,60 @@ echo "== 4: the path a reader uses never holds an incomplete file =="
 
 expected_size=$(( ${#LINE} + 1 ))
 
+# The observations are "<bytes> <mode>" lines. A line that is not that shape
+# means the watch could not measure the file, and a check that cannot
+# measure the thing it is about is not a check — so it fails loudly rather
+# than quietly passing.
+malformed="$(awk 'NF != 2 { print }' "$OBS" | head -5)"
+
 if [[ ! -s "$OBS" ]]; then
   bad "the watcher never saw the credential file at all — this check cannot fail"
-elif [[ -n "$(grep -vx "$expected_size" "$OBS" || true)" ]]; then
-  seen="$(grep -vx "$expected_size" "$OBS" | sort -u | tr '\n' ' ')"
+elif [[ -n "$malformed" ]]; then
+  bad "the watcher recorded something that is not a size and a mode:"$'\n'"$(printf '%s\n' "$malformed" | sed 's/^/      /')"
+elif [[ -n "$(awk -v want="$expected_size" '$1 != want { print $1 }' "$OBS" | sort -u | tr '\n' ' ')" ]]; then
+  seen="$(awk -v want="$expected_size" '$1 != want { print $1 }' "$OBS" | sort -u | tr '\n' ' ')"
   bad "the credential file existed at its final path with ${seen}byte(s) instead of ${expected_size} — a reader can see it before it is written"
 else
   ok "the credential file appears at its final path only once it is complete"
 fi
 
-# ── 5: every credential goes through the writer ─────────────────────────────
+# ── 5: the path a reader uses never holds a file with the wrong mode ───────
+#
+# The same watch, one more thing. The writer narrows the temporary file
+# BEFORE the rename, so the path a reader uses only ever holds a file that
+# already has the mode it should have. Nothing checks that today: check 3
+# looks at the file afterwards, and by then the trailing chmod has put
+# everything back — so a writer that handed the world a credential for the
+# length of one `chown` and one `chmod` would pass every check there was.
 
 echo
-echo "== 5: every credential goes through the writer =="
+echo "== 5: the path a reader uses never holds a file with the wrong mode =="
+
+if [[ ! -s "$OBS" ]]; then
+  bad "the watcher never saw the credential file at all — this check cannot fail"
+elif [[ -n "$malformed" ]]; then
+  bad "the watcher recorded something that is not a size and a mode:"$'\n'"$(printf '%s\n' "$malformed" | sed 's/^/      /')"
+elif ! modes_are_honoured; then
+  # The watch itself worked — there are observations, and they are the right
+  # shape. But the mode they carry is a fiction here: Git Bash on Windows
+  # mounts NTFS with `noacl`, so every file reads as 644 however it was
+  # chmodded. Comparing that against 640 would report a failure about the
+  # file system dressed up as a failure about the code.
+  #
+  # So the comparison is skipped, out loud, in the same way check 3 skips
+  # its own. It runs on the box and in CI, where the mode is real.
+  skip "the mode cannot be checked here — this file system does not honour permissions, so chmod is a no-op and every file reads as 644. The check runs on the box and in CI, where it must pass"
+elif [[ -n "$(awk '$2 + 0 != 640 { print $2 }' "$OBS" | sort -u | tr '\n' ' ')" ]]; then
+  seen="$(awk '$2 + 0 != 640 { print $2 }' "$OBS" | sort -u | tr '\n' ' ')"
+  bad "the credential file existed at its final path with mode ${seen} instead of 640 — it has to ARRIVE already narrowed, not be narrowed afterwards"
+else
+  ok "the credential file appears at its final path already narrowed to mode 0640"
+fi
+
+# ── 6: every credential goes through the writer ─────────────────────────────
+
+echo
+echo "== 6: every credential goes through the writer =="
 
 for name in pg.env jwt.env bootstrap.env mtd.env backup.env; do
   if grep -qE "write_secret .*/${name}\b" "$INSTALL"; then

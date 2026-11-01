@@ -139,6 +139,30 @@ bash hosted/tests/mtd-env-wiring-negative.sh
 #   and no stack.
 bash hosted/tests/deployment-gate-negative.sh
 
+#   That the box's credentials are never readable by anybody else — not even
+#   for the length of the write.
+#
+#   The installer writes five credentials onto the box, and each one used to
+#   be written straight to its final path and narrowed afterwards, so for the
+#   length of the write the credential sat where the services read it from,
+#   empty, in whatever mode the process umask gave it: 0644, readable by
+#   every account on the box.
+#
+#   The writer now goes through a temporary file and a rename, so the path a
+#   reader uses only ever holds a file that is already complete and already
+#   narrowed. This gate watches that path WHILE the write is in progress and
+#   requires every observation of it to be the whole secret, at mode 0640.
+#
+#   It needs no docker, no database, no secrets and no stack. On a file
+#   system that does not honour permissions — Git Bash on Windows — the two
+#   mode checks are skipped out loud rather than passing quietly.
+bash hosted/tests/secret-file-permissions.sh
+
+#   That gate's negative case: three copies of the tree, each carrying one
+#   of the faults the gate exists to catch, and the gate has to fail on the
+#   right check for each.
+bash hosted/tests/secret-file-permissions-negative.sh
+
 #   Where the nightly dump is filed when it leaves the box, what a box
 #   provisioned before the rename does, and what happens when the hostname
 #   is not set at all.
