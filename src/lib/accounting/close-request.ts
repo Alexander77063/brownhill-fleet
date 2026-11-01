@@ -84,7 +84,11 @@ export function closeConfirmRequest(
 }
 
 /** The warning codes the product knows about. */
-const WARNING_CODES: readonly CloseWarningCode[] = ['open_bank_items', 'vat_not_filed'];
+const WARNING_CODES: readonly CloseWarningCode[] = [
+  'open_bank_items',
+  'vat_not_filed',
+  'vat_not_posted',
+];
 
 /**
  * Read the acknowledgements out of an untrusted body.

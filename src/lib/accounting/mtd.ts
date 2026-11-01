@@ -16,7 +16,7 @@
 // the SQL. Every statement below names it.
 
 import { readFileSync } from 'node:fs';
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes, randomUUID } from 'node:crypto';
 import { localDb } from '@/lib/auth/local-store';
 import type { Query } from '@/lib/db/local';
 import { findJwtSecret } from '@/lib/auth/secret';
@@ -240,15 +240,56 @@ export class MtdVrnInUseError extends Error {
  * A return is filed for a PERIOD, and HMRC takes one return per period. The
  * reference HMRC gave is carried with the refusal, because it is the one
  * thing an operator needs to talk to HMRC about that return.
+ *
+ * `ledger` says where the books stand.
+ *
+ *   * `complete` — the ledger entry is in the books. Either it always was,
+ *     or it was completed while this refusal was being prepared (a return
+ *     HMRC accepted whose ledger entry never landed can have that entry
+ *     completed, because the posting is idempotent).
+ *   * `outstanding` — HMRC has the return and the books do not. The
+ *     operator has to be told, because a VAT position that HMRC knows about
+ *     and the ledger does not is a wrong VAT position.
  */
 export class MtdAlreadyFiledError extends Error {
-  constructor(readonly correlationId: string) {
+  constructor(
+    readonly correlationId: string,
+    readonly ledger: 'complete' | 'outstanding' = 'complete',
+  ) {
     super(
       'This VAT return has already been filed with HMRC' +
         `${correlationId ? ` (reference ${correlationId})` : ''}. ` +
-        'A return cannot be filed twice for the same period.',
+        'A return cannot be filed twice for the same period.' +
+        (ledger === 'outstanding'
+          ? ' The ledger entry for that return has not landed yet, so the books are behind the return — an administrator needs to complete it.'
+          : ' The ledger entry for that return is in the books.'),
     );
     this.name = 'MtdAlreadyFiledError';
+  }
+}
+
+/**
+ * This filing attempt lost the period to a later one.
+ *
+ * The operator pressed the button; the filing was talking to HMRC; and then
+ * another attempt took the period over — which the operator can only do
+ * deliberately, after checking HMRC's filing history. When this attempt
+ * came back, the row was no longer its own, so it wrote nothing.
+ *
+ * That is the whole point. The old code addressed the row by id and settled
+ * it whatever the row said, so a slow attempt could drag a return HMRC had
+ * accepted back to "rejected" — and the next filing would send it again.
+ *
+ * HMRC may have this attempt's return. The operator is told so, because
+ * checking HMRC's filing history is the only way to be sure.
+ */
+export class MtdSupersededError extends Error {
+  constructor(readonly correlationId: string) {
+    super(
+      'Another filing of this period took it over while this one was in flight, so this attempt was not recorded. ' +
+        'HMRC may have received this return — check HMRC’s filing history before filing it again.',
+    );
+    this.name = 'MtdSupersededError';
   }
 }
 
@@ -622,6 +663,44 @@ async function vrnHolder(
 }
 
 /**
+ * The advisory lock that serialises every write of one VAT registration
+ * number.
+ *
+ * A VAT registration number belongs to ONE organisation, so exactly one
+ * tenant may hold it. The application used to decide that with a read
+ * followed by a write, in two separate statements: two tenants saving the
+ * same number at the same moment both read "nobody holds it" and both wrote
+ * it.
+ *
+ * The lock is taken on the NUMBER, so every write of that number — the
+ * settings screen and the connection flow alike — queues behind it. It is
+ * transaction-scoped, so the COMMIT releases it and a crash releases it too.
+ *
+ * `hashtextextended` turns the name into a bigint, which is what
+ * `pg_advisory_xact_lock` takes. The name is prefixed so that it cannot
+ * collide with another lock in the same database.
+ */
+function vrnLockKey(vrn: string): string {
+  return `mtd-vrn:${vrn}`;
+}
+
+/**
+ * Did the database refuse this write because the value is already taken?
+ *
+ * Postgres 23505 is a unique violation. The unique index on the VAT
+ * registration number is the backstop behind the advisory lock: even if two
+ * writes somehow reach the database together, the second one is refused by
+ * the database rather than being allowed through.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: string }).code === '23505'
+  );
+}
+
+/**
  * Store the tokens for a tenant.
  *
  * The conflict target is `(tenant_id)`, which migration 0081 adds. The old
@@ -655,6 +734,22 @@ async function vrnHolder(
  * tenant holds this one. After adoption it lives in this tenant's own column
  * and the filing path never consults the installation again.
  *
+ * THE NUMBER IS NOT IN THE UPSERT
+ * -------------------------------
+ * The tokens are written by an upsert on `(tenant_id)`. The number is
+ * written by its own UPDATE, and that separation is not tidiness — it is
+ * correctness.
+ *
+ * An `on conflict` clause only handles the conflict on the index it names.
+ * The insert used to carry the number, so it collided with the UNIQUE index
+ * on the number — a DIFFERENT index from the one the clause named — and
+ * Postgres raised 23505 instead of updating the tenant's own row. Every
+ * reconnect of a tenant that already held a number failed.
+ *
+ * The number is also a property of the tenant's HMRC REGISTRATION, not of
+ * the token that happens to be current, so it does not belong in the same
+ * statement as the tokens.
+ *
  * The check and the write are one transaction under an advisory lock, so two
  * tenants connecting at the same instant cannot both decide that nobody
  * holds the number.
@@ -671,47 +766,87 @@ export async function persistCredentials(args: {
   const refreshEnc = encryptToken(args.refreshToken);
   const expiresAt = new Date(Date.now() + args.expiresIn * 1000);
   const installDefault = installVrnDefault();
+  const explicit = args.vrn?.trim() || null;
 
-  await (sql.begin(async (tx) => {
-    // Serialise the adoption of the installation's number. The lock is
-    // transaction-scoped, so the COMMIT releases it.
-    if (installDefault) {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${`mtd-vrn:${installDefault}`}, 0))`;
+  // Every number this transaction might write, in a FIXED order.
+  //
+  // Sorted, because two transactions that take the same two locks in
+  // opposite orders deadlock, and a deadlock here would be reported as
+  // "could not connect to HMRC" for no reason an operator could act on.
+  const candidates = [...new Set([explicit, installDefault].filter((v): v is string => !!v))].sort();
+
+  try {
+    await (sql.begin(async (tx) => {
+      // Serialise every write of a number. The lock is transaction-scoped,
+      // so the COMMIT releases it.
+      for (const vrn of candidates) {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${vrnLockKey(vrn)}, 0))`;
+      }
+
+      const current = (await tx`
+        select vrn from accounting.firs_credentials where tenant_id = ${args.tenantId}::uuid
+      `) as Array<{ vrn: string | null }>;
+      const existing = current[0]?.vrn ?? null;
+
+      // An explicit number wins. Otherwise the tenant keeps the one it has,
+      // and adopts the installation's only if it has none and nobody else
+      // does.
+      let effective: string | null = explicit;
+      if (!effective && !existing && installDefault) {
+        const holder = await vrnHolder(tx, installDefault, args.tenantId);
+        if (!holder) effective = installDefault;
+      }
+
+      // The number is about to be CLAIMED — so nobody else may hold it.
+      // Checked under the lock, so the check and the write cannot be
+      // separated by another tenant's write.
+      if (effective && effective !== existing) {
+        const holder = await vrnHolder(tx, effective, args.tenantId);
+        if (holder) throw new MtdVrnInUseError(holder.tenantId, holder.name);
+      }
+
+      // The tokens. The number is not in here — see the note above.
+      await tx`
+        insert into accounting.firs_credentials
+          (tenant_id, mtd_client_id, access_token, access_token_iv, refresh_token, refresh_token_iv,
+           token_expires_at, redirect_uri)
+        values (${args.tenantId}::uuid, ${args.mtdClientId},
+                ${accessEnc.ciphertext}, ${accessEnc.iv},
+                ${refreshEnc.ciphertext}, ${refreshEnc.iv},
+                ${expiresAt.toISOString()}::timestamptz, ${args.redirectUri})
+        on conflict (tenant_id) do update set
+          mtd_client_id = excluded.mtd_client_id,
+          access_token = excluded.access_token,
+          access_token_iv = excluded.access_token_iv,
+          refresh_token = excluded.refresh_token,
+          refresh_token_iv = excluded.refresh_token_iv,
+          token_expires_at = excluded.token_expires_at,
+          redirect_uri = excluded.redirect_uri
+      `;
+
+      // The number, on its own. The unique index on it is the backstop
+      // behind the lock: if two writes somehow reach the database together,
+      // the second one is refused by the database rather than being allowed
+      // through.
+      if (effective && effective !== existing) {
+        await tx`
+          update accounting.firs_credentials
+             set vrn = ${effective}
+           where tenant_id = ${args.tenantId}::uuid
+        `;
+      }
+    }) as unknown as Promise<void>);
+  } catch (e) {
+    // The database refused the number: another tenant holds it. Say so in
+    // the words the operator needs, rather than as a driver error.
+    if (isUniqueViolation(e)) {
+      for (const candidate of candidates) {
+        const holder = await vrnHolder(sql, candidate, args.tenantId);
+        if (holder) throw new MtdVrnInUseError(holder.tenantId, holder.name);
+      }
     }
-
-    const current = (await tx`
-      select vrn from accounting.firs_credentials where tenant_id = ${args.tenantId}::uuid
-    `) as Array<{ vrn: string | null }>;
-    const existing = current[0]?.vrn ?? null;
-
-    // An explicit number wins. Otherwise the tenant keeps the one it has, and
-    // adopts the installation's only if it has none and nobody else does.
-    let effective: string | null = args.vrn?.trim() || null;
-    if (!effective && !existing && installDefault) {
-      const holder = await vrnHolder(tx, installDefault, args.tenantId);
-      if (!holder) effective = installDefault;
-    }
-
-    await tx`
-      insert into accounting.firs_credentials
-        (tenant_id, mtd_client_id, access_token, access_token_iv, refresh_token, refresh_token_iv,
-         token_expires_at, redirect_uri, vrn)
-      values (${args.tenantId}::uuid, ${args.mtdClientId},
-              ${accessEnc.ciphertext}, ${accessEnc.iv},
-              ${refreshEnc.ciphertext}, ${refreshEnc.iv},
-              ${expiresAt.toISOString()}::timestamptz, ${args.redirectUri},
-              ${effective})
-      on conflict (tenant_id) do update set
-        mtd_client_id = excluded.mtd_client_id,
-        access_token = excluded.access_token,
-        access_token_iv = excluded.access_token_iv,
-        refresh_token = excluded.refresh_token,
-        refresh_token_iv = excluded.refresh_token_iv,
-        token_expires_at = excluded.token_expires_at,
-        redirect_uri = excluded.redirect_uri,
-        vrn = coalesce(excluded.vrn, accounting.firs_credentials.vrn)
-    `;
-  }) as unknown as Promise<void>);
+    throw e;
+  }
 }
 
 /**
@@ -730,27 +865,68 @@ export async function persistCredentials(args: {
  * attach it to — and a caller that reported "saved" for a write that
  * changed no row would be telling the operator a lie.
  *
- * A number another tenant already holds is REFUSED, with the tenant that
- * holds it named. A VAT registration number belongs to one organisation, and
- * a tenant is an organisation: two tenants filing under the same number is a
- * second return for one organisation, and one tenant's figures on another's
- * HMRC record. The check happens here, where the mistake is made, rather
- * than at filing time, where it would only be visible as a rejected return.
+ * A number another tenant already holds is REFUSED. A VAT registration
+ * number belongs to one organisation, and a tenant is an organisation: two
+ * tenants filing under the same number is a second return for one
+ * organisation, and one tenant's figures on another's HMRC record. The check
+ * happens here, where the mistake is made, rather than at filing time, where
+ * it would only be visible as a rejected return.
+ *
+ * THE CHECK AND THE WRITE ARE ONE THING
+ * -------------------------------------
+ * They used to be two statements: read who holds the number, then write it.
+ * Two tenants saving the same number at the same moment both read "nobody
+ * holds it" and both wrote it.
+ *
+ * So the check and the write are now one transaction, and the transaction
+ * holds an advisory lock on the NUMBER — the same lock `persistCredentials`
+ * takes, so the settings screen and the connection flow queue behind each
+ * other rather than racing each other.
  */
 export async function setVrn(tenantId: string, vrn: string | null): Promise<boolean> {
   const sql = await localDb();
   const value = vrn === null ? null : vrn.trim();
-  if (value) {
-    const holder = await vrnHolder(sql, value, tenantId);
-    if (holder) throw new MtdVrnInUseError(holder.tenantId, holder.name);
+
+  // Clearing the number cannot collide with anybody: it gives a number up.
+  if (!value) {
+    const rows = (await sql`
+      update accounting.firs_credentials
+         set vrn = null
+       where tenant_id = ${tenantId}::uuid
+      returning tenant_id
+    `) as Array<{ tenant_id: string }>;
+    return rows.length > 0;
   }
-  const rows = (await sql`
-    update accounting.firs_credentials
-       set vrn = ${value}
-     where tenant_id = ${tenantId}::uuid
-    returning tenant_id
-  `) as Array<{ tenant_id: string }>;
-  return rows.length > 0;
+
+  try {
+    return await (sql.begin(async (tx) => {
+      // The lock is on the NUMBER, so every write of that number — this one
+      // and the connection flow's — queues behind it. The lock is released
+      // by the COMMIT, and by a crash.
+      await tx`select pg_advisory_xact_lock(hashtextextended(${vrnLockKey(value)}, 0))`;
+
+      // The holder is checked UNDER the lock, so this check cannot be
+      // separated from the write below by another tenant's write.
+      const holder = await vrnHolder(tx, value, tenantId);
+      if (holder) throw new MtdVrnInUseError(holder.tenantId, holder.name);
+
+      const rows = (await tx`
+        update accounting.firs_credentials
+           set vrn = ${value}
+         where tenant_id = ${tenantId}::uuid
+        returning tenant_id
+      `) as Array<{ tenant_id: string }>;
+      return rows.length > 0;
+    }) as unknown as Promise<boolean>);
+  } catch (e) {
+    // The unique index caught it — the backstop behind the lock. Turn it
+    // into the refusal the operator can act on.
+    if (isUniqueViolation(e)) {
+      const holder = await vrnHolder(sql, value, tenantId);
+      throw new MtdVrnInUseError(holder?.tenantId ?? 'unknown', holder?.name ?? null);
+    }
+    throw e;
+  }
 }
 
 // ── VAT submission ────────────────────────────────────────────────────────
@@ -902,14 +1078,29 @@ export async function submitVatReturn(
   // filed for a PERIOD and HMRC takes one return per period, so a second
   // filing of the same period is a duplicate return at HMRC and a second
   // posting in the books.
-  const claim = await claimSubmission(args, payload);
+  const claim = await claimSubmission(args, payload, boxes.box7_netVat);
   if (!claim.claimed) {
     if (claim.reason === 'already_filed') {
-      throw new MtdAlreadyFiledError(claim.correlationId);
+      // HMRC has this return. The books may not: a row in 'accepted' is a
+      // return HMRC took whose ledger entry never landed. Completing it is
+      // idempotent, so it is safe — and it is the only thing that brings
+      // the books up to date.
+      let ledger: 'complete' | 'outstanding' = 'complete';
+      if (claim.id) {
+        try {
+          const outcome = await completeAcceptedSubmission(args.tenantId, claim.id, args.userId);
+          ledger = outcome === 'outstanding' ? 'outstanding' : 'complete';
+        } catch (e) {
+          console.error('[mtd] could not complete the ledger entry for an accepted return', e);
+          ledger = 'outstanding';
+        }
+      }
+      throw new MtdAlreadyFiledError(claim.correlationId, ledger);
     }
     throw new MtdFilingInProgressError(claim.startedAt, claim.reason === 'never_finished');
   }
   const submissionId = claim.id;
+  const claimToken = claim.token;
 
   const ctx: HmrcCallContext = {
     baseUrl: options.baseUrl ?? hmrcConfig.baseUrl,
@@ -934,30 +1125,51 @@ export async function submitVatReturn(
       'rejected',
       '',
       { reason: e instanceof Error ? e.message : String(e), responseBody: null, correlationId: '' },
+      claimToken,
     );
     throw e;
   }
 
   if (result.status === 'submitted') {
-    // HMRC's reference is written onto the record NOW, before the journal is
-    // posted.
+    // HMRC HAS the return. This is the ownership gate.
     //
-    // The posting can fail — a closed period, a missing account — and the
-    // operator will need HMRC's reference to ask about the return HMRC has
-    // already accepted. Settling the whole row afterwards would lose it
-    // exactly when it is needed, because the row is still 'pending' until
-    // the posting succeeds.
-    await settleSubmission(
+    // The row moves from 'pending_submission' to 'accepted' — a state that
+    // is never taken over and never re-filed — and ONLY the attempt that
+    // still owns the row can make that move.
+    //
+    // The old code settled the row to 'pending_submission' with HMRC's
+    // reference on it, which meant two different things at once: "an
+    // attempt is talking to HMRC" and "HMRC took it and the ledger entry
+    // has not landed yet". The takeover path did not tell them apart, so a
+    // filing that HMRC accepted and that then died left a row that read as
+    // "pending, never finished" — and the deliberate "file it again" button
+    // sent HMRC a SECOND return for the same period. A duplicate return, and
+    // one organisation's figures counted twice.
+    //
+    // The reference is written onto the record NOW, before the journal is
+    // posted, because the posting can fail — a closed period, a missing
+    // account — and the operator will need HMRC's reference to ask about the
+    // return HMRC has already accepted.
+    const accepted = await settleSubmission(
       args.tenantId,
       submissionId,
-      'pending_submission',
+      'accepted',
       result.hmtrCorrelationId,
       {
         reason: null,
         responseBody: result.responseBody ?? null,
         correlationId: result.hmtrCorrelationId,
       },
+      claimToken,
     );
+    if (!accepted) {
+      // This attempt lost the row while it was talking to HMRC. It writes
+      // nothing: the attempt that owns the row now is the one that settles
+      // it, and the journal entry is posted once — the journal's key is
+      // (tenant, 'vat_submission', submission id), and both attempts point
+      // at the same row.
+      throw new MtdSupersededError(result.hmtrCorrelationId);
+    }
 
     // §2 Rule #5 — post the journal entry now that HMRC accepted.
     // The source of the entry is the submission row itself, so the id has to
@@ -995,11 +1207,8 @@ export async function submitVatReturn(
       submissionId,
       'submitted',
       result.hmtrCorrelationId,
-      {
-        reason: null,
-        responseBody: result.responseBody ?? null,
-        correlationId: result.hmtrCorrelationId,
-      },
+      null,
+      claimToken,
     );
     return { status: 'submitted', correlationId: result.hmtrCorrelationId };
   } else {
@@ -1016,6 +1225,7 @@ export async function submitVatReturn(
         responseBody: result.responseBody ?? null,
         correlationId: result.hmtrCorrelationId,
       },
+      claimToken,
     );
 
     // Three different refusals, because they need three different answers:
@@ -1107,9 +1317,11 @@ const CLAIM_WINDOW_MINUTES = 30;
 
 /** What a claim attempt found. */
 type Claim =
-  | { claimed: true; id: string }
+  | { claimed: true; id: string; token: string }
   | {
       claimed: false;
+      /** The row, when there is one. */
+      id: string | null;
       reason: 'already_filed' | 'in_progress' | 'never_finished';
       /** HMRC's reference, when the period has already been filed. */
       correlationId: string;
@@ -1129,11 +1341,30 @@ type Claim =
  *   * 'rejected'                    → a previous attempt failed; this one retries
  *   * 'pending_submission', stale   → an attempt died; this one takes over
  *   * 'pending_submission', in hand → another filing is running — REFUSED
+ *   * 'accepted'                    → HMRC has taken this return — REFUSED, always
  *   * 'submitted'                   → HMRC has taken this return — REFUSED, always
  *
  * The conflict target is `(tenant_id, period_id)` — migration 0069 dropped
  * the old `(period_id)` constraint, so `on conflict (period_id)` was rejected
  * by Postgres with 42P10 and every VAT submission failed to persist.
+ *
+ * THE CLAIM TOKEN
+ * ---------------
+ * Every attempt gets its own token, and the token is written onto the row
+ * when the attempt claims it. A settlement must present the token of the
+ * attempt that owns the row, so an attempt that was taken over while it was
+ * talking to HMRC changes NOTHING when it comes back. The old code
+ * addressed the row by id alone, so a slow attempt could drag a return HMRC
+ * had accepted back to "rejected" — and the next filing would send it
+ * again.
+ *
+ * THE FIGURE THE RETURN WAS FILED WITH
+ * ------------------------------------
+ * `vat_amount_pence` is written when the period is claimed — that is, before
+ * the return is sent. It is the net VAT the return carries, and the ledger
+ * entry for the return is posted from it. So a return that HMRC accepted and
+ * that is completed days later posts the figure HMRC accepted, not whatever
+ * the invoices happen to say today.
  *
  * The JSON columns hold OBJECTS.
  *
@@ -1157,8 +1388,10 @@ type Claim =
 async function claimSubmission(
   args: SubmitArgs,
   returnPayload: Record<string, string | number>,
+  vatAmountPence: bigint,
 ): Promise<Claim> {
   const sql = await localDb();
+  const token = randomUUID();
 
   // The period row must exist — the submission references it. The old code
   // looked it up and returned silently when it was missing, so submitting a
@@ -1175,21 +1408,26 @@ async function claimSubmission(
   // what was filed has to be the thing that was filed.
   const claimed = (await sql`
     insert into accounting.vat_submissions
-      (tenant_id, period_id, hmtr_correlation_id, return_payload, response_payload, status)
+      (tenant_id, period_id, hmtr_correlation_id, return_payload, response_payload, status,
+       claim_token, vat_amount_pence)
     values (${args.tenantId}::uuid, ${periodId}::uuid, '',
             ${sql.json(returnPayload)}::jsonb, null,
-            'pending_submission'::accounting.vat_submission_status)
+            'pending_submission'::accounting.vat_submission_status,
+            ${token}::uuid, ${vatAmountPence.toString()}::bigint)
     on conflict (tenant_id, period_id) do update set
       hmtr_correlation_id = '',
       return_payload = excluded.return_payload,
       response_payload = accounting.vat_submissions.response_payload,
       status = 'pending_submission'::accounting.vat_submission_status,
-      submitted_at = now()
-    where accounting.vat_submissions.status <> 'submitted'
+      submitted_at = now(),
+      claim_token = excluded.claim_token,
+      vat_amount_pence = excluded.vat_amount_pence
+    where accounting.vat_submissions.status not in ('submitted', 'accepted')
       and (
         accounting.vat_submissions.status <> 'pending_submission'
         or (
           ${args.force === true}::boolean
+          and accounting.vat_submissions.hmtr_correlation_id = ''
           and accounting.vat_submissions.submitted_at
               < now() - (${CLAIM_WINDOW_MINUTES}::int * interval '1 minute')
         )
@@ -1197,19 +1435,37 @@ async function claimSubmission(
     returning id
   `) as Array<{ id: string }>;
 
-  if (claimed.length) return { claimed: true, id: claimed[0].id };
+  if (claimed.length) return { claimed: true, id: claimed[0].id, token };
 
   // The claim was refused. Which way?
   const current = (await sql`
-    select status::text as status, hmtr_correlation_id, submitted_at
+    select id::text as id, status::text as status, hmtr_correlation_id, submitted_at
       from accounting.vat_submissions
      where tenant_id = ${args.tenantId}::uuid and period_id = ${periodId}::uuid
-  `) as Array<{ status: string; hmtr_correlation_id: string; submitted_at: string }>;
+  `) as Array<{
+    id: string;
+    status: string;
+    hmtr_correlation_id: string;
+    submitted_at: string;
+  }>;
   const row = current[0];
 
-  if (row?.status === 'submitted') {
+  // HMRC HAS this return. Either the books have it too, or they are behind
+  // it — and either way it is never filed again.
+  //
+  // The third case is the one the old code could not see: a row in
+  // 'pending_submission' that CARRIES a reference means HMRC answered the
+  // filing and the ledger entry never landed. The takeover used to ignore
+  // the reference, so the deliberate "file it again" button sent HMRC a
+  // SECOND return for the same period.
+  if (
+    row?.status === 'submitted' ||
+    row?.status === 'accepted' ||
+    (row?.status === 'pending_submission' && row.hmtr_correlation_id !== '')
+  ) {
     return {
       claimed: false,
+      id: row.id,
       reason: 'already_filed',
       correlationId: row.hmtr_correlation_id,
       startedAt: null,
@@ -1221,6 +1477,7 @@ async function claimSubmission(
     !startedAt || Date.now() - startedAt.getTime() > CLAIM_WINDOW_MINUTES * 60_000;
   return {
     claimed: false,
+    id: row?.id ?? null,
     reason: stale ? 'never_finished' : 'in_progress',
     correlationId: '',
     startedAt,
@@ -1230,13 +1487,19 @@ async function claimSubmission(
 /**
  * Settle the claim — write down what HMRC said.
  *
- * The row is addressed BY ID and settled only while it is not already
- * 'submitted'. Two things follow from that:
+ * The row is addressed BY ID and by TENANT, and settled only from the state
+ * it is allowed to move out of:
  *
- *   * a return HMRC has accepted is never un-filed. An attempt that arrives
- *     after the acceptance cannot drag the record back to 'rejected';
- *   * the settlement lands on the row this caller claimed, whatever another
- *     attempt did to the period in the meantime.
+ *   * 'pending_submission' → 'accepted'   — HMRC took the return
+ *   * 'pending_submission' → 'rejected'   — HMRC refused it
+ *   * 'accepted'           → 'submitted'  — the ledger entry has landed
+ *
+ * The transition is in the WHERE clause, so a settlement that is not allowed
+ * to happen simply does not happen — and the caller is told, by the number
+ * of rows that came back.
+ *
+ * The claim token is in the WHERE clause too. An attempt that no longer owns
+ * the row changes nothing.
  *
  * The tenant is named in the WHERE clause as well. The id came from this
  * tenant's own claim, so the predicate is redundant — and it is here
@@ -1250,13 +1513,16 @@ async function claimSubmission(
 async function settleSubmission(
   tenantId: string,
   submissionId: string,
-  status: 'pending_submission' | 'submitted' | 'rejected',
+  status: 'accepted' | 'submitted' | 'rejected',
   hmtrCorrelationId: string,
   response: SubmissionResponse | null,
-): Promise<void> {
-  const sql = await localDb();
+  claimToken: string | null,
+  conn?: Query,
+): Promise<boolean> {
+  const sql = conn ?? (await localDb());
   const responseParam = response === null ? null : sql.json(response);
-  await sql`
+  const from = status === 'submitted' ? 'accepted' : 'pending_submission';
+  const rows = (await sql`
     update accounting.vat_submissions
        set status = ${status}::accounting.vat_submission_status,
            hmtr_correlation_id = ${hmtrCorrelationId},
@@ -1264,6 +1530,128 @@ async function settleSubmission(
            submitted_at = now()
      where id = ${submissionId}::uuid
        and tenant_id = ${tenantId}::uuid
-       and status <> 'submitted'
-  `;
+       and status = ${from}::accounting.vat_submission_status
+       and (${claimToken}::uuid is null or claim_token = ${claimToken}::uuid)
+    returning id
+  `) as Array<{ id: string }>;
+  return rows.length > 0;
+}
+
+/**
+ * Finish the ledger entry for a return HMRC has already accepted.
+ *
+ * A return HMRC accepted but whose journal entry never landed is a VAT
+ * position HMRC knows about and the books do not. This brings the books up
+ * to date, and it is IDEMPOTENT: the journal's key is
+ * (tenant, 'vat_submission', submission id), so completing the same return
+ * twice posts it once.
+ *
+ * The figure posted is the one the return was FILED with, which the claim
+ * stored — not the figure the invoices carry today. A row written by the
+ * old code carries no stored figure, so it is recomputed from the same
+ * boxes the filing was built from.
+ *
+ * Returns what happened, so the caller can tell the operator whether the
+ * books are right:
+ *
+ *   * 'completed'       — the ledger entry was posted by this call
+ *   * 'already-complete' — the ledger entry was already there
+ *   * 'outstanding'     — it could not be posted, and the books are behind
+ */
+async function completeAcceptedSubmission(
+  tenantId: string,
+  submissionId: string,
+  userId: string,
+): Promise<'completed' | 'already-complete' | 'outstanding'> {
+  const sql = await localDb();
+  const rows = (await sql`
+    select s.id::text as id,
+           s.status::text as status,
+           s.claim_token::text as claim_token,
+           s.vat_amount_pence::text as vat_amount_pence,
+           s.hmtr_correlation_id,
+           p.year, p.month
+      from accounting.vat_submissions s
+      join accounting.periods p on p.id = s.period_id
+     where s.id = ${submissionId}::uuid
+       and s.tenant_id = ${tenantId}::uuid
+  `) as Array<{
+    id: string;
+    status: string;
+    claim_token: string | null;
+    vat_amount_pence: string | null;
+    hmtr_correlation_id: string;
+    year: number;
+    month: number;
+  }>;
+  const row = rows[0];
+  if (!row) return 'outstanding';
+  if (row.status === 'submitted') return 'already-complete';
+
+  if (row.status === 'pending_submission' && row.hmtr_correlation_id !== '') {
+    // A row the OLD code left behind: it settled to 'pending_submission'
+    // with HMRC's reference and died before the journal was posted. HMRC
+    // has the return; the books do not. Move it to 'accepted' so the
+    // completion below can finish what the crash interrupted.
+    const moved = await settleSubmission(
+      tenantId,
+      row.id,
+      'accepted',
+      row.hmtr_correlation_id,
+      null,
+      row.claim_token,
+      sql,
+    );
+    if (!moved) return 'outstanding';
+  } else if (row.status !== 'accepted') {
+    return 'outstanding';
+  }
+
+  let amount: bigint;
+  if (row.vat_amount_pence !== null) {
+    amount = BigInt(row.vat_amount_pence);
+  } else {
+    const { aggregateVatReturn } = await import('./mtd-box');
+    const boxes = await aggregateVatReturn(tenantId, row.year, row.month);
+    amount = boxes.box7_netVat;
+  }
+
+  if (amount !== 0n) {
+    const vatOutputAccountId = await requireAccountId(sql, '2200', tenantId);
+    const vatPayableAccountId = await requireAccountId(sql, '2210', tenantId);
+    const postResult = postVatSubmissionJournal({
+      submissionId: row.id,
+      vatAmount: amount,
+      vatOutputAccountId,
+      vatPayableAccountId,
+    });
+    const { commitJournalForVatSubmission, withJournalTx } = await import('./journal-bridge');
+    await withJournalTx(async (tx) => {
+      await commitJournalForVatSubmission(
+        tx,
+        { userId, tenantId },
+        postResult,
+        row.id,
+        { year: row.year, month: row.month },
+      );
+    });
+  }
+
+  const settled = await settleSubmission(
+    tenantId,
+    row.id,
+    'submitted',
+    row.hmtr_correlation_id,
+    null,
+    row.claim_token,
+    sql,
+  );
+  if (settled) return 'completed';
+
+  const after = (await sql`
+    select status::text as status
+      from accounting.vat_submissions
+     where id = ${row.id}::uuid and tenant_id = ${tenantId}::uuid
+  `) as Array<{ status: string }>;
+  return after[0]?.status === 'submitted' ? 'already-complete' : 'outstanding';
 }

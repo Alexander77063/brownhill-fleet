@@ -54,6 +54,7 @@ import {
   MtdFilingInProgressError,
   MtdNotConnectedError,
   MtdRejectedError,
+  MtdSupersededError,
   MtdUnauthorizedError,
   MtdUnreachableError,
   MtdVrnInUseError,
@@ -266,9 +267,28 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
       // so a second one would be a duplicate return and a second posting.
       // The reference HMRC gave is carried with the refusal: it is the one
       // thing the operator needs to talk to HMRC about.
+      //
+      // `ledger` says where the books stand. A return HMRC took whose ledger
+      // entry never landed is completed here — the posting is idempotent —
+      // so `outstanding` means the books are still behind the return and an
+      // administrator has to finish it.
       if (e instanceof MtdAlreadyFiledError) {
         return NextResponse.json(
-          { error: e.message, code: 'already_filed', correlationId: e.correlationId },
+          {
+            error: e.message,
+            code: 'already_filed',
+            correlationId: e.correlationId,
+            ledger: e.ledger,
+          },
+          { status: 409 },
+        );
+      }
+      // This filing attempt lost the period to a later one. Nothing was
+      // written — and HMRC may have received this attempt's return, so the
+      // operator has to check HMRC's filing history.
+      if (e instanceof MtdSupersededError) {
+        return NextResponse.json(
+          { error: e.message, code: 'superseded', correlationId: e.correlationId },
           { status: 409 },
         );
       }

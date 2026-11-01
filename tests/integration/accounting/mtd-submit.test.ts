@@ -62,8 +62,81 @@ if (!DATABASE_URL) {
 }
 
 const YEAR = 2026;
-/** The tenant's VAT registration number — where the return is filed. */
-const VRN = '123456789';
+/** The year after the first — the cases that need a period of their own. */
+const NEXT_YEAR = 2027;
+
+/**
+ * This run's id.
+ *
+ * It seeds the VAT registration numbers below, and it exists so that this
+ * file can never leave a number behind that a later run will ask for.
+ */
+const RUN_ID = randomUUID();
+
+/**
+ * A VAT registration number, derived from a seed.
+ *
+ * Nine digits — what `parseVrn` accepts — from a 64-bit FNV-1a hash folded
+ * into the nine-digit range, so two different seeds do not collide.
+ */
+function vrnFrom(seed: string): string {
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+  let h = 0xcbf29ce484222325n;
+  for (const ch of seed) {
+    h = (h ^ BigInt(ch.codePointAt(0) ?? 0)) & mask;
+    h = (h * prime) & mask;
+  }
+  // [100000000, 999999999]
+  return String(100000000n + (h % 900000000n));
+}
+
+/**
+ * A VAT registration number per seed, and no two the same.
+ *
+ * Two seeds hashing to the same nine digits is astronomically unlikely, and
+ * it would look like a bug in the uniqueness rule rather than in the seeds —
+ * so the numbers are made distinct rather than left to chance.
+ */
+function distinctVrns(seeds: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const seed of seeds) {
+    let salt = 0;
+    let candidate = vrnFrom(seed);
+    while (out.includes(candidate)) {
+      salt += 1;
+      candidate = vrnFrom(`${seed}#${salt}`);
+    }
+    out.push(candidate);
+  }
+  return out;
+}
+
+/**
+ * The VAT registration numbers this run uses.
+ *
+ * They are DERIVED, not written down, and that is not tidiness — it is this
+ * file not poisoning the next one.
+ *
+ * The rule this file proves is that two tenants cannot hold one VAT
+ * registration number. A number written in the source is a number EVERY run
+ * wants. So a run that is killed before its cleanup — a container restart, an
+ * interrupted `pnpm test`, a machine that sleeps — leaves a tenant holding
+ * it, and every later run is then refused by the very rule it is testing.
+ * That is not hypothetical: it happened here, and it presented as a broken
+ * uniqueness check rather than as a leaked row.
+ *
+ * Deriving the numbers from this run's id makes a dead run's leftovers
+ * inert: they hold numbers no live run will ever ask for.
+ */
+const [VRN, INSTALL_VRN, OTHER_VRN, SECOND_VRN, RACE_VRN, BACKSTOP_VRN] = distinctVrns([
+  `${RUN_ID}:tenant`,
+  `${RUN_ID}:install`,
+  `${RUN_ID}:other`,
+  `${RUN_ID}:second`,
+  `${RUN_ID}:race`,
+  `${RUN_ID}:backstop`,
+]);
 /** One month per case, so each case has its own return to file. */
 const MONTHS = {
   refuse: 1,
@@ -81,9 +154,29 @@ const MONTHS = {
   concurrent: 10,
   /** A filing that started and never finished. */
   stale: 11,
+  /** A return HMRC accepted, whose ledger entry never landed. */
+  accepted: 12,
 } as const;
 
-const ALL_MONTHS = Object.values(MONTHS);
+/**
+ * The cases in the year AFTER the first.
+ *
+ * A year has twelve months and this file needs more than twelve periods —
+ * one per case, so no two cases can touch the same return. So the cases that
+ * came last live in the next year.
+ */
+const NEXT_MONTHS = {
+  /** A filing that is taken over by a later attempt. */
+  takeover: 1,
+  /** A second accepted return, for the idempotency of the completion. */
+  acceptedAgain: 2,
+} as const;
+
+/** Every period the fixture creates. */
+const PERIODS = [
+  ...Object.values(MONTHS).map((month) => ({ year: YEAR, month })),
+  ...Object.values(NEXT_MONTHS).map((month) => ({ year: NEXT_YEAR, month })),
+];
 
 /** A promise a test resolves from the outside. */
 function deferred() {
@@ -112,8 +205,21 @@ interface StubState {
   paths: string[];
   /** The bearer tokens the return endpoint saw, in order. */
   tokens: string[];
-  /** When set, the return endpoint waits on this before answering. */
-  hold: { reached: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> } | null;
+  /**
+   * The requests that are being held open, in the order they arrived.
+   *
+   * A QUEUE, not a single slot, because a case needs two filings held open
+   * at once: the attempt that is being taken over, and the attempt that takes
+   * it over. Each arriving request takes the next slot.
+   */
+  holds: Array<{ reached: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> }>;
+  /**
+   * Give every request its own correlation id.
+   *
+   * Two attempts of the same return have to be told apart — otherwise the
+   * test cannot say WHICH attempt wrote the row.
+   */
+  distinctCorrelations: boolean;
 }
 
 function freshState(): StubState {
@@ -124,7 +230,8 @@ function freshState(): StubState {
     tokenBody: JSON.stringify({ access_token: 'access-2', expires_in: 3600 }),
     paths: [],
     tokens: [],
-    hold: null,
+    holds: [],
+    distinctCorrelations: false,
   };
 }
 
@@ -145,6 +252,13 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
   // are the ones that prove it.
   const adopterTenantId = randomUUID();
   const laterTenantId = randomUUID();
+
+  // Two more tenants, for the case that is about TWO tenants reaching for the
+  // SAME VAT registration number at the SAME moment. The check and the write
+  // used to be two separate statements, so both tenants read "nobody holds
+  // it" and both wrote it.
+  const raceTenantA = randomUUID();
+  const raceTenantB = randomUUID();
 
   let state: StubState = freshState();
 
@@ -168,16 +282,24 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
         const auth = String(req.headers.authorization ?? '');
         state.tokens.push(auth);
 
-        if (state.hold) {
-          state.hold.reached.resolve();
-          await state.hold.release.promise;
+        if (state.holds.length) {
+          // The request takes the next open slot, so two filings can be held
+          // open at once and released independently.
+          const held = state.holds.shift()!;
+          held.reached.resolve();
+          await held.release.promise;
         }
 
         const reply =
           state.replies.get(auth.replace(/^Bearer /, '')) ??
           state.replies.get('*') ??
           state.fallback;
-        res.writeHead(reply.status, reply.headers);
+        // Each request gets its own reference when the case needs to tell two
+        // attempts of the same return apart.
+        const headers = state.distinctCorrelations
+          ? { ...reply.headers, 'x-hmrc-correlation-id': `corr-${state.paths.length}` }
+          : reply.headers;
+        res.writeHead(reply.status, headers);
         res.end(reply.body);
       });
     });
@@ -207,6 +329,15 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       insert into public.tenants (id, name, slug)
       values (${laterTenantId}::uuid, 'MTD later tenant test', ${`mtd-later-${laterTenantId.slice(0, 8)}`})
     `;
+    for (const [id, name] of [
+      [raceTenantA, 'MTD race tenant A'],
+      [raceTenantB, 'MTD race tenant B'],
+    ] as const) {
+      await sql`
+        insert into public.tenants (id, name, slug)
+        values (${id}::uuid, ${name}, ${`mtd-race-${id.slice(0, 8)}`})
+      `;
+    }
     await sql`
       insert into auth.users (id, email)
       values (${userId}::uuid, ${`mtd-${userId.slice(0, 8)}@example.invalid`})
@@ -236,43 +367,119 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     `) as Array<{ id: string }>;
     const vatCodeId = globalVat[0].id;
 
-    // One invoice per month under test, and an open period for each. Net
+    // One invoice per period under test, and an open period for each. Net
     // 10 000p, VAT 2 000p — so box 7 is 2 000p and there is a return to file.
-    for (const month of ALL_MONTHS) {
+    for (const { year, month } of PERIODS) {
       await sql`
         insert into public.invoices
           (agreement_id, number, issued_on, due_on, gross_pence, net_pence, vat_pence,
            status, tenant_id, vat_code_id)
-        values (${agreement[0].id}::uuid, ${`INV-MTD-${tenantId.slice(0, 8)}-${month}`},
-                ${`${YEAR}-${String(month).padStart(2, '0')}-01`}::date,
-                ${`${YEAR}-${String(month).padStart(2, '0')}-15`}::date,
+        values (${agreement[0].id}::uuid, ${`INV-MTD-${tenantId.slice(0, 8)}-${year}-${month}`},
+                ${`${year}-${String(month).padStart(2, '0')}-01`}::date,
+                ${`${year}-${String(month).padStart(2, '0')}-15`}::date,
                 12000, 10000, 2000, 'open', ${tenantId}::uuid, ${vatCodeId}::uuid)
       `;
-      await openPeriod(tenantId, YEAR, month);
+      await openPeriod(tenantId, year, month);
     }
   });
 
+  /**
+   * Run one cleanup statement, and never let it stop the ones after it.
+   *
+   * The cleanup is a list of deletes in dependency order. If ONE of them trips
+   * a foreign key, everything after it is skipped — and the tenant, its
+   * invoices, its periods, its VAT submissions and its HMRC connection are
+   * left in the database for the next run to trip over.
+   *
+   * So each statement stands on its own. A failure is reported rather than
+   * swallowed, and rather than allowed to abort the rest.
+   */
+  async function cleanup(what: string, run: () => Promise<unknown>): Promise<void> {
+    try {
+      await run();
+    } catch (e) {
+      console.warn(
+        `[integration] could not clean up ${what}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   afterAll(async () => {
     if (sql) {
-      await sql`delete from accounting.journal_lines where journal_id in (
-        select id from accounting.journal_entries where tenant_id = ${tenantId}::uuid
-      )`;
-      // The submissions go BEFORE the entries: `vat_submissions.posted_journal_id`
-      // references `journal_entries`, so deleting the entry first trips the
-      // foreign key.
-      await sql`delete from accounting.vat_submissions where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from accounting.journal_entries where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from accounting.firs_credentials where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from accounting.firs_credentials where tenant_id in (${adopterTenantId}::uuid, ${laterTenantId}::uuid)`;
-      await sql`delete from public.tenants where id in (${adopterTenantId}::uuid, ${laterTenantId}::uuid)`;
-      await sql`delete from public.invoices where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from public.agreements where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from public.vehicles where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from public.drivers where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from accounting.periods where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from accounting.audit_log where tenant_id = ${tenantId}::uuid`;
-      await sql`delete from public.tenants where id = ${tenantId}::uuid`;
-      await sql`delete from auth.users where id = ${userId}::uuid`;
+      const others = [adopterTenantId, laterTenantId, raceTenantA, raceTenantB];
+
+      // The children first. Each of these references something further down
+      // the list, so the order is the order of the foreign keys:
+      //   journal_lines   → journal_entries
+      //   vat_submissions → journal_entries
+      //   bank_transactions → journal_entries
+      //   payment_allocations → invoices, payments
+      //   invoices        → agreements
+      //   agreements      → vehicles, drivers
+      await cleanup('journal lines', () => sql`
+        delete from accounting.journal_lines where journal_id in (
+          select id from accounting.journal_entries where tenant_id = ${tenantId}::uuid
+        )
+      `);
+      await cleanup('VAT submissions', () => sql`
+        delete from accounting.vat_submissions where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('bank transactions', () => sql`
+        delete from accounting.bank_transactions where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('journal entries', () => sql`
+        delete from accounting.journal_entries where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('payment allocations', () => sql`
+        delete from public.payment_allocations where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('payment link tokens', () => sql`
+        delete from public.payment_link_tokens where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('payments', () => sql`
+        delete from public.payments where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('invoices', () => sql`
+        delete from public.invoices where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('agreements', () => sql`
+        delete from public.agreements where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('vehicles', () => sql`
+        delete from public.vehicles where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('drivers', () => sql`
+        delete from public.drivers where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('periods', () => sql`
+        delete from accounting.periods where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('audit log', () => sql`
+        delete from accounting.audit_log where tenant_id = ${tenantId}::uuid
+      `);
+
+      // The HMRC connections, and then the tenants themselves.
+      await cleanup('HMRC connection', () => sql`
+        delete from accounting.firs_credentials where tenant_id = ${tenantId}::uuid
+      `);
+      await cleanup('HMRC connections of the other tenants', () => sql`
+        delete from accounting.firs_credentials where tenant_id in (
+          ${adopterTenantId}::uuid, ${laterTenantId}::uuid,
+          ${raceTenantA}::uuid, ${raceTenantB}::uuid
+        )
+      `);
+      await cleanup('the other tenants', () => sql`
+        delete from public.tenants where id in (
+          ${adopterTenantId}::uuid, ${laterTenantId}::uuid,
+          ${raceTenantA}::uuid, ${raceTenantB}::uuid
+        )
+      `);
+      await cleanup('the tenant', () => sql`
+        delete from public.tenants where id = ${tenantId}::uuid
+      `);
+      await cleanup('the user', () => sql`
+        delete from auth.users where id = ${userId}::uuid
+      `);
     }
     vi.unstubAllEnvs();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -324,8 +531,8 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     return rows[0]?.vrn ?? null;
   }
 
-  /** The submission row for a month. */
-  async function submission(month: number) {
+  /** The submission row for a period. */
+  async function submission(year: number, month: number) {
     const rows = (await sql`
       select id::text as id, status::text as status,
              hmtr_correlation_id, response_payload, return_payload,
@@ -334,7 +541,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
        where tenant_id = ${tenantId}::uuid
          and period_id = (select id from accounting.periods
                            where tenant_id = ${tenantId}::uuid
-                             and year = ${YEAR} and month = ${month})
+                             and year = ${year} and month = ${month})
     `) as Array<{
       id: string;
       status: string;
@@ -387,7 +594,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     ).rejects.toThrow(/Connect to HMRC/i);
 
     // Nothing was written, and HMRC was never called.
-    expect(await submission(MONTHS.refuse)).toBeUndefined();
+    expect(await submission(YEAR, MONTHS.refuse)).toBeUndefined();
     expect(await journalCountSince(before)).toBe(0);
     expect(state.paths).toHaveLength(0);
   });
@@ -401,7 +608,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       submitVatReturn({ year: YEAR, month: MONTHS.noVrn, userId, tenantId }, { baseUrl: stubUrl }),
     ).rejects.toThrow(/VAT registration number/i);
 
-    expect(await submission(MONTHS.noVrn)).toBeUndefined();
+    expect(await submission(YEAR, MONTHS.noVrn)).toBeUndefined();
     expect(await journalCountSince(before)).toBe(0);
     expect(state.paths).toHaveLength(0);
   });
@@ -416,7 +623,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
 
     await submitVatReturn({ year: YEAR, month: MONTHS.accept, userId, tenantId }, { baseUrl: stubUrl });
 
-    const row = await submission(MONTHS.accept);
+    const row = await submission(YEAR, MONTHS.accept);
     expect(row.status).toBe('submitted');
     expect(row.hmtr_correlation_id).toBe('corr-accept');
     expect(row.posted_journal_id, 'the accepted return did not reach the ledger').not.toBeNull();
@@ -432,7 +639,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     // postgres.js then sends as a JSON string — so the stored value was
     // "{\"periodKey\":\"2026-03\"}" rather than an object. Reading it back
     // gave a string, and `payload.periodKey` was undefined.
-    const row = await submission(MONTHS.accept);
+    const row = await submission(YEAR, MONTHS.accept);
     expect(typeof row.return_payload).toBe('object');
     expect(row.return_payload).not.toBeNull();
 
@@ -466,7 +673,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       submitVatReturn({ year: YEAR, month: MONTHS.rejected, userId, tenantId }, { baseUrl: stubUrl }),
     ).rejects.toThrow(/HMRC/);
 
-    const row = await submission(MONTHS.rejected);
+    const row = await submission(YEAR, MONTHS.rejected);
     expect(row.status).toBe('rejected');
     expect(row.hmtr_correlation_id).toBe('corr-refuse');
     // HMRC's own words are kept, so the operator can be shown them.
@@ -501,7 +708,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       { baseUrl: stubUrl },
     );
 
-    const row = await submission(MONTHS.refresh);
+    const row = await submission(YEAR, MONTHS.refresh);
     expect(row.status).toBe('submitted');
     expect(row.hmtr_correlation_id).toBe('corr-refresh');
     // Two attempts at the return: the expired token, then the refreshed one.
@@ -530,7 +737,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       submitVatReturn({ year: YEAR, month: MONTHS.expired, userId, tenantId }, { baseUrl: stubUrl }),
     ).rejects.toThrow(/reconnect/i);
 
-    const row = await submission(MONTHS.expired);
+    const row = await submission(YEAR, MONTHS.expired);
     expect(row.status).toBe('rejected');
     expect(row.posted_journal_id).toBeNull();
     expect(await journalCountSince(before)).toBe(0);
@@ -553,7 +760,12 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
 
     // The second attempt is held open, so the submission is sitting in
     // 'pending_submission' while the operator's screen is still loading.
-    state.hold = { reached: deferred(), release: deferred() };
+    //
+    // The slot is kept in a local: the stub takes it OFF the queue when the
+    // request arrives, so `state.holds[0]` is gone by the time it is
+    // released.
+    const hold = { reached: deferred(), release: deferred() };
+    state.holds = [hold];
     state.fallback = {
       status: 400,
       body: JSON.stringify({ code: 'BUSINESS_RULE', message: 'The second attempt was refused.' }),
@@ -564,21 +776,21 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       { year: YEAR, month: MONTHS.retry, userId, tenantId },
       { baseUrl: stubUrl },
     );
-    await state.hold.reached.promise;
+    await hold.reached.promise;
 
     // While the retry is in flight the row is 'pending_submission' — and it
     // still carries WHY the first attempt was refused. The old code wrote
     // `{"reason": null}` on every attempt, so the record of the first
     // refusal was wiped the moment a retry started.
-    const inFlight = await submission(MONTHS.retry);
+    const inFlight = await submission(YEAR, MONTHS.retry);
     expect(inFlight.status).toBe('pending_submission');
     expect(String(inFlight.response_payload?.reason ?? '')).toContain('The first attempt was refused.');
 
-    state.hold.release.resolve();
+    hold.release.resolve();
     await expect(retrying).rejects.toThrow(/HMRC/);
 
     // And the reason is updated to the one from the attempt that just ended.
-    const settled = await submission(MONTHS.retry);
+    const settled = await submission(YEAR, MONTHS.retry);
     expect(settled.status).toBe('rejected');
     expect(String(settled.response_payload?.reason ?? '')).toContain('The second attempt was refused.');
   });
@@ -608,7 +820,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     // The tenant's own number is cleared — it has none of its own.
     await setVrn(tenantId, null);
     // The install has one.
-    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    vi.stubEnv('HMRC_MTD_VRN', INSTALL_VRN);
     const before = await journalCount();
 
     try {
@@ -622,32 +834,32 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       // HMRC was never called, and nothing was written.
       expect(state.paths).toHaveLength(0);
       expect(await journalCountSince(before)).toBe(0);
-      expect(await submission(MONTHS.installDefault)).toBeUndefined();
+      expect(await submission(YEAR, MONTHS.installDefault)).toBeUndefined();
     } finally {
       vi.stubEnv('HMRC_MTD_VRN', '');
     }
   });
 
   it('adopts the installation-wide VAT registration number for the first tenant that connects', async () => {
-    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    vi.stubEnv('HMRC_MTD_VRN', INSTALL_VRN);
     try {
       // The connection carries no number of its own — this is what the OAuth
       // callback does.
       await connectAs(adopterTenantId);
-      expect(await vrnOf(adopterTenantId)).toBe('999999999');
+      expect(await vrnOf(adopterTenantId)).toBe(INSTALL_VRN);
     } finally {
       vi.stubEnv('HMRC_MTD_VRN', '');
     }
   });
 
   it('does not give the installation-wide number to a tenant that connects after another one has it', async () => {
-    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    vi.stubEnv('HMRC_MTD_VRN', INSTALL_VRN);
     try {
       // The first tenant to connect adopts the installation's number.
       await connectAs(adopterTenantId);
       // The second one brings its own.
       await connectAs(laterTenantId);
-      expect(await vrnOf(adopterTenantId)).toBe('999999999');
+      expect(await vrnOf(adopterTenantId)).toBe(INSTALL_VRN);
       expect(await vrnOf(laterTenantId)).toBeNull();
     } finally {
       vi.stubEnv('HMRC_MTD_VRN', '');
@@ -655,18 +867,18 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
   });
 
   it('refuses to save a VAT registration number another tenant already holds', async () => {
-    vi.stubEnv('HMRC_MTD_VRN', '999999999');
+    vi.stubEnv('HMRC_MTD_VRN', INSTALL_VRN);
     try {
       await connectAs(adopterTenantId);
       await connectAs(laterTenantId);
 
       // The number belongs to the tenant that adopted it.
-      await expect(setVrn(laterTenantId, '999999999')).rejects.toThrow(/another tenant/i);
+      await expect(setVrn(laterTenantId, INSTALL_VRN)).rejects.toThrow(/another tenant/i);
       expect(await vrnOf(laterTenantId)).toBeNull();
 
       // Its own number is accepted.
-      await expect(setVrn(laterTenantId, '111222333')).resolves.toBe(true);
-      expect(await vrnOf(laterTenantId)).toBe('111222333');
+      await expect(setVrn(laterTenantId, OTHER_VRN)).resolves.toBe(true);
+      expect(await vrnOf(laterTenantId)).toBe(OTHER_VRN);
     } finally {
       vi.stubEnv('HMRC_MTD_VRN', '');
     }
@@ -684,21 +896,21 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     await setVrn(laterTenantId, null);
 
     // The installation is later configured with a number nobody holds.
-    vi.stubEnv('HMRC_MTD_VRN', '777777777');
+    vi.stubEnv('HMRC_MTD_VRN', SECOND_VRN);
     try {
       const onOffer = await loadVrnStatus(laterTenantId);
       // Nothing of its own, so nothing to file under yet…
       expect(onOffer.vrn).toBeNull();
       expect(onOffer.connected).toBe(true);
       // …and the installation's number is on offer to adopt.
-      expect(onOffer.installVrn).toBe('777777777');
+      expect(onOffer.installVrn).toBe(SECOND_VRN);
       expect(onOffer.installVrnAvailable).toBe(true);
 
       // Once another tenant holds it, it is no longer on offer here.
       await connectAs(adopterTenantId);
-      await setVrn(adopterTenantId, '777777777');
+      await setVrn(adopterTenantId, SECOND_VRN);
       const taken = await loadVrnStatus(laterTenantId);
-      expect(taken.installVrn).toBe('777777777');
+      expect(taken.installVrn).toBe(SECOND_VRN);
       expect(taken.installVrnAvailable).toBe(false);
     } finally {
       vi.stubEnv('HMRC_MTD_VRN', '');
@@ -734,7 +946,7 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     // HMRC was not asked a second time, and nothing was posted twice.
     expect(state.paths).toHaveLength(1);
     expect(await journalCountSince(before)).toBe(1);
-    const row = await submission(MONTHS.duplicate);
+    const row = await submission(YEAR, MONTHS.duplicate);
     expect(row.status).toBe('submitted');
     expect(row.hmtr_correlation_id).toBe('corr-default');
   });
@@ -744,12 +956,13 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     await connect();
     const before = await journalCount();
 
-    state.hold = { reached: deferred(), release: deferred() };
+    const hold = { reached: deferred(), release: deferred() };
+    state.holds = [hold];
     const filing = submitVatReturn(
       { year: YEAR, month: MONTHS.concurrent, userId, tenantId },
       { baseUrl: stubUrl },
     );
-    await state.hold.reached.promise;
+    await hold.reached.promise;
 
     await expect(
       submitVatReturn(
@@ -761,10 +974,10 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
     // Only one attempt reached HMRC.
     expect(state.paths).toHaveLength(1);
 
-    state.hold.release.resolve();
+    hold.release.resolve();
     await filing;
 
-    const row = await submission(MONTHS.concurrent);
+    const row = await submission(YEAR, MONTHS.concurrent);
     expect(row.status).toBe('submitted');
     expect(await journalCountSince(before)).toBe(1);
   });
@@ -802,8 +1015,230 @@ describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
       { year: YEAR, month: MONTHS.stale, userId, tenantId, force: true },
       { baseUrl: stubUrl },
     );
-    const row = await submission(MONTHS.stale);
+    const row = await submission(YEAR, MONTHS.stale);
     expect(row.status).toBe('submitted');
     expect(await journalCountSince(before)).toBe(1);
+  });
+
+  // ── 8. a return HMRC accepted, whose ledger entry never landed ───────────
+  //
+  // The submission row carried three states: pending_submission, submitted
+  // and rejected. `pending_submission` meant two DIFFERENT things at once:
+  //
+  //   * "an attempt is talking to HMRC", and
+  //   * "HMRC took it and the ledger entry has not landed yet".
+  //
+  // The application told them apart by the correlation id — and the takeover
+  // path, which is what runs after a filing dies, did not look at it. So a
+  // filing that HMRC accepted and then died before its journal entry landed
+  // left a row that read as "pending, never finished", and the deliberate
+  // "file it again" button sent HMRC a SECOND return for the same period: a
+  // duplicate return, and one organisation's figures counted twice.
+  //
+  // The fix is a state of its own — `accepted`. It says HMRC has the return
+  // and the ledger does not. Such a row is NEVER taken over, so it cannot be
+  // filed twice. What it CAN do is have its ledger entry completed, which is
+  // a separate and idempotent operation: the journal's idempotency key is
+  // (tenant, 'vat_submission', submission id), so completing it twice posts
+  // it once.
+
+  /**
+   * A return HMRC accepted, whose ledger entry never landed.
+   *
+   * This is the row a crashed filing leaves behind: status `accepted`, HMRC's
+   * reference on it, the figure the return was filed with, and no journal
+   * entry.
+   */
+  async function insertAcceptedSubmission(
+    year: number,
+    month: number,
+    correlationId: string,
+  ): Promise<string> {
+    const rows = (await sql`
+      insert into accounting.vat_submissions
+        (tenant_id, period_id, hmtr_correlation_id, return_payload, response_payload,
+         status, submitted_at, claim_token, vat_amount_pence)
+      values (${tenantId}::uuid,
+              (select id from accounting.periods
+                where tenant_id = ${tenantId}::uuid and year = ${year} and month = ${month}),
+              ${correlationId},
+              ${sql.json({ periodKey: `${year}-${String(month).padStart(2, '0')}` })}::jsonb,
+              null,
+              'accepted'::accounting.vat_submission_status,
+              now() - interval '2 hours',
+              ${randomUUID()}::uuid,
+              2000)
+      returning id::text as id
+    `) as Array<{ id: string }>;
+    return rows[0].id;
+  }
+
+  it('does not file a return HMRC has already accepted, and completes its ledger entry', async () => {
+    state = freshState();
+    await connect();
+    const before = await journalCount();
+    await insertAcceptedSubmission(YEAR, MONTHS.accepted, 'corr-accepted');
+
+    await expect(
+      submitVatReturn({ year: YEAR, month: MONTHS.accepted, userId, tenantId }, { baseUrl: stubUrl }),
+    ).rejects.toThrow(/already been filed/i);
+
+    // HMRC was NOT asked a second time. This is the whole point: a second
+    // filing of the same period is a duplicate return at HMRC.
+    expect(state.paths).toHaveLength(0);
+
+    // But the ledger entry the crashed filing never wrote is now there, so
+    // the books agree with what HMRC holds.
+    expect(await journalCountSince(before)).toBe(1);
+    const row = await submission(YEAR, MONTHS.accepted);
+    expect(row.status).toBe('submitted');
+    expect(row.hmtr_correlation_id).toBe('corr-accepted');
+    expect(row.posted_journal_id, 'the accepted return did not reach the ledger').not.toBeNull();
+  });
+
+  it('completes the ledger entry for an accepted return exactly once', async () => {
+    state = freshState();
+    await connect();
+    const before = await journalCount();
+    await insertAcceptedSubmission(NEXT_YEAR, NEXT_MONTHS.acceptedAgain, 'corr-accepted-again');
+
+    await expect(
+      submitVatReturn(
+        { year: NEXT_YEAR, month: NEXT_MONTHS.acceptedAgain, userId, tenantId },
+        { baseUrl: stubUrl },
+      ),
+    ).rejects.toThrow(/already been filed/i);
+    expect(await journalCountSince(before)).toBe(1);
+
+    // The second press must not post a second entry. The journal's
+    // idempotency key is (tenant, 'vat_submission', submission id), so
+    // completing the same return twice posts it once.
+    await expect(
+      submitVatReturn(
+        { year: NEXT_YEAR, month: NEXT_MONTHS.acceptedAgain, userId, tenantId },
+        { baseUrl: stubUrl },
+      ),
+    ).rejects.toThrow(/already been filed/i);
+    expect(await journalCountSince(before)).toBe(1);
+    expect(state.paths).toHaveLength(0);
+  });
+
+  it('does not let an attempt that has been taken over write over the attempt that replaced it', async () => {
+    state = freshState();
+    // Each attempt gets its own reference, so the test can say WHICH
+    // attempt wrote the row.
+    state.distinctCorrelations = true;
+    await connect();
+    const before = await journalCount();
+
+    // The first attempt is held open at HMRC.
+    const firstHold = { reached: deferred(), release: deferred() };
+    state.holds = [firstHold];
+    const first = submitVatReturn(
+      { year: NEXT_YEAR, month: NEXT_MONTHS.takeover, userId, tenantId },
+      { baseUrl: stubUrl },
+    );
+    await firstHold.reached.promise;
+
+    // It has been hanging long enough that "it is still running" is no
+    // longer a reasonable explanation — so the operator forces a second
+    // filing.
+    await sql`
+      update accounting.vat_submissions
+         set submitted_at = now() - interval '2 hours'
+       where tenant_id = ${tenantId}::uuid
+         and period_id = (select id from accounting.periods
+                           where tenant_id = ${tenantId}::uuid
+                             and year = ${NEXT_YEAR} and month = ${NEXT_MONTHS.takeover})
+    `;
+
+    const secondHold = { reached: deferred(), release: deferred() };
+    state.holds = [secondHold];
+    const second = submitVatReturn(
+      { year: NEXT_YEAR, month: NEXT_MONTHS.takeover, userId, tenantId, force: true },
+      { baseUrl: stubUrl },
+    );
+    await secondHold.reached.promise;
+
+    // The first attempt comes back. It has LOST the row — the second attempt
+    // owns it now. The old code wrote its answer over the row whatever
+    // happened, so a return HMRC had accepted was turned back into a
+    // "rejected" one that the next filing would happily send again.
+    firstHold.release.resolve();
+    await expect(first).rejects.toThrow(/took it over/i);
+
+    // The row is untouched by the superseded attempt: still in flight, and
+    // carrying no reference — because the attempt that owns it has not been
+    // answered yet.
+    const duringSecond = await submission(NEXT_YEAR, NEXT_MONTHS.takeover);
+    expect(duringSecond.status).toBe('pending_submission');
+    expect(duringSecond.hmtr_correlation_id).toBe('');
+
+    // And the attempt that owns the row settles it with its own reference,
+    // and posts the one ledger entry.
+    secondHold.release.resolve();
+    await second;
+
+    const settled = await submission(NEXT_YEAR, NEXT_MONTHS.takeover);
+    expect(settled.status).toBe('submitted');
+    expect(settled.hmtr_correlation_id).toBe('corr-2');
+    expect(await journalCountSince(before)).toBe(1);
+  });
+
+  // ── 9. one VAT registration number, one tenant ───────────────────────────
+  //
+  // A VAT registration number belongs to ONE organisation, and a tenant is an
+  // organisation. Two tenants filing under one number is a second return for
+  // one organisation and one tenant's figures on another's HMRC record.
+  //
+  // The check and the write used to be two separate statements, so two
+  // tenants saving the same number at the same moment both read "nobody holds
+  // it" and both wrote it.
+
+  it('lets exactly one tenant take a VAT registration number when two try at once', async () => {
+    state = freshState();
+    const number = RACE_VRN;
+    await connectAs(raceTenantA);
+    await connectAs(raceTenantB);
+
+    const results = await Promise.allSettled([
+      setVrn(raceTenantA, number),
+      setVrn(raceTenantB, number),
+    ]);
+
+    const winners = results.filter((r) => r.status === 'fulfilled');
+    const losers = results.filter((r) => r.status === 'rejected');
+    expect(winners, 'both tenants were allowed to hold the same number').toHaveLength(1);
+    expect(losers, 'both tenants were refused the same number').toHaveLength(1);
+    expect(String((losers[0] as PromiseRejectedResult).reason)).toMatch(/another tenant/i);
+
+    // And the database agrees: exactly one row holds it.
+    const holders = (await sql`
+      select tenant_id::text as tenant_id
+        from accounting.firs_credentials
+       where vrn = ${number}
+    `) as Array<{ tenant_id: string }>;
+    expect(holders).toHaveLength(1);
+  });
+
+  it('the database refuses two tenants holding one VAT registration number', async () => {
+    // The backstop behind the application's own check: even a write that
+    // bypasses the application entirely is refused by the database.
+    const number = BACKSTOP_VRN;
+    await connectAs(raceTenantA);
+    await connectAs(raceTenantB);
+    await sql`
+      update accounting.firs_credentials
+         set vrn = ${number}
+       where tenant_id = ${raceTenantA}::uuid
+    `;
+
+    await expect(
+      sql`
+        update accounting.firs_credentials
+           set vrn = ${number}
+         where tenant_id = ${raceTenantB}::uuid
+      `,
+    ).rejects.toMatchObject({ code: '23505' });
   });
 });

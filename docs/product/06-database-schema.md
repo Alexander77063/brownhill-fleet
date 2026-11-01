@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-11-01. Read from `supabase/migrations/` (82 files)
+*Status: current as of 2026-11-01. Read from `supabase/migrations/` (84 files)
 and `supabase/seed.sql`. The most recent migration is
-`0083_accounting_vat_output_account.sql`.*
+`0085_accounting_mtd_filing_state.sql`.*
 
 ---
 
@@ -355,9 +355,9 @@ business paid.
 | `accounting.bank_transactions` | Imported statements |
 | `accounting.periods` | The accounting period lifecycle. One row per (tenant, year, month) — `unique (tenant_id, year, month)` — with `month between 1 and 12` and `year between 2000 and 2100`; `started_at`, `closed_at`, `closed_by_user_id` and `locked_at`. The row is created lazily, by whichever posting first needs the month |
 | `accounting.vat_codes` | `code ~ '^T[0-9]$'`, `vat_t1_rate_pct between 0 and 100`, `vat_treatment in ('standard','zero','exempt','outside')` |
-| `accounting.vat_submissions` | UK VAT return; `box_number between 1 and 6` (the nine boxes are spread across six box numbers with sub-boxes) |
+| `accounting.vat_submissions` | UK VAT return; `box_number between 1 and 6` (the nine boxes are spread across six box numbers with sub-boxes). Its `status` has **four** values — `pending_submission`, `accepted`, `submitted`, `rejected` — see §5.6 |
 | `accounting.filing_artifacts` | What was filed, when, and the MTD response |
-| `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4. `vrn` is the tenant's VAT registration number (migration 0084) |
+| `accounting.firs_credentials` | HMRC tokens, AES-GCM encrypted at rest. One row per tenant — see §5.4. `vrn` is the tenant's VAT registration number (migration 0084), and it is **unique across tenants** (migration 0085) — see §5.5 |
 | `accounting.vat_return_lines` | The lines of a VAT return. Keyed on `vat_submission_id`; its tenancy is its submission's |
 | `accounting.audit_log` | The accounting module's own append-only audit trail — read and appended to, never edited or removed |
 | `accounting.tenant_accounting_settings` | Per-tenant thresholds and the reopen window: `reopen_window_days between 1 and 90` (migration 0070, default 7) |
@@ -654,6 +654,89 @@ duplicate return at HMRC and one tenant's figures on another's record.
 serialised with an advisory lock, and the filing path reads the tenant's own
 column and nothing else.
 
+**One number, one tenant — at the database level too (migration 0085).** The
+rule above was *checked* in the application and then *written* in a separate
+statement, so two tenants saving the same number at the same moment both read
+"nobody holds it" and both wrote it. The backstop is a partial unique index:
+
+```sql
+create unique index firs_credentials_vrn_unique
+  on accounting.firs_credentials (vrn)
+  where vrn is not null;
+```
+
+It is **partial** because a connection with no VAT registration number is
+perfectly normal — there is one row per tenant and most of them have not been
+given one — and NULL is already distinct from every other NULL in a unique
+index. The application's advisory lock is the *first* line: it turns the common
+case into a clean refusal ("that number belongs to another organisation")
+rather than an exception. The index is the *backstop*, and refuses the second
+write whatever the application does.
+
+Migration 0085 clears any duplicates it finds **before** creating the index —
+the index cannot be created while they exist, and a duplicate is itself the
+bug the migration exists to close. The number stays on one connection, the
+most recently active one; the others have theirs cleared, which puts the
+conflict in front of the operator who caused it.
+
+**A second, smaller rule about the same column.** The VRN is not part of the
+credential upsert. `persistCredentials` writes the OAuth tokens with
+`on conflict (tenant_id) do update`, and that clause only handles a conflict
+on the index it names — a concurrent conflict on the *VRN* index is a
+different index, so it would be an unhandled 23505 rather than a clean
+refusal. The number is therefore written by its own `UPDATE` inside the same
+transaction, under the same advisory lock.
+
+### 5.6 Filing a return once — the four states (migration 0085)
+
+`accounting.vat_submission_status` has four values, and the fourth is the one
+that was missing:
+
+| State | What it means |
+| --- | --- |
+| `pending_submission` | An attempt is talking to HMRC. It has not been accepted, and it has not been refused. |
+| `accepted` | HMRC has the return and the ledger does not. |
+| `submitted` | HMRC accepted it, and its ledger entry has landed. |
+| `rejected` | HMRC refused it. Its own words are in `response_payload`. |
+
+`pending_submission` used to mean two different things at once — *"an attempt
+is talking to HMRC"* **and** *"HMRC took it and the ledger entry has not landed
+yet"* — and the application told the two apart by whether a correlation id had
+been written. The takeover path, which is what runs after a filing dies, did
+not look at it. So a filing that HMRC accepted and that then died before its
+journal entry landed left a row that said *"pending, never finished"*, and the
+deliberate "file it again" button sent HMRC a **second** return for the same
+period: a duplicate return at HMRC, and one organisation's figures counted
+twice.
+
+`accepted` is a state of its own, and it is the fix. A row in that state is
+**never taken over**, so it cannot be filed again; what it *can* do is have
+its ledger entry completed, which is a separate and idempotent operation. The
+journal's idempotency key is `(tenant_id, 'vat_submission', submission_id)`,
+so completing it twice posts it once.
+
+Two columns carry the rest of it:
+
+- **`claim_token uuid`** — the token of the filing attempt that currently
+  owns the row. A settlement must present it. The settlement used to address
+  the row by id alone, so an attempt that was slow could come back after a
+  later attempt had taken the period over, and write its own answer over the
+  row — turning a return HMRC had accepted into a "rejected" one that the
+  next filing would happily send again. An attempt that no longer owns the row
+  now changes **nothing**.
+- **`vat_amount_pence bigint`** — the net VAT the return was **filed with**.
+  The ledger entry is posted from this, so a return that is completed a week
+  later posts the figure HMRC accepted, not whatever the invoices happen to
+  say today.
+
+The close preflight knows about `accepted`: a period whose return HMRC has
+taken but whose ledger entry has not landed is closed with the warning
+`vat_not_posted` — *"HMRC has accepted the VAT return for {period}, but its
+ledger entry has not landed yet"* — because the books are behind the return
+and the return cannot be filed again. The warning is not a block: the HMRC
+connection is the operator's, so an install without one would otherwise have
+every month close refused.
+
 ## 6. Other invariants worth knowing
 
 | Constraint | Table | What it forbids |
@@ -670,6 +753,7 @@ column and nothing else.
 | `kind ~ '^[a-z][a-z0-9_]{1,40}$'` | `plan_features` | A malformed feature key |
 | `reopen_window_days between 1 and 90` | accounting settings | A reopen window of zero or two years |
 | `vrn ~ '^[0-9]{3,15}$'` | `accounting.firs_credentials` | A VAT registration number that is not 3 to 15 digits — the number goes in a URL path, so anything else is a wrong-organisation filing or a broken path |
+| `vrn` is unique across tenants (partial unique index `firs_credentials_vrn_unique`) | `accounting.firs_credentials` | Two tenants holding one VAT registration number — one organisation filing under another's number |
 | `bank_statement_max_bytes between 1024 and 1073741824` | tenant settings | A nonsensical import cap |
 | allocation targets a non-void invoice (trigger `check_allocation()`) | `payment_allocations` | Money landing on a voided invoice |
 
@@ -791,7 +875,7 @@ it (§7.1), which is why the first-run decision is made server-side.
 
 ## 8. Migrations
 
-- 82 files, `0001`–`0083` (there is no `0057`; the number was never used).
+- 84 files, `0001`–`0085` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

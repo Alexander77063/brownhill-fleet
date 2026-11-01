@@ -49,10 +49,22 @@ import { formatGBP } from '@/lib/money';
 import { aggregateVatReturn } from './mtd-box';
 import type { ISql } from 'postgres';
 
-/** What the VAT submission for a period is doing. */
-export type VatSubmissionState = 'none' | 'pending_submission' | 'submitted' | 'rejected';
+/**
+ * What the VAT submission for a period is doing.
+ *
+ * `accepted` is its own state because it is a different problem from the
+ * other two: HMRC has the return and the ledger does not. The books are
+ * behind a return that cannot be filed again — so it needs completing, not
+ * refiling.
+ */
+export type VatSubmissionState =
+  | 'none'
+  | 'pending_submission'
+  | 'accepted'
+  | 'submitted'
+  | 'rejected';
 
-export type CloseWarningCode = 'open_bank_items' | 'vat_not_filed';
+export type CloseWarningCode = 'open_bank_items' | 'vat_not_filed' | 'vat_not_posted';
 
 export interface CloseWarning {
   code: CloseWarningCode;
@@ -117,7 +129,24 @@ export function closeWarnings(counts: PreflightCounts, period: string): CloseWar
   const warnings: CloseWarning[] = [];
 
   // The VAT return first. It is the warning that cannot be undone.
-  if (counts.netVatPence !== 0 && counts.vatSubmission !== 'submitted') {
+  //
+  // `accepted` is a different problem and gets a different sentence: HMRC
+  // HAS the return, so it cannot be filed again, and the only thing left is
+  // to complete the ledger entry. Telling the operator it "has not been
+  // accepted by HMRC" would be false, and telling them to file it would
+  // send HMRC a duplicate return.
+  if (counts.netVatPence !== 0 && counts.vatSubmission === 'accepted') {
+    warnings.push({
+      code: 'vat_not_posted',
+      count: 1,
+      amountPence: counts.netVatPence,
+      message:
+        `HMRC has accepted the VAT return for ${period}, but its ledger entry has ` +
+        `not landed yet (${formatGBP(counts.netVatPence)} net VAT). The return cannot ` +
+        `be filed again, so complete the ledger entry before closing — the books are ` +
+        `behind the return.`,
+    });
+  } else if (counts.netVatPence !== 0 && counts.vatSubmission !== 'submitted') {
     warnings.push({
       code: 'vat_not_filed',
       count: 1,
