@@ -97,7 +97,18 @@ the app disagree about the row, and that is the first thing to look at.
 - A backup / restore path that writes locally to `/var/backups/brownhill/` and off-hosts to Backblaze B2 (S3-compatible).
 - An acceptance script (`hosted/tests/acceptance.sh`) that proves the system is healthy before you call it shippable: five baseline gates, plus the accounting smoke and the no-credential scan when they apply.
 
-The mainline product (Elite Fleet Management, multi-tenant SaaS) is in the same repo. **None of the SaaS-only code paths run on this deployment** — the `DEPLOYMENT_PROFILE=hosted` switch gates them out at compile time.
+The mainline product (Elite Fleet Management, multi-tenant SaaS) is in the same repo. **None of the SaaS-only code paths run on this deployment** — the `DEPLOYMENT_PROFILE=hosted` switch names the build, and the middleware closes the SaaS-only surfaces at the edge of the app, before auth and before any handler:
+
+| URL | On this box |
+| --- | --- |
+| `/request-access`, `/api/signup-request` | **404** — self-serve signup belongs to the SaaS. This build has no sales funnel to run, and the sign-in page does not link to it. |
+| `/platform`, `/api/platform` | **404** — the cross-tenant super-admin console. This box has exactly one tenant, and it is yours. |
+| `/owner`, `/api/owner` | **404** — the vehicle-owner portal. There are no vehicle owners on this deployment. |
+| `/api/billing`, `/api/cron/subscription-lifecycle` | **404** — the subscription you would pay *us* for. You bought the software once; there is nothing to subscribe to. |
+
+**`/ops/billing` is not one of them, and it is not an oversight.** That page carries two things: the subscription panel (which this build hides on its own — the UK is trial-first, not pay-first) and *your* rent collection — the arrears table, the "send payment link to driver" button and the "record receipt" form. The driver payment path (`/api/payments/*`) and the payment webhooks (`/api/webhooks/*`) are never closed for the same reason: gating them stops you getting paid.
+
+If a URL you expected gives a 404 with "does not serve" in the body, it is one of the four above. Everything else the operator console offers is there.
 
 ## 2. Prerequisites — what you must have before you begin
 

@@ -11,6 +11,16 @@
  *   /api/billing/*   — the tenant's subscription TO US. Gated off-SaaS.
  *   /api/payments/*  — the operator collecting rent FROM THEIR DRIVERS.
  *   /api/webhooks/*    Never gated: gating it stops the customer getting paid.
+ *
+ * `/ops/billing` is deliberately NOT in the table, even though it sits next to
+ * `/api/billing` and carries the same subscription. That page is two surfaces
+ * wearing one URL: the subscription panel TO US, and the rent the tenant
+ * collects FROM THEIR DRIVERS — the arrears table, the driver's payment link
+ * and the receipt form. The subscription half hides itself off a pay-first
+ * market through `payFirst()`, and the UK's is trial-first, so on the hosted
+ * build that panel is never rendered. Gating the prefix to hide the first
+ * surface would take the second one with it — and the second one is how
+ * Brownhill's operator collects rent from their drivers.
  */
 import { deploymentProfile, type DeploymentProfile } from './profile';
 
@@ -26,7 +36,8 @@ export const GATED_PREFIXES: readonly GatedPrefix[] = [
   { prefix: '/api/signup-request', allowed: (p) => p.selfServeSignup },
 
   // The tenant's own subscription to us — not their revenue.
-  { prefix: '/ops/billing', allowed: (p) => p.subscriptionBilling },
+  // `/ops/billing` is not here: it also carries the operator's rent collection
+  // from their drivers. See the note above the table.
   { prefix: '/api/billing', allowed: (p) => p.subscriptionBilling },
   { prefix: '/api/cron/subscription-lifecycle', allowed: (p) => p.subscriptionBilling },
 

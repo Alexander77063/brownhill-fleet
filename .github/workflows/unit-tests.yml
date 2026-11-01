@@ -125,6 +125,19 @@ jobs:
         # of the tree that writes the credential straight to its final path
         # again, and requires it to fail on the check that watches for it.
         run: bash hosted/tests/secret-file-permissions-negative.sh
+      - name: The deployment gate can fail
+        # A gate that cannot fail is not a gate. The table that decides which
+        # URL prefixes a build does not serve — the cross-tenant console, the
+        # SaaS's own signup form, the subscription API — had no call site
+        # anywhere in the repository. It was complete, correct-looking, and
+        # never consulted, so all of it was reachable on Brownhill's box.
+        #
+        # This runs the gate's own test against a gate that blocks everything
+        # and against one that blocks nothing, and requires it to fail on the
+        # right family of checks each time: the first must catch the console
+        # being served, the second must catch the operator's own console and
+        # the rent collection being taken away with it.
+        run: bash hosted/tests/deployment-gate-negative.sh
       - name: The acceptance bar's own arithmetic
         # hosted/tests/acceptance.sh decides whether a deployment is fit to
         # hand over, and that decision is arithmetic. The arithmetic asked

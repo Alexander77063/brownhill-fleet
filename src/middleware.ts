@@ -1,5 +1,6 @@
 // src/middleware.ts
-// Per-request tenant-id enforcement + the app_draining 503 for non-`/admin/*` paths.
+// The deployment gate + per-request tenant-id enforcement + the app_draining 503
+// for non-`/admin/*` paths.
 // RLS already enforces the tenant rule identically; this is belt + braces over a
 // token that names the wrong tenant.
 //
@@ -28,6 +29,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { deploymentProfile } from '@/lib/deployment/profile';
+import { isPathDisabled } from '@/lib/deployment/gate';
+import { deploymentBrand } from '@/lib/deployment/brand';
 import { postgrestUrl } from '@/lib/deployment/postgrest';
 
 /** How long a drain reading is trusted for. */
@@ -153,11 +156,44 @@ function isAdminPath(pathname: string): boolean {
 }
 
 export async function middleware(req: NextRequest) {
+  const pathname = req.nextUrl.pathname;
+
+  // The deployment gate runs FIRST, before everything else in this function —
+  // including the `customerOps` early return below.
+  //
+  // `isPathDisabled` had no call site anywhere in the repository, so the
+  // `GATED_PREFIXES` table was a safety net that was never connected. On the
+  // hosted build that meant the cross-tenant console (/platform, 22 routes),
+  // the self-serve signup form (/request-access — which rendered the SaaS's
+  // "Elite Fleet Management" branding on a box that is neither multi-tenant
+  // nor white-label) and the subscription-to-us API were all reachable.
+  //
+  // It runs before `customerOps` because the gate is a property of the
+  // PROFILE, not of the operator surfaces: `saas` has no vehicle-owner
+  // portal, so `/owner` must be closed there even though `saas` has no
+  // operator console for this middleware to protect.
+  //
+  // It runs before auth because the answer does not depend on who is asking.
+  // A bookmarked link from another deployment gets the same 404 as an
+  // anonymous one, and a token cannot be used to reach a route this build
+  // does not have.
+  if (isPathDisabled(pathname)) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'not_found' }, { status: 404 });
+    }
+    // A page. 404 rather than 403: on this build the route does not exist,
+    // which is what the sign-in page already promises about /request-access
+    // on a build the customer already owns. Naming the path tells an
+    // operator who followed a stale bookmark what actually happened.
+    return new NextResponse(
+      `${deploymentBrand().productName} does not serve ${pathname} on this deployment.\n`,
+      { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
+  }
+
   // Only a box the customer operates has the operator surfaces this middleware
   // protects. On every other profile it does nothing at all.
   if (!deploymentProfile().customerOps) return NextResponse.next();
-
-  const pathname = req.nextUrl.pathname;
 
   if (await readDraining()) {
     if (!isAdminPath(pathname)) {

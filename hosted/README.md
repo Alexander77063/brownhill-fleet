@@ -121,6 +121,24 @@ bash hosted/tests/mtd-env-wiring.sh
 #   right check for each.
 bash hosted/tests/mtd-env-wiring-negative.sh
 
+#   That a build only serves the surfaces it actually has — and that the
+#   gate saying so can fail.
+#
+#   The table that decides which URL prefixes a deployment profile does not
+#   serve had NO call site anywhere in the repository: it was complete,
+#   correct-looking, and never consulted. On the hosted build that left the
+#   cross-tenant console (/platform), the SaaS's own signup form
+#   (/request-access) and the subscription API reachable on a box that must
+#   serve none of them.
+#
+#   `tests/unit/deployment-gate.test.ts` is the boundary, and this is its
+#   negative case: the test is run against a gate that blocks nothing and
+#   against one that blocks everything, and each has to fail on the right
+#   family of checks. Needs the dependencies installed (`pnpm install`) —
+#   it runs the unit suite, not a shell gate — but no docker, no database
+#   and no stack.
+bash hosted/tests/deployment-gate-negative.sh
+
 #   Where the nightly dump is filed when it leaves the box, what a box
 #   provisioned before the rename does, and what happens when the hostname
 #   is not set at all.
