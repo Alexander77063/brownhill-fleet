@@ -69,11 +69,16 @@ fi
 #
 # A link that still points out of the staged tree means the deployed
 # application would depend on a directory it was never told about: the build
-# checkout, at an absolute path, that a later `pnpm install` may prune. The
-# deploy stops here rather than shipping that. The previous build is still in
-# place, because the swap has not happened yet.
+# checkout, at an absolute path, that a later `pnpm install` may prune. A link
+# that does not resolve at all is worse — it is broken wherever it points, and
+# the application would fail at run time with "Cannot find module". The
+# check covers the WHOLE staged tree, not just its node_modules, because
+# `public/` and `.next/static` are deployed too.
+#
+# The deploy stops here rather than shipping either. The previous build is
+# still in place, because the swap has not happened yet.
 echo "==> checking the staged tree stands on its own"
-node scripts/rebase-standalone-symlinks.mjs --find-out-of-tree-symlinks "$STAGE"
+node scripts/rebase-standalone-symlinks.mjs --check-self-contained "$STAGE"
 
 # ── swap ────────────────────────────────────────────────────────────────────
 echo "==> installing into $APP_DIR"

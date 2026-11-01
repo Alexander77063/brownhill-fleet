@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  findOutOfTreeSymlinks,
+  findUnresolvedSymlinks,
   rebaseStandaloneSymlinks,
 } from '../../scripts/rebase-standalone-symlinks.mjs';
 
@@ -170,7 +170,7 @@ describe('rebasing a standalone build’s node_modules', () => {
     expect(() => rebaseStandaloneSymlinks(staged)).toThrow(/react/);
 
     // And it says which links are still pointing out.
-    expect(findOutOfTreeSymlinks(staged).length).toBe(1);
+    expect(findUnresolvedSymlinks(staged).length).toBe(1);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -183,6 +183,99 @@ describe('rebasing a standalone build’s node_modules', () => {
 
     expect(result.rebased).toBe(0);
     expect(result.outOfTree).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('the gate has to be able to see what it claims to see', () => {
+  // The gate's claim is "every link in the deployed tree resolves inside the
+  // deployed tree". Three things can make that claim false while the check
+  // still says the tree is fine, and all three are checked below.
+  //
+  // The link type is 'junction' on Windows because a directory junction can
+  // be created without the privilege a file symlink needs, and the fixture
+  // links at directories throughout.
+  const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir';
+
+  it('reports a link whose real target is outside even when its path reads as inside', () => {
+    // The link's target is a path lexically inside the tree, so comparing
+    // path STRINGS says "inside". But that path is itself a link, and what
+    // it really names is outside the tree. The gate has to follow the chain
+    // — otherwise it is asserting something it never checked.
+    const { root, staged } = makeTree();
+    const outside = join(root, 'outside');
+    mkdirSync(outside, { recursive: true });
+    const viaLink = join(staged, 'node_modules', 'via-link');
+    symlinkSync(outside, viaLink, LINK_TYPE);
+    const link = join(staged, 'node_modules', 'pkg');
+    symlinkSync(viaLink, link, LINK_TYPE);
+
+    const strays = findUnresolvedSymlinks(staged);
+
+    expect(strays.map((s) => s.link)).toContain(link);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports a link that dangles', () => {
+    // A link whose target does not exist is broken wherever it points. Its
+    // path may well read as "inside the tree", and a check that compared
+    // paths would wave it through — so a broken link would be deployed, and
+    // the application would fail at run time with "Cannot find module",
+    // which is the exact failure this gate exists to prevent.
+    const { root, staged } = makeTree();
+    const gone = join(staged, 'node_modules', '.pnpm', 'gone@1.0.0');
+    mkdirSync(gone, { recursive: true });
+    const link = join(staged, 'node_modules', 'gone');
+    symlinkSync(gone, link, LINK_TYPE);
+    rmSync(gone, { recursive: true, force: true });
+
+    const strays = findUnresolvedSymlinks(staged);
+
+    expect(strays.map((s) => s.link)).toContain(link);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reports a link outside node_modules that points out of the tree', () => {
+    // The claim is about the WHOLE deployed tree. `public/` and
+    // `.next/static` are deployed beside `node_modules`, and a link in
+    // either of them is a link the deployed application follows.
+    const { root, staged } = makeTree();
+    const outside = join(root, 'outside');
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(staged, 'public'), { recursive: true });
+    const link = join(staged, 'public', 'assets');
+    symlinkSync(outside, link, LINK_TYPE);
+
+    const strays = findUnresolvedSymlinks(staged);
+
+    expect(strays.map((s) => s.link)).toContain(link);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses a tree with a dangling link', () => {
+    const { root, staged } = makeTree();
+    const gone = join(staged, 'node_modules', '.pnpm', 'gone@1.0.0');
+    mkdirSync(gone, { recursive: true });
+    const link = join(staged, 'node_modules', 'gone');
+    symlinkSync(gone, link, LINK_TYPE);
+    rmSync(gone, { recursive: true, force: true });
+
+    expect(() => rebaseStandaloneSymlinks(staged)).toThrow(/gone/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses a tree with a link outside node_modules that points out of it', () => {
+    // There is no copy of it inside the tree to point at, so it cannot be
+    // made self-contained — and shipping it would deploy a link that
+    // leaves the deployment.
+    const { root, staged } = makeTree();
+    const outside = join(root, 'outside');
+    mkdirSync(outside, { recursive: true });
+    mkdirSync(join(staged, 'public'), { recursive: true });
+    const link = join(staged, 'public', 'assets');
+    symlinkSync(outside, link, LINK_TYPE);
+
+    expect(() => rebaseStandaloneSymlinks(staged)).toThrow(/assets/);
     rmSync(root, { recursive: true, force: true });
   });
 });
@@ -208,6 +301,6 @@ describe('the deployment uses the rebased output', () => {
       'utf8',
     );
 
-    expect(source).toContain('find-out-of-tree-symlinks');
+    expect(source).toContain('check-self-contained');
   });
 });

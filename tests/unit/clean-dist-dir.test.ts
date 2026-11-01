@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +12,39 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recursiveDelete } from 'next/dist/lib/recursive-delete.js';
 import { cleanDistDir } from '../../scripts/clean-dist-dir.mjs';
+
+/**
+ * The state the mock below reads and writes. `vi.hoisted` because the mock
+ * factory is hoisted above the imports, and it may not close over a
+ * variable that has not been initialised yet.
+ */
+const state = vi.hoisted(() => ({
+  rmdirCalls: [] as string[],
+  failNext: 0,
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    default: actual,
+    rmdirSync: (path: string) => {
+      state.rmdirCalls.push(path);
+      if (state.failNext > 0) {
+        state.failNext -= 1;
+        const err = new Error('ENOTEMPTY: directory not empty') as NodeJS.ErrnoException;
+        err.code = 'ENOTEMPTY';
+        throw err;
+      }
+      return actual.rmdirSync(path);
+    },
+  };
+});
+
+beforeEach(() => {
+  state.rmdirCalls.length = 0;
+  state.failNext = 0;
+});
 
 /**
  * The build must not destroy the packages it is built from.
@@ -110,6 +143,41 @@ describe('cleaning a build output directory', () => {
     await recursiveDelete(out, /^cache/);
 
     expect(existsSync(packageFile)).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('tries again when a directory is transiently not empty', () => {
+    // Windows keeps a deleted file in its directory in a "delete pending"
+    // state for as long as any handle to it is still open, and `rmdir`
+    // refuses with ENOTEMPTY even though the directory reads as empty. An
+    // antivirus scanner or the Windows Search indexer holding a handle for
+    // a moment is enough to cause it — and it happened here, on a second
+    // build in the same tree, and took the build down with a stack trace
+    // that says nothing about what went wrong.
+    //
+    // The directory was empty and removable the instant afterwards, so the
+    // refusal was transient, and a transient refusal is retried rather
+    // than treated as fatal.
+    const { root, out } = makeTree();
+    state.failNext = 1;
+
+    expect(() => cleanDistDir(out)).not.toThrow();
+
+    expect(existsSync(out)).toBe(false);
+    // It really did try more than once.
+    expect(state.rmdirCalls.length).toBeGreaterThan(1);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('gives up rather than trying for ever', () => {
+    // A retry with no bound is a hang wearing a disguise. When the
+    // directory is genuinely not going to be removed, the refusal has to
+    // surface — with the reason it gave.
+    const { root, out } = makeTree();
+    state.failNext = 99;
+
+    expect(() => cleanDistDir(out)).toThrow(/ENOTEMPTY/);
+
     rmSync(root, { recursive: true, force: true });
   });
 });
