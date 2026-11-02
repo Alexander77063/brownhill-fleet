@@ -1,8 +1,8 @@
 # In-app Accounting Module — Design Spec
 
 **Date:** 2026-09-26
-**Status:** Implemented. Rules #1 and #2 are live (2026-11-01); the invoice
-void reversal is the next piece out. See §2 for what each rule's call site is.
+**Status:** Implemented. Rules #1 and #2 are live (2026-11-01), and so is the
+invoice void reversal (2026-11-01). See §2 for what each rule's call site is.
 **Builds on:** `docs/superpowers/specs/2026-09-24-brownhill-hosted-on-namecheap-design.md` (PR #79, merged), `docs/superpowers/plans/2026-09-24-brownhill-hosted-on-namecheap.md`, and the existing `docs/superpowers/specs/2026-07-19-sp-b-connect-payments-design.md` (the payments design that this module extends).
 
 ---
@@ -118,10 +118,13 @@ idempotent on the journal's `(tenant, source_type, source_id)` key:
 | #2 | `src/lib/payments/ingest.ts` | The payment and its ledger entry are **one transaction**, so a receipt cannot exist without its ledger entry — and a receipt cannot be recorded into a period the ledger has shut. |
 | #1 (historical) | `supabase/migrations/0086_accounting_gl_backfill.sql` | The same two rules, applied to the invoices and payments a deployment **already had**. Idempotent: a second run changes nothing. |
 
-The reversal below (invoice voided) is still to come — `journal_source_type`
-already carries `invoice_void` and `audit_action` already carries
-`invoice_voided`, so the schema has the vocabulary and the product does not
-yet have the path.
+The invoice void reversal is live as of 2026-11-01. `journal_source_type`
+carries `invoice_void` and `audit_action` carries `invoice_voided`, and the
+path now exists: `src/lib/accounting/invoice-void.ts` does the work,
+`src/lib/accounting/journal.ts` → `postReversalJournal` writes the posting,
+and `POST /api/v1/accounting/invoices/{id}/void` is the operator's door onto
+it. The reversal lands in **the invoice's own period**, not the period the
+operator happens to click in — and the operator is asked to type the reason.
 
 | # | Trigger | Lines (Dr / Cr) | Source link |
 |---|---|---|---|
@@ -136,8 +139,26 @@ Reversals (void / refund):
 
 | Trigger | Lines |
 |---|---|
-| Invoice voided (operator action) | Same three lines as rule #1, all amounts negated. `source_type='invoice_void'`. |
-| Refund / credit note (negative `invoices` row) | Same three lines as rule #1, all amounts negated. `source_type='credit_note'`. |
+| Invoice voided (operator action) | **Dr** Revenue (4000) — net / **Dr** VAT Output (2200) — VAT / **Cr** Trade Debtors (1100) — the part still owed (`gross − received`), written only when it is above zero / **Cr** Refunds Payable (2120) — the part already received, written only when it is above zero. `source_type='invoice_void'`. |
+| Refund / credit note (negative `invoices` row) | **Not built.** The vocabulary is there — `accounting.journal_source_type` has `credit_note` and `accounting.audit_action` has `credit_note_issued` — but nothing writes either, and there is no operator route onto it. |
+
+The invoice void is **not** rule #1 negated. Rule #1 debited Trade Debtors for
+the whole gross; the reversal cannot credit the whole gross, because the
+invoice's own payment already credited it. Splitting the gross into the part
+still owed and the part already received is what keeps the trial balance
+honest: crediting Trade Debtors for the full gross would leave it at minus
+the received amount, which is not a receivable, it is a mistake.
+
+- Void an unpaid invoice → **Cr** Trade Debtors for the whole gross.
+- Void a paid invoice → **Cr** Refunds Payable for what was received, and no
+  Trade Debtors line at all. The customer is owed their money back, and that
+  is a liability.
+
+The reversal lands in the **original posting's period**, not the month the
+operator pressed the button — a correction belongs beside the document it
+corrects, so March's revenue and VAT are right without anybody having to
+remember to reopen March. The operator is asked to type the reason, and it is
+written to `accounting.audit_log` with the before/after figures.
 
 Payment provider fees (Stripe / GoCardless / Flutterwave / Paystack):
 

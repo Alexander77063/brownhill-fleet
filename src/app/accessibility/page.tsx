@@ -65,7 +65,7 @@ export default function AccessibilityPage() {
           <p className="mt-2">
             We completed a full accessibility review, first on 31 July 2026 and re-verified on{' '}
             {STATEMENT_UPDATED} when the runtime pass was restored to this deployment: both the
-            source code and the running application — 93 automated WCAG scans across 81 pages,
+            source code and the running application — 95 automated WCAG scans across 83 pages,
             in a real browser. The review remediated colour contrast across the light theme,
             added a skip link and proper table semantics throughout, gave every form control an
             accessible name, introduced announced status messages, fixed pages that scrolled

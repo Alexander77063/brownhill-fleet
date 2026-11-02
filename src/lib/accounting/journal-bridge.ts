@@ -291,6 +291,62 @@ export async function commitJournalForInvoice(
 }
 
 /**
+ * Public: commit a journal result for an invoice VOID.
+ *
+ * The reversal lands in the ORIGINAL posting's month, so `period` is the
+ * month the invoice was issued in — not the month the operator pressed the
+ * button. `commitJournalForInvoice` takes the same argument for the same
+ * reason, and a void that landed in the current month would leave the
+ * original month wrong: its revenue, its VAT and its receivables would all
+ * still carry an invoice that no longer exists.
+ *
+ * THE INVOICE'S `posted_journal_id` IS DELIBERATELY NOT MOVED.
+ *
+ * That column points at the entry that POSTED the invoice, and the AR aging,
+ * the reports and the audit trail all read it to find the entry behind a
+ * figure. Overwriting it with the reversal would make every one of them
+ * read a cancellation when they asked for an issuance. The reversal's own id
+ * is found through the journal's idempotency key —
+ * (tenant, 'invoice_void', invoice id) — and through the 'invoice_voided'
+ * audit row the void writes.
+ */
+export async function commitJournalForInvoiceVoid(
+  tx: ISql,
+  ctx: UserCtx,
+  result: PostResult,
+  invoiceId: string,
+  period?: JournalPeriod,
+): Promise<string> {
+  return persistJournal(tx, ctx, result, `Invoice ${invoiceId} voided`, period);
+}
+
+/**
+ * Public: mark an invoice void.
+ *
+ * The status is the operator's visible fact; the reversal is the ledger's.
+ * The caller writes both inside one transaction, so an invoice is never
+ * marked void without its reversal, and never reversed without being marked
+ * void.
+ *
+ * `sync_invoice_status()` never clears 'void' — it updates an invoice only
+ * when `status <> 'void'` — so a voided invoice stays void even if money is
+ * allocated against it afterwards. (The database refuses that allocation
+ * outright; migration 0082.)
+ */
+export async function markInvoiceVoid(
+  tx: ISql,
+  tenantId: string,
+  invoiceId: string,
+): Promise<void> {
+  await tx`
+    update public.invoices
+       set status = 'void'::invoice_status
+     where id = ${invoiceId}::uuid
+       and tenant_id = ${tenantId}::uuid
+  `;
+}
+
+/**
  * Public: commit a journal result for a payment. Called from the existing
  * `local-store.ts` payment confirmation path.
  *
@@ -350,12 +406,17 @@ export async function bankTransactionPeriod(
       from accounting.bank_transactions
      where id = ${bankTxId}::uuid
        and tenant_id = ${tenantId}::uuid
-  `) as Array<{ posted_at: string }>;
+  `) as Array<{ posted_at: Date }>;
   const postedAt = rows[0]?.posted_at;
   if (!postedAt) return undefined;
-  const when = new Date(postedAt);
-  if (Number.isNaN(when.getTime())) return undefined;
-  return { year: when.getUTCFullYear(), month: when.getUTCMonth() + 1 };
+  // `posted_at` is a timestamptz, so postgres.js hands it over as a Date —
+  // not a string. It used to be declared a string, and the code got away with
+  // it because `new Date(aDate)` copies the instant. The declaration was a
+  // trap: the next person to reach for a string method on it would have got
+  // "posted_at.slice is not a function" at run time, on a code path that
+  // decides which month a payment lands in.
+  if (Number.isNaN(postedAt.getTime())) return undefined;
+  return { year: postedAt.getUTCFullYear(), month: postedAt.getUTCMonth() + 1 };
 }
 
 /**

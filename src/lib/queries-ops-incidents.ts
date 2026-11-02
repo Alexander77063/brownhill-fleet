@@ -15,8 +15,18 @@ export interface OpsIncidentRow {
   severity: DamageSeverity;
   description: string;
   status: DamageReportStatus;
-  createdAt: string;
-  reviewedAt: string | null;
+  /**
+   * When the report was raised.
+   *
+   * A `Date`, because that is what the column is: `driver_damage_reports.
+   * created_at` is a timestamptz and postgres.js parses it. It was declared
+   * a string, which the code got away with only because `formatDate` copies
+   * whatever it is given — the declaration was a lie, and a lie in a type is
+   * a trap for whoever writes the next line.
+   */
+  createdAt: Date;
+  /** When ops reviewed it. A timestamptz too, so a Date — or null. */
+  reviewedAt: Date | null;
   resolutionNotes: string | null;
   photoPath: string | null;
 }
@@ -51,7 +61,7 @@ export async function listOpenIncidents(tenantId: string): Promise<OpsIncidentRo
        r.created_at desc
   `) as Array<{
     id: string; vehicle_id: string; severity: string; description: string;
-    status: string; created_at: string; reviewed_at: string | null;
+    status: string; created_at: Date; reviewed_at: Date | null;
     resolution_notes: string | null; photo_path: string | null;
     vehicle_reg: string; driver_name: string;
   }>;
@@ -87,7 +97,7 @@ export async function listRecentIncidents(tenantId: string, limit = 50): Promise
      limit ${limit}
   `) as Array<{
     id: string; vehicle_id: string; severity: string; description: string;
-    status: string; created_at: string; reviewed_at: string | null;
+    status: string; created_at: Date; reviewed_at: Date | null;
     resolution_notes: string | null; photo_path: string | null;
     vehicle_reg: string; driver_name: string;
   }>;

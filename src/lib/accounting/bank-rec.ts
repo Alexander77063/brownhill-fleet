@@ -215,16 +215,25 @@ export function scoreMatch(bankTx: ParsedTransaction, payment: MatchCandidate): 
   return s;
 }
 
-/** Convenience: returns the best match candidate above threshold, or null. */
+/**
+ * Convenience: returns the best match candidate above threshold, or null.
+ *
+ * The candidate it returns carries the score it was matched at. The importer
+ * shows that number beside every auto-matched line, and the score is the only
+ * thing that tells the operator how sure the match was — so the score has to
+ * be the real one, not the threshold. Every accepted line clears the threshold
+ * by definition, so reporting the threshold reports the same number for every
+ * line on the statement and says nothing at all.
+ */
 export function bestMatch(
   bankTx: ParsedTransaction,
   candidates: MatchCandidate[],
   threshold = 0.9,
-): MatchCandidate | null {
+): (MatchCandidate & { score: number }) | null {
   let best: { c: MatchCandidate; s: number } | null = null;
   for (const c of candidates) {
     const s = scoreMatch(bankTx, c);
     if (s >= threshold && (!best || s > best.s)) best = { c, s };
   }
-  return best?.c ?? null;
+  return best ? { ...best.c, score: best.s } : null;
 }

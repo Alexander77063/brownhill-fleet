@@ -1,11 +1,17 @@
 // Small presentation helpers shared across pages.
+//
+// A date column read through postgres.js arrives as a `Date`, not a string:
+// the driver parses `timestamp` and `timestamptz` for you. Some views and
+// some legacy columns still hand over a string, so both are accepted here —
+// but the helpers are typed for what the database actually gives, so a caller
+// cannot pass a Date and be told it is a string.
 
-export function formatDate(d: string | null | undefined): string {
+export function formatDate(d: string | Date | null | undefined): string {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
-export function daysUntil(d: string | null | undefined): number | null {
+export function daysUntil(d: string | Date | null | undefined): number | null {
   if (!d) return null;
   const ms = new Date(d).getTime() - Date.now();
   return Math.ceil(ms / 86_400_000);

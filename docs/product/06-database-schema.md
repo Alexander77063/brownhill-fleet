@@ -375,7 +375,8 @@ to. The `action` column is the `accounting.audit_action` enum.
 | `period_opened` | A period row is **created** — not when it is merely looked up, which the journal bridge does on every posting | `periods.ts` |
 | `period_closed` | A period is closed | `periods.ts` |
 | `period_reopened` | A period is reopened inside the reopen window | `periods.ts` |
-| `invoice_voided`, `credit_note_issued`, `bank_import_committed`, `bank_transaction_categorised`, `bank_transaction_recategorised`, `vat_submission_attempted`, `vat_submission_succeeded`, `vat_submission_rejected`, `chart_of_accounts_seeded` | Carried by the enum since migration 0064; **none of them has a writer yet** | — |
+| `invoice_voided` | An invoice is voided by reversal — see §5.8 | `invoice-void.ts` |
+| `credit_note_issued`, `bank_import_committed`, `bank_transaction_categorised`, `bank_transaction_recategorised`, `vat_submission_attempted`, `vat_submission_succeeded`, `vat_submission_rejected`, `chart_of_accounts_seeded` | Carried by the enum since migration 0064; **none of them has a writer yet** | — |
 
 The three period actions had been in the enum since 0064 and **nothing ever
 wrote them**: a month could be closed and reopened with no record of who did
@@ -809,6 +810,87 @@ migration and compares the ledger's row counts before and after.
 
 Every posting writes its `accounting.audit_log` row, so the restored history
 is distinguishable from the history the application posted itself.
+
+### 5.8 Voiding an invoice by reversal
+
+An invoice raised by mistake has to be cancelled, and the cancellation has to
+be **in the ledger** — not only a status on the row. A void that changes the
+invoice's status but leaves the revenue on the books has moved the problem
+rather than solved it.
+
+**One transaction, five steps.** `src/lib/accounting/invoice-void.ts` owns the
+whole thing, and the caller hands it a transaction handle:
+
+1. **Lock the invoice** — `select … from public.invoices where id = $1 and
+   tenant_id = $2 for update`. Another tenant's invoice is `not_found`, not a
+   403 leak: the tenant is named in the SQL because this connection bypasses
+   RLS. An invoice already `void` is `already_void`, and the function returns
+   **without posting anything**.
+2. **Read what has been received** — the sum of the allocations joined to
+   **confirmed** payments, tenant-scoped on both sides. A `pending` or
+   `failed` payment is not money.
+3. **Find the original entry and its period** — `accounting.journal_entries`
+   where `source_type = 'invoice'` and `source_id = $invoiceId`, joined to
+   `accounting.periods` for the year and month. An invoice with no ledger
+   entry (never posted, or posted by a migration that skipped it) is voided
+   with `noLedgerEntry = true` and **no journal** — the reversal would have
+   nothing to reverse.
+4. **Post the reversal** — into the **original invoice's own month**, not the
+   current one. A March invoice voided in November belongs to March: the
+   business that raised it has already reported March, and putting the
+   reversal in November would leave March's revenue overstated and November's
+   understated. The period is read from the original entry and handed to
+   `persistJournal`, whose guard refuses a closed or locked period — the
+   route answers **409** and names the period.
+5. **Mark the invoice void and write the audit row** — the status change and
+   the `invoice_voided` audit row land in the same transaction, so a void
+   cannot happen unrecorded.
+
+**The credit is split, because a paid invoice is not a mirror.** The original
+posting is Dr Trade Debtors (1100) gross / Cr Revenue (4000) net / Cr VAT
+Output (2200) VAT. A plain mirror — Cr Trade Debtors gross — is right for an
+unpaid invoice and **wrong** for a paid one: the payment already credited
+Trade Debtors by the gross, so the account is back at zero, and a second credit
+would leave it at **−gross**, a negative asset.
+
+So the credit is split against what has actually been received:
+
+| Line | Amount | When |
+| --- | --- | --- |
+| Cr Trade Debtors (1100) | `gross − received` | Only when something is still owed |
+| Cr Refunds Payable (2120) | `received` | Only when money has been received |
+| Dr Revenue (4000) | `net` | Always |
+| Dr VAT Output (2200) | `vat` | Always |
+
+`2120 Refunds Payable` was already seeded by migration 0065, so no migration
+was needed — but the lookup is through the one chart-of-accounts module that
+**names** a missing account rather than crashing on `undefined`. A zero line is
+illegal: `check ((debit_pence > 0) <> (credit_pence > 0))` refuses a line that
+is neither, so the split lines are omitted when their amount is zero rather
+than written as `(0, 0)`.
+
+**The lock order is invoice → period.** The rent cron already holds the
+invoice's row lock when it calls the bridge (`select … for update` on the
+invoice, then the posting takes the period lock), so the void follows the same
+order. Taking the period lock first would invert against the cron and could
+deadlock.
+
+**Idempotency comes from the journal's own key.** `accounting.journal_entries`
+carries `unique (tenant_id, source_type, source_id)`, and the reversal uses
+`source_type = 'invoice_void'` with the invoice's id — so a replay cannot
+post the reversal twice, even if the guard were bypassed. `invoice.posted_journal_id`
+is deliberately **not** moved: it points at the issuance entry, and the reports
+and the receivables ageing read it.
+
+**No schema change was needed for any of this.** `accounting.journal_source_type`
+already carried `invoice_void`, `accounting.audit_action` already carried
+`invoice_voided`, and `2120` was already in the chart of accounts. What was
+missing was the writer, the operator surface and the proof — §5.8's behaviour
+is proved against a real postgres by
+`tests/integration/accounting/invoice-void.test.ts` (8 cases: the original
+month, exact ledger cancellation, the status and the audit row, the paid
+invoice's 2120 credit, the double void, the closed period, the cross-tenant
+refusal and the invoice with no ledger entry).
 
 ## 6. Other invariants worth knowing
 

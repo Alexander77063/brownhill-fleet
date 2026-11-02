@@ -29,6 +29,7 @@ import {
   type Pounds,
 } from '@/lib/accounting/bank-rec';
 import { summarizeImport } from '@/lib/accounting/bank-import-summary';
+import { jsonSafe } from '@/lib/accounting/json';
 import { commitJournalForBankTransaction } from '@/lib/accounting/journal-bridge';
 import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import { postBankReceiptJournal } from '@/lib/accounting/journal';
@@ -210,7 +211,11 @@ export async function POST(req: NextRequest) {
   const matches = new Map<number, { paymentId: string; score: number }>();
   for (let i = 0; i < parsed.transactions.length; i++) {
     const m = bestMatch(parsed.transactions[i], candidateShapes, AUTO_MATCH_THRESHOLD);
-    if (m) matches.set(i, { paymentId: m.paymentId, score: AUTO_MATCH_THRESHOLD });
+    // The score the line was MATCHED at, not the threshold it had to clear.
+    // Every accepted line clears the threshold by definition, so recording the
+    // threshold told the operator the same confidence for every line on the
+    // statement — a perfect match and a marginal one both claimed 90%.
+    if (m) matches.set(i, { paymentId: m.paymentId, score: m.score });
   }
 
   // Look up the AR account once; we need it to post the matching journal
@@ -318,10 +323,21 @@ export async function POST(req: NextRequest) {
   }
 
   const summary = summarizeImport(parsed, matches);
-  return NextResponse.json({
-    ok: true,
-    bankImportId,
-    inserted: insertedByIndex.size,
-    summary,
-  });
+  // The summary carries money as BigInt and dates as Date. `NextResponse.json`
+  // calls `JSON.stringify`, which THROWS on a BigInt — so before this, a
+  // SUCCESSFUL import answered 500 "Do not know how to serialize a BigInt"
+  // with the rows already written and the money already in. The operator was
+  // told their import had failed when it had worked, and would import again.
+  //
+  // `jsonSafe` puts the pence on the wire as strings, which is what the
+  // client component on the import page already expects: its `SummaryRow`
+  // says `amountPence: string` and its formatter calls `BigInt(p)`.
+  return NextResponse.json(
+    jsonSafe({
+      ok: true,
+      bankImportId,
+      inserted: insertedByIndex.size,
+      summary,
+    }),
+  );
 }

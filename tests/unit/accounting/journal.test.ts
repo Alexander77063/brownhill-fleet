@@ -19,6 +19,7 @@ const COA = {
   vatPayable:{ id: '2210-id' },
   bankGl:    { id: '1200-id' },
   bankCharges:{ id: '5910-id' },
+  refundsPayable: { id: '2120-id' },
 };
 
 describe('postInvoiceJournal (Rule #1)', () => {
@@ -140,6 +141,111 @@ describe('postReversalJournal (void + credit note)', () => {
     );
     expect(void_.sourceType).toBe('invoice_void');
     expect(creditNote.sourceType).toBe('credit_note');
+  });
+});
+
+describe('postReversalJournal — voiding an invoice', () => {
+  // THE PAID CASE
+  // ------------
+  // The design spec (§ "Operational / UX errors") says a paid invoice can be
+  // voided: "Void is allowed. Reversal entry plus a refund liability entry
+  // against a 2120 Refunds-Payable account."
+  //
+  // The reason a plain mirror of rule #1 is wrong for a paid invoice is
+  // arithmetic, not taste. The invoice DEBITED Trade Debtors for the gross
+  // and the payment CREDITED it for the gross, so the account is already at
+  // zero. A reversal that credits Trade Debtors again leaves it at MINUS the
+  // gross — a negative asset — when what is actually true is that the money
+  // has been received and is now owed back. That is a liability, and the
+  // chart of accounts has one: 2120 Refunds Payable.
+  //
+  // So the credit side of a void is SPLIT: the part still owed goes back to
+  // Trade Debtors, and the part already received becomes a refund the
+  // operator still owes the customer.
+
+  it('credits Trade Debtors with the whole invoice when nothing has been received', () => {
+    const r = postReversalJournal({
+      sourceId: 'inv-void-2',
+      sourceType: 'invoice_void',
+      invoice: { net: 100_000n, vat: 20_000n, gross: 120_000n },
+      chartOfAccounts: {
+        ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput,
+        refundsPayable: COA.refundsPayable,
+      },
+      receivedPence: 0n,
+    });
+    expect(r.lines).toHaveLength(3);
+    expect(r.lines.find(l => l.accountId === COA.ar.id)?.creditPence).toBe(120_000n);
+    expect(r.lines.find(l => l.accountId === COA.refundsPayable.id)).toBeUndefined();
+    expect(r.sumDebits).toBe(r.sumCredits);
+  });
+
+  it('credits Refunds Payable — not Trade Debtors — when the invoice has been paid', () => {
+    const r = postReversalJournal({
+      sourceId: 'inv-void-3',
+      sourceType: 'invoice_void',
+      invoice: { net: 100_000n, vat: 20_000n, gross: 120_000n },
+      chartOfAccounts: {
+        ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput,
+        refundsPayable: COA.refundsPayable,
+      },
+      receivedPence: 120_000n,
+    });
+    // No Trade Debtors line at all: the account is already at zero.
+    expect(r.lines.find(l => l.accountId === COA.ar.id)).toBeUndefined();
+    expect(r.lines.find(l => l.accountId === COA.refundsPayable.id)?.creditPence).toBe(120_000n);
+    // The revenue and the VAT are still reversed in full.
+    expect(r.lines.find(l => l.accountId === COA.revenue.id)?.debitPence).toBe(100_000n);
+    expect(r.lines.find(l => l.accountId === COA.vatOutput.id)?.debitPence).toBe(20_000n);
+    expect(r.sumDebits).toBe(r.sumCredits);
+  });
+
+  it('splits the credit when the invoice is only part-paid', () => {
+    const r = postReversalJournal({
+      sourceId: 'inv-void-4',
+      sourceType: 'invoice_void',
+      invoice: { net: 100_000n, vat: 20_000n, gross: 120_000n },
+      chartOfAccounts: {
+        ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput,
+        refundsPayable: COA.refundsPayable,
+      },
+      receivedPence: 50_000n,
+    });
+    expect(r.lines.find(l => l.accountId === COA.ar.id)?.creditPence).toBe(70_000n);
+    expect(r.lines.find(l => l.accountId === COA.refundsPayable.id)?.creditPence).toBe(50_000n);
+    expect(r.sumDebits).toBe(r.sumCredits);
+    expect(r.sumCredits).toBe(120_000n);
+  });
+
+  it('refuses a reversal that claims more money than the invoice is worth', () => {
+    expect(() =>
+      postReversalJournal({
+        sourceId: 'inv-void-5',
+        sourceType: 'invoice_void',
+        invoice: { net: 100_000n, vat: 20_000n, gross: 120_000n },
+        chartOfAccounts: {
+          ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput,
+          refundsPayable: COA.refundsPayable,
+        },
+        receivedPence: 120_001n,
+      }),
+    ).toThrow(/received/i);
+  });
+
+  it('refuses to reverse a paid invoice when there is no Refunds Payable account', () => {
+    // Silently crediting Trade Debtors instead would leave the ledger wrong
+    // and nothing would say so. The posting has to stop.
+    expect(() =>
+      postReversalJournal({
+        sourceId: 'inv-void-6',
+        sourceType: 'invoice_void',
+        invoice: { net: 100_000n, vat: 20_000n, gross: 120_000n },
+        chartOfAccounts: {
+          ar: COA.ar, revenue: COA.revenue, vatOutput: COA.vatOutput,
+        },
+        receivedPence: 120_000n,
+      }),
+    ).toThrow(/2120/);
   });
 });
 
