@@ -57,7 +57,12 @@ wait_for_app || fail "the application is not answering at $DRILL_APP_URL"
 
 RT_TENANT_ID="$(new_uuid)"
 RT_USER_ID="$(new_uuid)"
-RT_STAMP="$(date +%s)$$"
+# The stamp names this fixture's tenant, so it is derived from that tenant's
+# own id — the primary key of the row it is about to become. It goes into
+# the tenant's slug, the user's email and the vehicle's registration, and all
+# three of those are unique, so a stamp that repeats is a duplicate key in
+# three different places. See hosted/tests/chaos/lib/stamp.sh.
+RT_STAMP="$(new_stamp "$RT_TENANT_ID")"
 RT_EMAIL="round-trip-$RT_STAMP@chaos.invalid"
 RT_PASSWORD="round-trip-$RT_STAMP-$$"
 RT_REGISTRATION="RT-$RT_STAMP"

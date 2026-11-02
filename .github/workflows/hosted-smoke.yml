@@ -353,6 +353,24 @@ jobs:
         run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
+      - name: Two fixtures cannot share a stamp
+        # Every drill stamps its rows with a token, and that token goes into
+        # a tenant's slug, a user's email, a vehicle's registration and an
+        # invoice's number — all four of which are unique. The token used
+        # to be the clock and the process id, which is unique only if two
+        # fixtures are never built in the same second by the same shell.
+        #
+        # The isolation gate below builds exactly two of them, back to
+        # back, and in CI they landed in the same second: the gate died on
+        # `duplicate key value violates unique constraint
+        # "tenants_slug_key"` before it could prove anything at all. On a
+        # slower machine it passed, because the two inserts fell into
+        # different seconds — a gate that fails on a fast machine and
+        # passes on a slow one is not a gate.
+        #
+        # This one freezes the clock, so the collision is guaranteed rather
+        # than likely, and it reads the stamp out of the files that use it.
+        run: bash hosted/tests/drill-stamp-uniqueness.sh
       - name: Two fixtures cannot see each other
         # Every drill builds its own tenant, and every drill is entitled to
         # assume that tenant holds exactly one agreement and one invoice. The

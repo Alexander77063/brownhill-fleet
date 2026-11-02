@@ -72,6 +72,14 @@
 # ── where things are ────────────────────────────────────────────────────────
 
 DRILL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The stamp. It is a rule about uniqueness, and rules that four files have
+# to agree about live in one place — so it is its own file, with no side
+# effects, and the gate that proves it reads it from here too.
+#
+# shellcheck source=stamp.sh
+source "$DRILL_LIB_DIR/stamp.sh"
+
 # The repository root. The library lives at <repo>/hosted/tests/chaos/lib, so
 # it is four levels up — lib → chaos → tests → hosted → repo.
 #
@@ -688,10 +696,15 @@ fixture_create() {
   [[ "${#periods[@]}" -gt 0 ]] || periods=("$DRILL_PERIOD")
 
   local stamp
-  stamp="$(date +%s)$$"
-
   DRILL_TENANT_ID="$(new_uuid)"
   DRILL_USER_ID="$(new_uuid)"
+
+  # The stamp names THIS tenant, so it is derived from this tenant's own
+  # id — the primary key of the row it is about to become. Two fixtures
+  # therefore cannot share a stamp unless they share a primary key, which
+  # is a promise the clock could never keep. See hosted/tests/chaos/lib/
+  # stamp.sh for how the old stamp broke it.
+  stamp="$(new_stamp "$DRILL_TENANT_ID")"
 
   local vat_code_id
   vat_code_id="$(sql_scalar "select id from accounting.vat_codes where code = 'T1' and tenant_id is null")"
@@ -865,8 +878,11 @@ DRILL_EXTRA_USER_IDS=""
 fixture_add_operator() {
   local label="${1:-Second}"
   local stamp id
-  stamp="$(date +%s)$$"
   id="$(new_uuid)"
+  # Derived from this user's own id, for the same reason the fixture's
+  # stamp is derived from the tenant's: `auth.users.email` is unique, and
+  # two drills built in the same second must not collide on it.
+  stamp="$(new_stamp "$id")"
 
   # This function is called in a command substitution, so `fail` here would
   # only end the subshell. The caller checks that an id came back.

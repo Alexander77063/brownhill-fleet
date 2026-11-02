@@ -93,6 +93,16 @@ on being true.
       assertions. The isolation gate fails when the fixture's join loses
       its tenant filter — and fails with the duplicate-invoice symptom
       of that defect, not some unrelated error.
+- [x] **hosted/tests/drill-stamp-uniqueness.sh** — PASS, 27 assertions.
+      Two fixtures built in the same second cannot share a stamp, because
+      a stamp is derived from the row's own uuid rather than from the
+      clock and the process id. The clock is frozen while the gate runs,
+      so the collision is guaranteed rather than likely — and every
+      fixture that mints a stamp (the drills, the isolation gate, the
+      round trip and the handover journey) derives it from the row's own
+      id and puts it into the unique columns it is there to protect. The
+      gate was proved to bite: putting the old clock-and-pid stamp back
+      into the round trip fails it in two independent places.
 - [x] **hosted/tests/journey/operator-journey.sh** — PASS, 70 assertions.
       The operator signed in, every operations, admin and accounting page
       answered with their own rows in them, another tenant saw none of

@@ -178,7 +178,11 @@ sql "update public.profiles set role = 'ops' where id = '$DRILL_USER_ID'" >/dev/
 # journey is testing the portals and the money — the invitation flow has its
 # own gate.
 JOURNEY_ACCOUNTANT_ID="$(new_uuid)"
-JOURNEY_ACCOUNTANT_EMAIL="journey-accountant-$(date +%s)$$@chaos.invalid"
+# The stamp names this accountant's account, so it is derived from that
+# account's own id — the primary key of the row it is about to become.
+# `auth.users.email` is unique, so a stamp that repeats is a duplicate key.
+JOURNEY_ACCOUNTANT_STAMP="$(new_stamp "$JOURNEY_ACCOUNTANT_ID")"
+JOURNEY_ACCOUNTANT_EMAIL="journey-accountant-$JOURNEY_ACCOUNTANT_STAMP@chaos.invalid"
 
 if ! sql >/dev/null <<SQL
 begin;
@@ -497,7 +501,10 @@ echo "== another tenant sees nothing of this one =="
 OTHER_TENANT_ID="$(new_uuid)"
 OTHER_OPS_USER_ID="$(new_uuid)"
 OTHER_ACCOUNTS_USER_ID="$(new_uuid)"
-OTHER_STAMP="$(date +%s)$$"
+# The stamp names the outsider tenant, so it is derived from that tenant's
+# own id. It goes into the tenant's slug and into both outsiders' emails —
+# `tenants.slug` and `auth.users.email` are all unique.
+OTHER_STAMP="$(new_stamp "$OTHER_TENANT_ID")"
 OTHER_OPS_EMAIL="journey-outsider-ops-$OTHER_STAMP@chaos.invalid"
 OTHER_ACCOUNTS_EMAIL="journey-outsider-accounts-$OTHER_STAMP@chaos.invalid"
 

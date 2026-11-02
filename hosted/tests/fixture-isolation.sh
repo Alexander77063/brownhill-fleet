@@ -61,7 +61,12 @@ drill_setup
 
 RIVAL_TENANT_ID="$(new_uuid)"
 RIVAL_USER_ID="$(new_uuid)"
-RIVAL_STAMP="$(date +%s)$$"
+# Derived from the rival's own id, for the same reason the drill's stamp is
+# derived from the drill's: this gate builds a rival tenant and then the
+# drill's own, back to back, and `tenants.slug` is unique. Two of them in
+# the same second is a duplicate key, and a duplicate key is a failure of
+# this gate, not of the thing the gate exists to test.
+RIVAL_STAMP="$(new_stamp "$RIVAL_TENANT_ID")"
 
 # The rival's teardown. It runs twice — once at the end, where a failure is
 # REPORTED, and once from the trap, where it is the fallback for a run that
