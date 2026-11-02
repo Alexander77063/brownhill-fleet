@@ -58,7 +58,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { localDb } from '@/lib/db/local';
 import { inviteDriver } from '@/lib/ops/driver-invite';
-import { signInWithPassword } from '@/lib/auth/local-store';
+import { setLocalPassword, signInWithPassword } from '@/lib/auth/local-store';
 import { deploymentProfile } from '@/lib/deployment/profile';
 import { integrationEnv } from '../../helpers/integration-env';
 
@@ -263,6 +263,55 @@ describe.skipIf(!env)(
       expect(outcome.temporaryPassword).toBeTruthy();
       const signin = await signInWithPassword(email, outcome.temporaryPassword!);
       expect(signin.ok).toBe(true);
+    });
+
+    it('refuses to take over an account that has already been signed into', async () => {
+      // An account that belongs to NO tenant is adopted — but only while
+      // nobody has ever used it.
+      //
+      // An account that HAS been signed into holds a session, and this
+      // product's sessions are stateless tokens: replacing the password does
+      // not end them, and the role a session gets is read from the database
+      // on every request. Adopting such an account would therefore hand that
+      // session this tenant's driver portal, whether or not the credential
+      // was replaced — and the operator, who only knows an email address,
+      // would not know they were doing it.
+      //
+      // So an account that has been used is REFUSED. The account is not
+      // linked, not given a membership, and its password is not touched.
+      const email = `used-${slug}@brownhill.test`;
+      const usedId = randomUUID();
+      const theirPassword = 'the-password-they-already-know';
+
+      await sql`
+        insert into auth.users (id, email, raw_user_meta_data)
+        values (${usedId}::uuid, ${email}, '{"role":"driver"}'::jsonb)
+      `;
+      await setLocalPassword(usedId, theirPassword);
+
+      // They sign in, once. That is what makes the account theirs.
+      const first = await signInWithPassword(email, theirPassword);
+      expect(first.ok).toBe(true);
+
+      await expect(
+        inviteDriver({ tenantId, email, newDriver: { full_name: 'Used Account' } }),
+      ).rejects.toThrow(/already has an account that has been used/i);
+
+      // The credential is untouched: the password they know still signs in.
+      const second = await signInWithPassword(email, theirPassword);
+      expect(second.ok).toBe(true);
+
+      // And the account was not linked into this tenant, so the session it
+      // still holds grants nothing here.
+      const memberships = (await sql`
+        select 1 from public.tenant_memberships where user_id = ${usedId}::uuid
+      `) as unknown as unknown[];
+      expect(memberships).toHaveLength(0);
+
+      const profiles = (await sql`
+        select driver_id from public.profiles where id = ${usedId}::uuid
+      `) as Array<{ driver_id: string | null }>;
+      expect(profiles[0]?.driver_id ?? null).toBeNull();
     });
   },
 );

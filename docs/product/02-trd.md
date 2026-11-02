@@ -548,6 +548,53 @@ Proved by `hosted/tests/cron-timers.sh` (48 assertions) and
 `hosted/tests/cron-timers-negative.sh` (6), which runs the same gate against
 a doctored tree with a timer removed and requires it to fail.
 
+### D18 — An account that has been signed into is never taken over
+
+**Decision.** A local account records that its password has been **used** —
+the marker `signInWithPassword` writes on a successful sign-in, in
+`auth.users.raw_user_meta_data`. The driver invite **adopts** an account that
+belongs to no tenant only while that account has never been used; an account
+that has been used is **refused**, and its credential is not touched.
+
+**Why.** The invite matches an account by email, and an email is global. An
+account with no membership anywhere looked like nobody's, so the flow adopted
+it and replaced its password. That is right for the account a failed invite
+left behind — its password is unknown to everybody — and wrong for an account
+somebody has actually signed into.
+
+The sessions in this product are **stateless tokens**: the cookie carries a
+signed JWT whose subject is the user, and the role that session gets is read
+from `tenant_memberships` on every request. So replacing a password does not
+end the session that password opened, and re-creating the membership makes
+that session work again. Adopting a used account therefore hands the old
+session this tenant's driver portal, while the operator — who knows an email
+address and nothing else — believes they have simply invited a driver.
+
+**Why a sign-in is the marker.** A credential cannot tell use from disuse: a
+failed invite leaves behind a credential nobody knows, which looks exactly
+like a used one. Only a successful sign-in proves that somebody holds the
+password, so that is what is recorded.
+
+**Why it lives in `raw_user_meta_data`.** The column exists on every account
+the local store creates, on every deployment the store runs on, and nothing
+else in the product writes it — so the marker cannot be lost. A column of its
+own would need a migration, and the hosted box only advances its schema when
+the installer runs; a fix that depends on a column that might not be there is
+a fix that does not reach the customer.
+
+**Known limitation, stated rather than hidden.** The sessions are stateless,
+so a password reset *anywhere* in the product does not by itself end an
+outstanding session. This decision removes the one path that took an account
+over on nothing but an email address. Ending the other sessions properly
+needs a session epoch that every request compares against — a change to the
+shape of every authenticated request, which belongs in its own piece of work
+rather than in a fix for one flow.
+
+Proved by `tests/integration/ops/invite-driver.test.ts`: the used account is
+refused, the password it already had still signs in, and no membership is
+created — while the account a failed invite stranded is still adopted and
+still given a working password.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)

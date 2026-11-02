@@ -42,12 +42,24 @@
  * given a membership, and handed a password that works. An account that
  * belongs to ANOTHER tenant is still refused — taking it over would move
  * somebody out of the portal they already belong to.
+ *
+ * ## An account that has been USED
+ *
+ * Adoption is for accounts nobody has ever signed into. An account that HAS
+ * been signed into holds a session, and this product's sessions are stateless
+ * tokens whose role is read from the database on every request — so adopting
+ * it would hand that session this tenant's driver portal, and replacing the
+ * password would not end it. A sign-in is what marks an account as used, and
+ * the marker is written by the sign-in itself (`localCredentialHasBeenUsed`).
+ *
+ * The operator knows an email address and nothing else, so the safe answer is
+ * to refuse and to leave the credential alone.
  */
 import { createServiceClient } from "@/lib/supabase/server";
 import { sendTenantEmail } from "@/lib/email/tenant-email";
 import { sendEmail } from "@/lib/notify";
 import { getBranding, brandDisplayName, brandEmailFrom } from "@/lib/branding";
-import { createLocalUser, setLocalPassword } from "@/lib/auth/local-store";
+import { createLocalUser, localCredentialHasBeenUsed, setLocalPassword } from "@/lib/auth/local-store";
 import { generateTemporaryPassword } from "@/lib/auth/password-reset";
 import { localDb } from "@/lib/db/local";
 import { deploymentProfile } from "@/lib/deployment/profile";
@@ -261,10 +273,25 @@ export async function inviteDriver(
       }
     }
 
-    // Nobody's account: adopt it. The credential it has is one nobody knows —
-    // it was the password of the invite that failed — so it is replaced with
-    // one the operator is handed.
+    // Nobody's account: adopt it — but only while nobody has ever used it.
+    //
+    // The credential it has is one nobody knows — it was the password of the
+    // invite that failed — so it is replaced with one the operator is handed.
+    //
+    // An account that HAS been used is a different thing entirely. Somebody
+    // signed in with that password, so they hold a session, and this
+    // product's sessions are stateless tokens whose role is read from the
+    // database on every request: linking that account here would hand the
+    // session this tenant's driver portal, and replacing the password would
+    // not end it. The operator knows an email address and nothing else, so
+    // the safe answer is to refuse — and to leave the credential alone.
     if (membershipRows.length === 0 && !deploymentProfile().supabaseAuth) {
+      if (await localCredentialHasBeenUsed(userId)) {
+        throw new Error(
+          "That email already has an account that has been used, so it cannot be taken over. " +
+            "Add them to your organisation first and invite them again, or use a different email address.",
+        );
+      }
       temporaryPassword = genTempPassword();
       await setLocalPassword(userId, temporaryPassword);
     }

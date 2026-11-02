@@ -95,9 +95,35 @@ export async function signInWithPassword(
       : { ok: false, reason: 'unknown-credentials' };
   }
 
-  // Success: clear the counter, and quietly strengthen an old hash.
+  // Success: clear the counter, quietly strengthen an old hash, and record
+  // that this credential has been used.
+  //
+  // The marker is what lets the product tell an account nobody has ever
+  // signed into — the one a failed invite leaves behind, whose password
+  // nobody knows — from an account that belongs to somebody. Only a sign-in
+  // proves that somebody holds the password; the credential's own shape
+  // cannot, because an unusable credential can look exactly like a used one.
+  //
+  // It lives in `raw_user_meta_data` because that column exists on every
+  // account this store creates, on every deployment this store runs on, and
+  // because nothing else in the product writes it — so the marker cannot be
+  // lost. A column of its own would need a migration, and the hosted box
+  // only advances its schema when the installer runs; a fix that depends on
+  // a column that might not be there is a fix that does not reach the
+  // customer.
+  //
+  // The two writes are one statement, so the marker cannot land without the
+  // sign-in or the sign-in without the marker.
   const rehashed = needsRehash(row.password_hash) ? await hashPassword(password) : null;
   await db`
+    with used as (
+      update auth.users
+      set raw_user_meta_data =
+            coalesce(raw_user_meta_data, '{}'::jsonb)
+            || jsonb_build_object('last_sign_in_at', now())
+      where id = ${row.id}
+      returning id
+    )
     update auth.local_credentials
     set failed_attempts = 0,
         locked_until = null,
@@ -266,6 +292,29 @@ export async function localHasPassword(userId: string): Promise<boolean> {
     select 1 from auth.local_credentials where user_id = ${userId} limit 1
   `) as unknown as unknown[];
   return rows.length > 0;
+}
+
+/**
+ * Has this account's password ever been used?
+ *
+ * True once somebody has signed in with it — the marker `signInWithPassword`
+ * writes on a successful sign-in. It is the difference between an account
+ * that belongs to nobody (a failed invite left it behind and nobody knows
+ * its password, so there is no session and nothing to take over) and an
+ * account that belongs to somebody, whose session is still good.
+ *
+ * False for an account that has never been signed into, and for an account
+ * that does not exist.
+ */
+export async function localCredentialHasBeenUsed(userId: string): Promise<boolean> {
+  const db = await localDb();
+  const rows = (await db`
+    select raw_user_meta_data ->> 'last_sign_in_at' as used_at
+    from auth.users
+    where id = ${userId}
+    limit 1
+  `) as Array<{ used_at: string | null }>;
+  return Boolean(rows[0]?.used_at);
 }
 
 /** True when no account exists yet, so the app can offer first-run setup. */
