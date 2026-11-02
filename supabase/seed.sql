@@ -6,6 +6,22 @@
 -- on this machine unless SEED_ALLOW_REMOTE=1.
 -- Money is in pence.
 
+-- ── the whole seed is one transaction ─────────────────────────────────────────
+-- The seed reinstates a tenant_id default for the duration of its inserts and
+-- drops it again at the bottom. That teardown is the last statement in the
+-- file, so a seed that fails partway through used to leave the default SET —
+-- which is the opposite of the state it is supposed to restore. A failed seed
+-- left the database accepting application writes that omit tenant_id, and
+-- those writes landed in the demo tenant instead of raising 23502.
+--
+-- So the file is one transaction. Postgres rolls an open transaction back when
+-- the client disconnects, and psql's ON_ERROR_STOP exits on the first error,
+-- so a failed seed now leaves the database exactly as it found it: fail-closed.
+-- Every statement below is transaction-safe (no CREATE DATABASE, no
+-- CREATE INDEX CONCURRENTLY, no VACUUM), so there is nothing that needs to be
+-- outside the transaction.
+begin;
+
 -- ── tenant attribution ──────────────────────────────────────────────────────
 -- Every row in this file belongs to the one demo tenant. Migration 0052
 -- deliberately removed the transitional tenant_id column default so that an
@@ -188,3 +204,5 @@ begin
     execute format('alter table %I alter column tenant_id drop default', t);
   end loop;
 end $$;
+
+commit;

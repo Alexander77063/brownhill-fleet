@@ -5,7 +5,7 @@ type Sb = ReturnType<typeof createServiceClient>;
 
 /** Escape text for safe interpolation into the HTML email body. Values like the
  *  tenant name are owner-controlled, so never trust them raw in markup. */
-const esc = (s: string): string =>
+export const esc = (s: string): string =>
   s
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

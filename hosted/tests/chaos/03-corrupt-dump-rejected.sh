@@ -29,6 +29,28 @@ PSQL="/opt/brownhill/pgsql/bin/psql"
 PSQL_ARGS=(-h 127.0.0.1 -p 55432 -U postgres -d postgres -tAc)
 DUMP_DIR=/var/backups/brownhill
 RECORD=/var/lib/brownhill/restore-last.json
+
+# THE PASSWORD.
+#
+# The cluster is created with `--auth-host=scram-sha-256`, so a connection
+# over TCP needs the superuser's password — and this drill connects over
+# TCP, because the socket is not where a drill that is not the postgres
+# user should be looking. Without this every query here answered "password
+# authentication failed for user postgres" on a perfectly healthy box, and
+# the drill reported "could not set app_draining=1" — which is the drill's
+# own inability to authenticate, dressed up as a fault in the box.
+#
+# The password is the box's own: PG_SUPERUSER_PASSWORD in
+# /etc/brownhill/secrets/pg.env, which is where the backup and the bootstrap
+# read it from too.
+PG_ENV=/etc/brownhill/secrets/pg.env
+if [[ ! -r "$PG_ENV" ]]; then
+  echo "FAIL: $PG_ENV is not readable, so the drill cannot authenticate to the database"; exit 1
+fi
+export PGPASSWORD="$(sed -n 's/^PG_SUPERUSER_PASSWORD=//p' "$PG_ENV" | head -1)"
+if [[ -z "$PGPASSWORD" ]]; then
+  echo "FAIL: $PG_ENV carries no PG_SUPERUSER_PASSWORD"; exit 1
+fi
 # A well-formed backup id — the id is what the script checks first, and a
 # drill that only ever exercises the id check is not a drill.
 BACKUP_ID="2026-01-01T00-00-00Z"

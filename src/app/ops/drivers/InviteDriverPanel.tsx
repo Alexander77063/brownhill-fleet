@@ -3,8 +3,23 @@
 // /ops/drivers/InviteDriverPanel — client wrapper that drives
 // inviteDriverAction via useActionState so ops sees the resulting
 // /driver/login URL + the driver's email after a successful invite.
+//
+// It also shows the temporary password, when the deployment issues one.
+//
+// WHY THE PASSWORD IS SHOWN HERE
+// -----------------------------
+//
+// A self-hosted box signs its own sessions and normally has no email provider,
+// so the welcome email goes nowhere — and the password used to live only in
+// that email. The driver was left with an account nobody could sign in to, and
+// the operator had no way to help them.
+//
+// So the password is shown on screen once, with a Copy button, exactly like
+// the operator's own password reset does. It is not stored anywhere
+// afterwards: after the operator has read it out, the only copy left is the
+// driver's.
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import { Button, CardTitle } from '@/components/ui';
 import { HelpHint } from '@/components/HelpHint';
 import {
@@ -22,6 +37,19 @@ export function InviteDriverPanel({ drivers }: { drivers: { id: string; full_nam
     async (_prev: InviteDriverResult, fd: FormData) => inviteDriverAction(fd),
     initial,
   );
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    if (!state.temporaryPassword) return;
+    try {
+      await navigator.clipboard?.writeText(state.temporaryPassword);
+      setCopied(true);
+    } catch {
+      // Clipboard access can be refused (an insecure origin, a denied
+      // permission). The password is on screen and selectable either way.
+      setCopied(false);
+    }
+  }
 
   return (
     <>
@@ -74,6 +102,34 @@ export function InviteDriverPanel({ drivers }: { drivers: { id: string; full_nam
           <p className="text-[var(--color-profit)] font-medium">
             Driver invited{state.email ? ` · ${state.email}` : ''}
           </p>
+
+          {state.temporaryPassword ? (
+            <>
+              <p className="mt-2 text-cream">Give them this temporary password:</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                {/* `min-w-0` lets the flex item shrink below its content width, and
+                    `break-all` lets the password wrap inside it. Without both, a
+                    32-character password is one unbreakable run wider than a
+                    phone, and the page scrolls sideways. */}
+                <code className="min-w-0 select-all break-all rounded bg-[rgba(0,0,0,0.35)] px-2 py-1 font-mono text-cream">
+                  {state.temporaryPassword}
+                </code>
+                <Button type="button" variant="ghost" size="sm" onClick={copy}>
+                  {copied ? 'Copied' : 'Copy'}
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                It is shown here once — read it out to them, and ask them to change it from{' '}
+                <code className="text-cream">/driver/profile</code> as soon as they are in.
+              </p>
+            </>
+          ) : (
+            <p className="mt-2 text-xs text-muted">
+              They already had an account, so no new password was issued. If they have forgotten theirs, reset
+              it from their row in the members list.
+            </p>
+          )}
+
           <p className="mt-2 text-cream">Share this link with them so they can sign in:</p>
           <pre className="mt-1 select-all whitespace-pre-wrap break-all rounded bg-[rgba(0,0,0,0.35)] px-2 py-1 text-cream">
             {state.loginUrl}

@@ -15,7 +15,7 @@ Brownhill Fleet targets **WCAG 2.1 Level AA**.
 | `pnpm lint:a11y` | `eslint-plugin-jsx-a11y` (strict) over `src/**/*.tsx` | CI, the fast lane |
 | `pnpm a11y:forms` | AST scan: every form control resolves an accessible name | CI, the fast lane |
 | `pnpm test:a11y:contrast` | arithmetic contrast assertions over the design-token set | CI, the fast lane |
-| `pnpm test:a11y` | axe-core through Chromium against the hosted build — **93 scans across 81 pages** | CI, the `a11y` workflow |
+| `pnpm test:a11y` | axe-core through Chromium against the hosted build — **95 scans across 83 pages** | CI, the `a11y` workflow |
 
 `pnpm a11y` runs the three static checks together.
 
@@ -55,18 +55,18 @@ Against a stack that is already up, `A11Y_BASE_URL` is what tells the harness
 not to start a second one: the build under test is the one in the container,
 not a copy of it.
 
-**What it scans.** 93 axe analyses across 81 pages:
+**What it scans.** 95 axe analyses across 83 pages:
 
 | Pass | Scans | Pages |
 |---|---|---|
 | Public — sign-in, legal, the statement | 9 | 8 |
-| Operator — operations, admin and the admin side of accounting | 42 | 42 |
-| Finance — the accountant's own console | 18 | 18 |
+| Operator — operations, admin and the admin side of accounting | 44 | 44 |
+| Finance — the accountant's own console | 19 | 19 |
 | Investor | 1 | 1 |
 | Driver | 9 | 9 |
 | Reflow at 320 CSS px (WCAG 1.4.10) | 10 | — (already scanned) |
 | Signing — the tokenised agreement pages | 4 | 3 |
-| **Total** | **93** | **81** |
+| **Total** | **95** | **83** |
 
 The route lists live in [`tests/a11y/routes.ts`](../../tests/a11y/routes.ts),
 and [`tests/unit/a11y-coverage.test.ts`](../../tests/unit/a11y-coverage.test.ts)

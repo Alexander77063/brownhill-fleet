@@ -13,6 +13,7 @@
  */
 import { hashPassword, needsRehash, verifyPassword } from './password';
 import { closeBootstrapWindow, isBootstrapPending } from '@/lib/app-state';
+import type { PortalRole } from '@/lib/iam';
 
 export interface LocalUser {
   id: string;
@@ -120,7 +121,15 @@ async function decoyHash(): Promise<string> {
   return decoy;
 }
 
-export type LocalUserRole = 'ops' | 'driver' | 'investor' | 'owner';
+/**
+ * The portal a local account is created with.
+ *
+ * These are the portal roles — not the tenant roles. The two are different
+ * vocabularies (see `portalRoleFor` in `@/lib/iam`), and the account is
+ * created with the portal so the sign-up trigger, which maps portal roles to
+ * themselves, puts the new colleague in the right app.
+ */
+export type LocalUserRole = PortalRole;
 
 /**
  * Create a user with a password. Used by first-run setup and driver invites.

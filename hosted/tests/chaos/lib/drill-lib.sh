@@ -151,6 +151,40 @@ sql() {
   fi
 }
 
+# A SQL FILE, through the same client.
+#
+# The RLS proof is a script, not a query: it opens its own transaction,
+# switches role, and ends in ROLLBACK. It cannot be sent with `-c`.
+sql_file() {
+  local file="$1"
+  [[ -r "$file" ]] || fail "the SQL file $file is not readable"
+  if [[ "${#DRILL_PSQL_CMD[@]}" -eq 0 ]]; then
+    fail "the database client was never set up — call drill_setup first"
+  fi
+  "${DRILL_PSQL_CMD[@]}" <"$file"
+}
+
+# The RLS proof, wherever this deployment keeps it.
+#
+# On the box it is staged next to the rest of the SQL by
+# hosted/scripts/fetch-runtime.sh. It used to be read out of the operator's
+# git working copy at /opt/brownhill/repo, which does not exist on a box
+# deployed from a tarball — so the drill that exists to prove the policies
+# still hold could not find the proof.
+rls_proof_path() {
+  local candidate
+  for candidate in \
+    "$DRILL_REPO/standalone/sql/portable-rls-proof.sql" \
+    "/opt/brownhill/sql/portable-rls-proof.sql" \
+    "/opt/brownhill/repo/standalone/sql/portable-rls-proof.sql"; do
+    if [[ -r "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # One value, whitespace stripped.
 #
 # A failing query is recorded and reported, rather than swallowed. The value
@@ -168,6 +202,30 @@ sql_scalar() {
     sed 's/^/    /' "$DRILL_TMP/sql.err" >&2
   fi
   printf '%s' "$out" | tr -d '[:space:]'
+}
+
+# Text, exactly as the database holds it.
+#
+# `sql_scalar` strips EVERY space, which is right for a number and ruinous
+# for a sentence: the operator's reason on a void is "raised against the
+# wrong vehicle", and read through `sql_scalar` it comes back as
+# "raisedagainstthewrongvehicle" — which then never matches the text the
+# drill was comparing it against, and the drill reports a product fault that
+# is not there.
+#
+# This keeps the text: only the trailing newline psql adds is gone, and
+# `$( )` has already removed it.
+sql_text() {
+  local out rc
+  out="$(sql "$@" 2>"$DRILL_TMP/sql.err")"
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    printf 'query failed (exit %s): %s\n' "$rc" "$*" >>"$DRILL_SQL_ERRORS"
+    sed 's/^/    /' "$DRILL_TMP/sql.err" >>"$DRILL_SQL_ERRORS"
+    echo "  · the database refused a query: $*" >&2
+    sed 's/^/    /' "$DRILL_TMP/sql.err" >&2
+  fi
+  printf '%s' "$out"
 }
 
 # The result of a drill: the counters, and the queries that failed.
@@ -290,11 +348,38 @@ setup_compose() {
   note "driving the compose stack (app: $DRILL_APP_URL)"
 }
 
+# The box's database password.
+#
+# The cluster is created with `--auth-host=scram-sha-256`, so every
+# connection over TCP needs the superuser's password — and the drill
+# connects over TCP. Without this the drill's first query answered
+#
+#     password authentication failed for user postgres
+#
+# on a perfectly healthy box, and every box-only drill died there, before it
+# had tested the thing it exists to test. A drill that fails for a reason
+# that has nothing to do with the fault is worse than no drill.
+#
+# The password is the box's own: PG_SUPERUSER_PASSWORD in
+# /etc/brownhill/secrets/pg.env — the same file the backup and the
+# bootstrap read it from.
+box_pg_password() {
+  local file="/etc/brownhill/secrets/pg.env"
+  [[ -r "$file" ]] \
+    || fail "the box has no readable $file, so the drill cannot authenticate to the database"
+  local pw
+  # The whole rest of the line is the password: it may contain '='.
+  pw="$(sed -n 's/^PG_SUPERUSER_PASSWORD=//p' "$file" | head -1)"
+  [[ -n "$pw" ]] || fail "$file carries no PG_SUPERUSER_PASSWORD"
+  export PGPASSWORD="$pw"
+}
+
 setup_systemd() {
   [[ "$(id -u)" -eq 0 ]] || fail "driving the deployed box needs root — it restarts the service"
   need systemctl
   DRILL_PSQL_CMD=(/opt/brownhill/pgsql/bin/psql -h 127.0.0.1 -p 55432 -U postgres -d postgres -tAq -v ON_ERROR_STOP=1)
   [[ -x /opt/brownhill/pgsql/bin/psql ]] || fail "/opt/brownhill/pgsql/bin/psql is not present"
+  box_pg_password
   DRILL_APP_URL="${DRILL_APP_URL:-https://127.0.0.1}"
 
   # The secret the unit gives the application. The unit reads it from a file
@@ -311,6 +396,76 @@ setup_systemd() {
   [[ -n "$DRILL_JWT_SECRET" ]] || fail "the secret file carries no signing secret"
 
   note "driving the deployed box (app: $DRILL_APP_URL)"
+}
+
+# ── the database, under the drill's hand ────────────────────────────────────
+#
+# A drill that kills the database has to be able to bring it back, and it
+# has to bring it back the way THIS deployment starts it: the compose
+# stack's container, or the box's systemd unit. Both paths exist because
+# both deployments exist — and a drill that can only be run on one of them
+# is a drill that is only ever run on one of them.
+#
+# The compose path is not decoration. It is what lets these two drills run
+# in CI, and a monthly exercise that only happens when the customer
+# remembers to run it is a monthly exercise that has not happened.
+db_kill_hard() {
+  case "$DRILL_APP_CONTROL" in
+    compose)
+      docker compose -f "$DRILL_COMPOSE_FILE" kill -s SIGKILL postgres >/dev/null 2>&1
+      ;;
+    systemd)
+      systemctl kill -s SIGKILL postgresql.service
+      ;;
+    *)
+      fail "there is no database here to kill"
+      ;;
+  esac
+}
+
+db_start() {
+  case "$DRILL_APP_CONTROL" in
+    compose)
+      docker compose -f "$DRILL_COMPOSE_FILE" up -d --no-deps postgres >/dev/null 2>&1
+      ;;
+    systemd)
+      systemctl start postgresql.service
+      ;;
+    *)
+      fail "there is no database here to start"
+      ;;
+  esac
+  # The container's id is looked up again: a container that was killed and
+  # started again can come back under a different id, and the drill holds
+  # the old one in DRILL_PG_CID.
+  if [[ "$DRILL_APP_CONTROL" == "compose" ]]; then
+    DRILL_PG_CID="$(docker compose -f "$DRILL_COMPOSE_FILE" ps -q postgres 2>/dev/null || true)"
+  fi
+}
+
+db_restart() {
+  case "$DRILL_APP_CONTROL" in
+    compose)
+      docker compose -f "$DRILL_COMPOSE_FILE" restart postgres >/dev/null 2>&1
+      ;;
+    systemd)
+      systemctl restart postgresql.service
+      ;;
+    *)
+      fail "there is no database here to restart"
+      ;;
+  esac
+  if [[ "$DRILL_APP_CONTROL" == "compose" ]]; then
+    DRILL_PG_CID="$(docker compose -f "$DRILL_COMPOSE_FILE" ps -q postgres 2>/dev/null || true)"
+  fi
+}
+
+# Is the database answering? This asks the DATABASE, and it deliberately
+# records nothing on failure: the drill expects the database to be gone for
+# a moment, and a recorded error would turn the outage the drill caused
+# into the failure the drill reports.
+db_answers() {
+  sql "select 1" >/dev/null 2>&1
 }
 
 # ── the stub HMRC ───────────────────────────────────────────────────────────
@@ -597,7 +752,8 @@ insert into public.agreements
 select gen_random_uuid(), 'standard', v.id, d.id, 'draft', make_date($year::int, $month::int, 1),
        12000, 10000, 2000, '$DRILL_TENANT_ID'
   from public.vehicles v, public.drivers d
- where v.registration = 'CHAOS-$stamp' and d.full_name = 'Chaos Drill';
+ where v.tenant_id = '$DRILL_TENANT_ID'
+   and d.tenant_id = '$DRILL_TENANT_ID';
 $invoices
 $periods_sql
 
@@ -606,6 +762,35 @@ SQL
   then
     fail "the drill's tenant could not be created"
   fi
+
+  # THE FIXTURE MUST BE ISOLATED FROM EVERY OTHER FIXTURE.
+  #
+  # This used to join the tenant's vehicle against every driver in the
+  # database whose name was 'Chaos Drill' — with no tenant filter. One
+  # driver of that name is expected; two is a cross join, and a cross join
+  # here means two agreements, and two agreements means two invoices with
+  # the SAME number, and `invoices.number` is unique. The fixture then died
+  # with "duplicate key value violates unique constraint" — a failure that
+  # looks like a database fault and is not one.
+  #
+  # It is not a hypothetical. The handover journey holds its own fixture
+  # open while the accounting gate builds a second one, and that is exactly
+  # when it bit: the second fixture saw the first one's driver and made two
+  # agreements. Any two drills running at once, or a drill left behind by a
+  # killed run, would do the same.
+  #
+  # So the fixture now asserts its own isolation, here, where the mistake
+  # was. A fixture that cannot see that it has been polluted fails loudly at
+  # creation instead of failing confusingly three assertions later.
+  local made_agreements made_invoices
+  made_agreements="$(sql_scalar "select count(*) from public.agreements
+                                  where tenant_id = '$DRILL_TENANT_ID'")"
+  made_invoices="$(sql_scalar "select count(*) from public.invoices
+                                where tenant_id = '$DRILL_TENANT_ID'")"
+  [[ "$made_agreements" == "1" ]] \
+    || fail "the fixture made $made_agreements agreements, expected 1 — it is not isolated from another fixture"
+  [[ "$made_invoices" == "${#periods[@]}" ]] \
+    || fail "the fixture made $made_invoices invoices, expected ${#periods[@]} — it is not isolated from another fixture"
 
   ok "the drill's own tenant exists, with a VAT-bearing invoice for ${periods[*]}"
 }
@@ -738,6 +923,8 @@ fixture_destroy() {
   #   bank_accounts    → tenants, chart_of_accounts
   #   periods          → tenants, auth.users
   #   audit_log        → tenants, auth.users
+  #   payment_allocations → payments, invoices
+  #   payments         → tenants, agreements, drivers, bank_accounts
   #   invoices         → tenants, agreements, vat_codes
   #   agreements       → tenants, drivers, vehicles
   #   tenant_memberships → tenants, profiles
@@ -769,6 +956,8 @@ delete from accounting.periods where tenant_id = '$DRILL_TENANT_ID';
 delete from accounting.audit_log where tenant_id = '$DRILL_TENANT_ID';
 delete from accounting.firs_credentials where tenant_id = '$DRILL_TENANT_ID';
 
+delete from public.payment_allocations where tenant_id = '$DRILL_TENANT_ID';
+delete from public.payments where tenant_id = '$DRILL_TENANT_ID';
 delete from public.invoices where tenant_id = '$DRILL_TENANT_ID';
 delete from public.agreements where tenant_id = '$DRILL_TENANT_ID';
 delete from public.drivers where tenant_id = '$DRILL_TENANT_ID';
@@ -834,7 +1023,20 @@ drill_sweep_leftovers() {
                               where email like 'chaos-drill-%@chaos.invalid'
                                 and created_at < now() - interval '2 hours'")"
 
+  # The assertion is UNCONDITIONAL, and that is the point.
+  #
+  # Both branches assert the same invariant: no debris from an earlier, killed
+  # drill survives into this one. The branch that had something to remove says
+  # so; the branch that found nothing says that too. What it must NOT do is
+  # stay silent, because a silent branch makes the drill's assertion COUNT
+  # depend on the state the database happened to be in when the drill started
+  # — 69 on a clean run, 70 on the run after a killed drill — and a number
+  # that moves on its own is a number the handover cannot publish.
+  #
+  # So the count is the same on every run, and what the run proves is the
+  # same on every run: the debris is gone.
   if [[ "${stale_tenants:-0}" -eq 0 && "${stale_users:-0}" -eq 0 ]]; then
+    ok "there were no leftovers of earlier, killed drills"
     return 0
   fi
 
@@ -843,79 +1045,69 @@ drill_sweep_leftovers() {
   if ! sql >/dev/null 2>"$DRILL_TMP/sweep.err" <<SQL
 begin;
 
+-- The stale drill tenants, NAMED ONCE.
+--
+-- Every delete below joins on this table. It used to spell the predicate out
+-- again in each statement — sixteen copies of the same four lines — and the
+-- copies drifted: two of them needed two closing parentheses (the
+-- `vat_submission_id` selects nest a second `in (select ...)` inside the
+-- first) and the other fourteen needed one, but all sixteen were written
+-- with two. Postgres read the extra parenthesis as "syntax error at or near
+-- ')'" and the whole sweep aborted.
+--
+-- The bug was LATENT, which is the worst way for it to be: the sweep only
+-- reaches this SQL when there ARE leftovers, so it passed on every run where
+-- the previous drill had cleaned up after itself — and then failed on
+-- exactly the run it existed for, the one after a drill was killed. Every
+-- drill that follows a killed drill died at the sweep, before testing
+-- anything, and left its own debris behind for the next one.
+--
+-- One table, one predicate, and the parentheses are now the only thing left
+-- to get right — and a nested `in (select ...)` is easy to count.
+create temporary table stale_drill_tenants on commit drop as
+  select id from public.tenants
+   where name = 'Chaos Drill' and slug like 'chaos-drill-%'
+     and created_at < now() - interval '2 hours';
+
 delete from accounting.vat_return_lines
  where vat_submission_id in (select id from accounting.vat_submissions
-   where tenant_id in (select id from public.tenants
-                        where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                          and created_at < now() - interval '2 hours'));
+   where tenant_id in (select id from stale_drill_tenants));
 delete from accounting.filing_artifacts
  where vat_submission_id in (select id from accounting.vat_submissions
-   where tenant_id in (select id from public.tenants
-                        where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                          and created_at < now() - interval '2 hours'));
+   where tenant_id in (select id from stale_drill_tenants));
 delete from accounting.vat_submissions
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours');
+ where tenant_id in (select id from stale_drill_tenants);
 
 delete from accounting.journal_lines
  where journal_id in (select id from accounting.journal_entries
-   where tenant_id in (select id from public.tenants
-                        where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                          and created_at < now() - interval '2 hours'));
+   where tenant_id in (select id from stale_drill_tenants));
 delete from accounting.bank_transactions
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.journal_entries
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.bank_imports
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.tenant_accounting_settings
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.bank_accounts
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.periods
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.audit_log
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from accounting.firs_credentials
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 
 delete from public.invoices
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from public.agreements
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from public.drivers
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from public.vehicles
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 delete from public.tenant_memberships
- where tenant_id in (select id from public.tenants
-                       where name = 'Chaos Drill' and slug like 'chaos-drill-%'
-                         and created_at < now() - interval '2 hours'));
+ where tenant_id in (select id from stale_drill_tenants);
 
 delete from public.tenants
  where name = 'Chaos Drill' and slug like 'chaos-drill-%'

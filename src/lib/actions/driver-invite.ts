@@ -11,6 +11,15 @@ export interface InviteDriverResult {
   loginUrl?: string;
   /** Set when ok=true; the driver's email that was provisioned. */
   email?: string;
+  /**
+   * Set when ok=true and this deployment issues a password.
+   *
+   * A self-hosted box signs its own sessions and usually has no email
+   * provider, so the welcome email goes nowhere and the password would be
+   * lost with it. The operator is given it here instead — shown once, in the
+   * panel, so they can read it out to the driver.
+   */
+  temporaryPassword?: string;
   /** Set when ok=false; a typed error code the panel can render. */
   error?: "missing_email" | "create_failed" | "duplicate";
   /** Human-readable error text, for the panel. */
@@ -37,8 +46,9 @@ export async function inviteDriverAction(
     return { ok: false, error: "missing_email", message: "Login email is required so the driver can sign in." };
   }
 
+  let outcome: Awaited<ReturnType<typeof inviteDriver>>;
   try {
-    await inviteDriver({
+    outcome = await inviteDriver({
       tenantId: ctx.tenantId,
       email,
       driverId: driverId || undefined,
@@ -61,5 +71,5 @@ export async function inviteDriverAction(
   const base = `${proto}://${host}`;
   const loginUrl = `${base}/driver/login`;
 
-  return { ok: true, email, loginUrl };
+  return { ok: true, email, loginUrl, temporaryPassword: outcome.temporaryPassword };
 }

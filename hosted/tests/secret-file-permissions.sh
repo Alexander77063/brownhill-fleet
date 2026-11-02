@@ -10,6 +10,7 @@
 #   pg.env          the database superuser password
 #   jwt.env         the JWT signing secret the data API signs with
 #   bootstrap.env   the HMAC key the first-run setup endpoint verifies against
+#   cron.env        the token the scheduled jobs present
 #   mtd.env         the HMRC client id and client secret
 #   backup.env      the off-host backup credentials
 #
@@ -360,7 +361,7 @@ fi
 echo
 echo "== 6: every credential goes through the writer =="
 
-for name in pg.env jwt.env bootstrap.env mtd.env backup.env; do
+for name in pg.env jwt.env bootstrap.env cron.env mtd.env backup.env; do
   if grep -qE "write_secret .*/${name}\b" "$INSTALL"; then
     ok "the installer writes $name through the writer"
   else

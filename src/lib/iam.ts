@@ -87,7 +87,6 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     'subscription.manage',
     'audit.read',
   ],
-  // Finance function.
   // Finance function. The plan / spec said "view billing, expenses, VAT,
   // income, anything the accountant needs" — the per-member grant UI
   // (commit f3ed771) lets the ops admin pick exactly what each accountant
@@ -126,6 +125,58 @@ export function can(role: string, extra: readonly string[], perm: Permission): b
 export const ASSIGNABLE_ROLES = Object.keys(ROLE_PERMISSIONS) as Role[];
 export function isValidRole(role: string): role is Role {
   return (ASSIGNABLE_ROLES as string[]).includes(role);
+}
+
+/**
+ * The portal a member lands in, given the TENANT role they were added under.
+ *
+ * ## Why this is not the same list as the tenant roles
+ *
+ * A tenant role says what the person may DO; a portal role says which app
+ * they open. They are separate vocabularies, and the account's portal role and
+ * its membership role are allowed to differ — that is exactly how the first
+ * account on a box is created: an 'ops' profile with an 'owner' membership
+ * (see `createFirstUserAndTenant`). The membership decides what they may do;
+ * the profile decides where they land.
+ *
+ * ## Why 'owner' maps to 'ops' and not to 'owner'
+ *
+ * `handle_new_user` maps a raw 'owner' to the VEHICLE-owner portal, because
+ * the vehicle-owner sign-up path creates its account with that role. But
+ * 'owner' is ALSO the tenant's own full-control role, and it is the FIRST
+ * entry in the admin form's role dropdown. Sending a colleague who was added
+ * as the tenant owner to the vehicle-owner portal would route them to a portal
+ * this deployment does not have at all (`ownerPortal` is false on saas,
+ * standalone and hosted) — they would sign in and be turned away.
+ *
+ * The tenant owner operates the business, so they belong on the operations
+ * desk, which is where the first account of every box already goes.
+ *
+ * The trigger remains the database's own safety net for any path that does
+ * not come through here; this map is what the application uses when it
+ * provisions an account itself.
+ */
+export type PortalRole = 'ops' | 'accounts' | 'driver' | 'investor' | 'owner';
+
+const PORTAL_BY_TENANT_ROLE: Record<Role, PortalRole> = {
+  owner: 'ops',
+  tenant_admin: 'ops',
+  md: 'ops',
+  director_exec: 'accounts',
+  director_nonexec: 'accounts',
+  ops: 'ops',
+  accounts: 'accounts',
+  driver: 'driver',
+  investor: 'investor',
+  vehicle_owner: 'owner',
+};
+
+/**
+ * The portal for a tenant role. An unknown role falls back to 'driver', which
+ * is the same default the sign-up trigger uses — the least-privileged portal.
+ */
+export function portalRoleFor(tenantRole: string): PortalRole {
+  return PORTAL_BY_TENANT_ROLE[tenantRole as Role] ?? 'driver';
 }
 
 export type MemberStatus = 'active' | 'disabled';

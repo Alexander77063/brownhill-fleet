@@ -20,6 +20,7 @@
     "a11y:forms": "node scripts/a11y-audit.mjs",
     "test:a11y": "playwright test",
     "test:a11y:contrast": "vitest run tests/unit/a11y-contrast.test.ts",
+    "test:live": "playwright test -c playwright.live.config.ts",
     "a11y": "pnpm lint:a11y && pnpm a11y:forms && pnpm test:a11y:contrast",
     "test:axe": "playwright test",
     "test:rls": "vitest run tests/rls",
