@@ -1,0 +1,23 @@
+# hosted/systemd/brownhill-cron-complete-agreements.timer
+#
+# The daily agreement completion run.
+#
+# This is the job that closes an agreement whose term has been served, and
+# notifies the driver and the operator. It is deliberately scheduled BEFORE
+# the rent run: the rent job bills every agreement still marked `active`, so
+# completing first is what stops a finished agreement being invoiced for
+# another week.
+#
+# The schedule is the one vercel.json declares for this path ("0 5 * * *"):
+# every day at 05:00. See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill daily agreement completion (complete-agreements)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+Unit=brownhill-cron@complete-agreements.service
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,20 @@ EnvironmentFile=/etc/brownhill/secrets/app.env
 # load its environment and the application never came up at all, which is a
 # far worse answer than a deployment that simply has no HMRC connection yet.
 EnvironmentFile=-/etc/brownhill/secrets/mtd.env
+# cron.env   — CRON_SECRET, the token the scheduled jobs present.
+#
+# The APPLICATION needs it, not just the jobs that call it: the cron routes
+# are exempt from the session middleware (a scheduled call carries a bearer
+# token and no cookie), so `isCronAuthorized` in src/lib/cron.ts is the only
+# thing in front of the job that raises invoices — and it compares the header
+# against this value. Without it, every /api/cron/* call on the box answers
+# 401, which is exactly what happened: the unit set NODE_ENV=production, no
+# file supplied the secret, and so no rent invoice was ever raised.
+#
+# The file is REQUIRED here, not optional. A deployment that cannot authorise
+# a scheduled job should fail to start loudly, not start and quietly do
+# nothing.
+EnvironmentFile=/etc/brownhill/secrets/cron.env
 Environment=DEPLOYMENT_PROFILE=hosted
 Environment=NODE_ENV=production
 Environment=PORT=55431

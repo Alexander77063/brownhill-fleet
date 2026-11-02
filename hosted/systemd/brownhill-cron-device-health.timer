@@ -1,0 +1,23 @@
+# hosted/systemd/brownhill-cron-device-health.timer
+#
+# The hourly device health check.
+#
+# This raises a device_offline alert for every owned vehicle whose tracker
+# has been silent for longer than its owner allows. It is the difference
+# between "the tracker stopped" and "we noticed the tracker stopped" — and on
+# a rental fleet that is the difference between a car recovered and a car
+# written off.
+#
+# The schedule is the one vercel.json declares for this path ("0 * * * *"):
+# every hour on the hour. See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill hourly device health check (device-health)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=brownhill-cron@device-health.service
+
+[Install]
+WantedBy=timers.target

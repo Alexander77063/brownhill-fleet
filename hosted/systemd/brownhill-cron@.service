@@ -1,0 +1,60 @@
+# hosted/systemd/brownhill-cron@.service
+#
+# Runs one of the application's cron endpoints on this box.
+#
+# WHY THIS IS A TEMPLATE
+# ----------------------
+# There are nine cron routes and eight of them belong on this deployment (the
+# ninth, subscription-lifecycle, is the SaaS's billing lifecycle and is
+# switched off on the hosted profile — see src/lib/deployment/profile.ts).
+# Writing a service per job would be nine near-identical files that drift;
+# writing one service and eight timers keeps the job's identity in the timer,
+# where the schedule lives, and the calling convention in one place.
+#
+# The instance name is the cron slug, so `brownhill-cron@generate-rent.service`
+# calls /api/cron/generate-rent. The slug is checked by the script before it
+# is used to build a URL.
+#
+# THE SECRET
+# ----------
+# The cron endpoints are exempt from the session middleware — Vercel Cron
+# calls them with a bearer token and no cookie — so `isCronAuthorized`
+# (src/lib/cron.ts) is the only thing in front of the job that raises
+# invoices. It fails closed: with CRON_SECRET unset it rejects every call in
+# production.
+#
+# The secret is read here, from a file only root and the brownhill group can
+# read, and handed to the script in its environment. systemd reads the file
+# as root, so the script does not need read access to it — and the secret
+# never appears on a command line, where /proc/<pid>/cmdline would show it
+# to every account on the box.
+#
+# The file is NOT marked optional. A missing cron.env must fail this unit
+# loudly, not start a job that runs unauthenticated and quietly does nothing.
+
+[Unit]
+Description=Brownhill application cron (%i)
+# After the app, and only After.
+#
+# The job is NOT made to depend on the app with Wants=, because that would
+# make activating a timer start the application. On a freshly provisioned box
+# the app has no build yet, so the unit would restart-loop until one was
+# deployed — a flapping service caused by a timer, which is a confusing thing
+# to hand an operator.
+#
+# So the ordering is expressed and the dependency is not: the job runs on
+# its schedule, and if the app is not up the job fails with "connection
+# refused" and says so in the journal. That is the truth about the box.
+After=brownhill-next.service
+
+[Service]
+Type=oneshot
+User=brownhill
+Group=brownhill
+EnvironmentFile=/etc/brownhill/secrets/cron.env
+ExecStart=/opt/brownhill/node/bin/node /usr/local/lib/brownhill/brownhill-cron.mjs %i
+TimeoutStartSec=300
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true

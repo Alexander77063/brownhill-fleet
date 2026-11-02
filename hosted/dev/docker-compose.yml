@@ -117,6 +117,18 @@ services:
       # shorter one does. It has to be the SAME value as PostgREST's.
       JWT_SHARED_SECRET: ${JWT_SHARED_SECRET:-ci-jwt-secret-for-matrices-only-do-not-reuse}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-ci-bootstrap-token}
+      # The token the scheduled jobs present.
+      #
+      # This stack runs NODE_ENV=production, and `isCronAuthorized`
+      # (src/lib/cron.ts) fails closed there: with CRON_SECRET unset, every
+      # /api/cron/* call answers 401 — so the stack would pass every other
+      # check and still bill nobody, because the rent invoice is raised by
+      # /api/cron/generate-rent and nothing else.
+      #
+      # The value here is the DEVELOPMENT one, in the same spirit as the JWT
+      # secret above it. The box generates its own at install time and keeps
+      # it in /etc/brownhill/secrets/cron.env, which the app unit loads.
+      CRON_SECRET: ${CRON_SECRET:-ci-cron-secret-for-matrices-only-do-not-reuse}
       BROWNHILL_FQDN: brownhill.localhost
       # The HMRC settings.
       #

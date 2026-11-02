@@ -1,0 +1,29 @@
+# hosted/systemd/brownhill-cron-generate-rent.timer
+#
+# The weekly rent run.
+#
+# This is the job that raises the invoice. Without it Brownhill bills nobody:
+# the ledger's revenue column stays empty, the VAT return reports nothing,
+# and the receivables never age.
+#
+# THE SCHEDULE IS NOT INVENTED HERE
+# ---------------------------------
+# It is the one vercel.json declares for this path ("0 6 * * 1"), written in
+# systemd's calendar syntax: Mondays at 06:00. The SaaS runs this job on
+# Vercel Cron and the hosted box runs it on this timer — hosted/tests/
+# cron-timers.sh holds the two to the same schedule and refuses a drift.
+#
+# Persistent=true because the box may be down at 06:00 on a Monday. The rent
+# job backfills every missed week since the agreement's start date, so a
+# late run bills the weeks that were missed rather than skipping them.
+
+[Unit]
+Description=Brownhill weekly rent run (generate-rent)
+
+[Timer]
+OnCalendar=Mon *-*-* 06:00:00
+Persistent=true
+Unit=brownhill-cron@generate-rent.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,26 @@
+# hosted/systemd/brownhill-cron-vat-snapshot.timer
+#
+# The quarterly VAT snapshot.
+#
+# This reads the cash-basis VAT-by-quarter view and returns a snapshot: output
+# VAT recognised when the cash is received, less the input VAT on
+# company-paid maintenance. It is the reading the operator takes into the VAT
+# return.
+#
+# The schedule is the one vercel.json declares for this path
+# ("0 8 1 1,4,7,10 *"): the first of January, April, July and October, at
+# 08:00. Written in systemd's calendar syntax that is
+# `*-01,04,07,10-01 08:00:00` — month, then day.
+#
+# See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill quarterly VAT snapshot (vat-snapshot)
+
+[Timer]
+OnCalendar=*-01,04,07,10-01 08:00:00
+Persistent=true
+Unit=brownhill-cron@vat-snapshot.service
+
+[Install]
+WantedBy=timers.target

@@ -22,7 +22,7 @@ with the reasons they were made.
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
 | Tests | Vitest | 2.1.9 | `pnpm test` — 712 passing, 0 skipped, 56 files. The database-backed ones need `DATABASE_URL` |
-| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 93 scans across 81 pages of the hosted build |
+| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 95 scans across 83 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
 | Backups | Backblaze B2 (S3-compatible) via `@aws-sdk/client-s3` | 3.1094.0 | Off-host copy of the nightly dump |
@@ -108,6 +108,38 @@ The split exists so that **the maths and the rendering are testable without a
 server** — and so the on-screen report, the downloaded document and the email
 are literally the same code path. They cannot disagree, because there is only
 one of them.
+
+### 3.3 The scheduled jobs (decision D17)
+
+The application's scheduled work runs as **eight systemd timers** on the box,
+one per cron route, over a single template service:
+
+```
+brownhill-cron@.service   →  hosted/scripts/brownhill-cron.mjs <slug>
+brownhill-cron-<slug>.timer  →  OnCalendar=…  Persistent=true
+```
+
+- The **schedule** is `vercel.json`'s, because the same application runs on
+  Vercel for other deployments. `hosted/tests/cron-timers.sh` asserts that
+  the two agree, that every application cron route has a timer and that every
+  timer has a route.
+- The **caller** is `hosted/scripts/brownhill-cron.mjs`, and it is the only
+  thing on the box that knows how to present the shared secret to the
+  application. It reads `CRON_SECRET` from `/etc/brownhill/secrets/cron.env`,
+  refuses to run without one, and fails loudly when the endpoint fails — a
+  timer that exits 0 on a failed job is a timer that hides its own failures.
+- The **middleware does not claim the timer's bearer**. Every other
+  `Authorization: Bearer …` on an API path is read as a session token, and the
+  middleware answered 401 `bad_token` for one it could not parse — which on
+  the `hosted` and `standalone` profiles, the two the customer operates,
+  refused **every** scheduled job before the route's own gate could look at
+  it. `carriesItsOwnCredential` in `src/middleware.ts` exempts `/api/cron/*`
+  and `/api/automation/*`, and only those.
+
+The consequence of getting this wrong was not a slow box. It was a box that
+**billed nobody**: `/api/cron/generate-rent` is what raises the weekly rent
+invoice, so no invoice was raised, the ledger's revenue column stayed empty,
+the VAT return reported nothing and the receivables never aged.
 
 ## 4. Integrations
 
@@ -469,6 +501,53 @@ unacknowledged new line is refused; and a bank import is shown to be
 connection cannot be mistaken for a writer waiting on the lock. The gate was
 watched failing with the lock removed from the writer.
 
+### D17 — The box runs the application's scheduled jobs, and its own bearer
+
+**Decision.** Every application cron route has a **systemd timer** on the
+box, over one `brownhill-cron@.service` template that runs
+`hosted/scripts/brownhill-cron.mjs`. The schedule is `vercel.json`'s, because
+the same application runs elsewhere. The shared secret is provisioned to
+`/etc/brownhill/secrets/cron.env` and loaded by both the application and the
+timer. And the Edge middleware **does not claim a timer's bearer**: it reads
+every other `Authorization: Bearer …` on an API path as a session token.
+
+**Why.** Two omissions looked like one. `CRON_SECRET` was provisioned
+nowhere, so every `/api/cron/*` answered 401 — right of it, since
+`isCronAuthorized` fails closed when the secret is unset in production. And
+nothing called the routes: the only three timers on the box were the backup,
+the backup verify and the certbot renewal.
+
+The middleware was the third omission, and the worst one. It read every
+bearer as a session token and answered 401 `bad_token` for an API path it
+could not parse. That is fatal on exactly the profiles where the middleware
+runs at all — `hosted` and `standalone`, the two the customer operates — so
+**every scheduled job was refused before its own gate could look at it**. The
+timers fired, the secret was provisioned, the jobs were refused, and the
+health checks, which asked only "does the route answer 401 without a token?",
+were satisfied.
+
+The consequence was not a slow box but a box that **billed nobody**:
+`/api/cron/generate-rent` is what raises the weekly rent invoice, so no
+invoice was ever raised, the ledger's revenue column stayed empty, the VAT
+return reported nothing and the receivables never aged.
+
+**Why the exemption is narrow.** `carriesItsOwnCredential` exempts
+`/api/cron/*` and `/api/automation/*` and nothing else. A wider exemption
+would be an unauthenticated surface; a narrower one would leave the
+automation routes broken. `tests/unit/hosted-middleware.test.ts` asserts both
+halves — the cron route is not claimed, **and** an ordinary API path still
+is.
+
+**Why a caller and not `curl` in the timer.** `brownhill-cron.mjs` is the
+only thing on the box that knows how to present the secret, and it refuses to
+run without one and fails loudly when the endpoint fails. A timer that exits
+0 on a failed job is a timer that hides its own failures, which is how a box
+ends up billing nobody *and* reporting that it is fine.
+
+Proved by `hosted/tests/cron-timers.sh` (48 assertions) and
+`hosted/tests/cron-timers-negative.sh` (6), which runs the same gate against
+a doctored tree with a timer removed and requires it to fail.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -556,7 +635,7 @@ order, so the board's figure and the investor's figure are the same figure.
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
 | Contrast | `pnpm test:a11y:contrast` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
-| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **93 scans across 81 pages**, including the 320 px reflow pass and the tokenised signing route |
+| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **95 scans across 83 pages**, including the 320 px reflow pass and the tokenised signing route |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 The three accessibility suites — form audit, lint and contrast — all run in the
@@ -571,7 +650,7 @@ in the `hosted-smoke` workflow either — that workflow's trigger paths are the
 schema, and adding `src/**` to them would drag the migration-replay job into
 every interface change. The `a11y` workflow builds the stack from
 `hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
-scans **81 distinct pages of the hosted deployment in 93 analyses** — ten of
+scans **83 distinct pages of the hosted deployment in 95 analyses** — ten of
 those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The
 coverage numbers are computed rather than typed: `tests/a11y/routes.ts` holds
 the route lists and `tests/unit/a11y-coverage.test.ts` counts them, checks that
