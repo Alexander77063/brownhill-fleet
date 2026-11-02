@@ -13,6 +13,7 @@
  */
 import { hashPassword, needsRehash, verifyPassword } from './password';
 import { closeBootstrapWindow, isBootstrapPending } from '@/lib/app-state';
+import { lockAccountRows, SESSION_ISSUED_KEY } from './account-usage';
 import type { PortalRole } from '@/lib/iam';
 
 export interface LocalUser {
@@ -95,44 +96,94 @@ export async function signInWithPassword(
       : { ok: false, reason: 'unknown-credentials' };
   }
 
-  // Success: clear the counter, quietly strengthen an old hash, and record
-  // that this credential has been used.
+  // Success — but only if the credential is still the one that was verified.
   //
-  // The marker is what lets the product tell an account nobody has ever
-  // signed into — the one a failed invite leaves behind, whose password
-  // nobody knows — from an account that belongs to somebody. Only a sign-in
-  // proves that somebody holds the password; the credential's own shape
-  // cannot, because an unusable credential can look exactly like a used one.
+  // The password was checked against a hash read BEFORE this point, and PBKDF2
+  // at 600,000 iterations is slow enough that the world moves while it runs.
+  // In that window the credential can be replaced: by an operator resetting the
+  // password, or by an invite adopting the account and handing it a different
+  // one. A sign-in that verified the OLD password must not go on to mint a
+  // session for an account whose password has since changed — the session is
+  // stateless and lasts a month, and the adoption that replaced the password
+  // is exactly the flow that must not be able to be raced.
   //
-  // It lives in `raw_user_meta_data` because that column exists on every
-  // account this store creates, on every deployment this store runs on, and
-  // because nothing else in the product writes it — so the marker cannot be
-  // lost. A column of its own would need a migration, and the hosted box
-  // only advances its schema when the installer runs; a fix that depends on
-  // a column that might not be there is a fix that does not reach the
-  // customer.
+  // So the last thing before the success is the lock: the account's rows are
+  // taken (in the fixed order `auth.users`, then `auth.local_credentials`),
+  // the hash is read again UNDER the lock, and the password is re-checked
+  // against whatever is there now. If the credential changed, the password
+  // that was just verified no longer opens this account, and the sign-in
+  // fails.
   //
-  // The two writes are one statement, so the marker cannot land without the
-  // sign-in or the sign-in without the marker.
+  // The re-check is a second PBKDF2, but only on the rare path where the
+  // credential actually changed: in the ordinary case the hash is identical
+  // and there is nothing to re-verify.
   const rehashed = needsRehash(row.password_hash) ? await hashPassword(password) : null;
-  await db`
-    with used as (
+
+  const outcome = await db.begin(async (tx) => {
+    await lockAccountRows(tx, row.id);
+
+    const current = (await tx`
+      select password_hash, locked_until
+      from auth.local_credentials
+      where user_id = ${row.id}::uuid
+    `) as Array<{ password_hash: string; locked_until: Date | null }>;
+
+    const cred = current[0];
+    // The credential is gone. It cannot be, unless somebody deleted the
+    // account's row between the read above and this one; treat it as an
+    // unknown account rather than as a success.
+    if (!cred) return { ok: false as const, reason: 'unknown-credentials' as const };
+
+    // The lockout may have been armed while the password was being verified.
+    if (cred.locked_until && cred.locked_until > new Date()) {
+      return {
+        ok: false as const,
+        reason: 'locked' as const,
+        retryAfter: cred.locked_until,
+      };
+    }
+
+    if (cred.password_hash !== row.password_hash) {
+      // The credential changed. The password is only still valid if what
+      // replaced it was the SAME password — a quiet re-hash, or a reset to the
+      // same value — so the password is checked again against the new hash.
+      if (!(await verifyPassword(password, cred.password_hash))) {
+        return { ok: false as const, reason: 'unknown-credentials' as const };
+      }
+    }
+
+    // Clear the counter, quietly strengthen an old hash, and record that a
+    // session exists for this account.
+    //
+    // The marker is what lets the product tell an account nobody has ever
+    // signed into — the one a failed invite leaves behind, whose password
+    // nobody knows — from an account that belongs to somebody. Only a session
+    // proves that somebody got in; the credential's own shape cannot, because
+    // an unusable credential can look exactly like a used one.
+    //
+    // It is written under the same lock the adoption takes, so the two cannot
+    // interleave: either the adoption sees this marker, or this sign-in sees
+    // the password the adoption replaced.
+    await tx`
       update auth.users
       set raw_user_meta_data =
             coalesce(raw_user_meta_data, '{}'::jsonb)
-            || jsonb_build_object('last_sign_in_at', now())
-      where id = ${row.id}
-      returning id
-    )
-    update auth.local_credentials
-    set failed_attempts = 0,
-        locked_until = null,
-        password_hash = coalesce(${rehashed}, password_hash),
-        updated_at = now()
-    where user_id = ${row.id}
-  `;
+            || jsonb_build_object(${SESSION_ISSUED_KEY}::text, now())
+      where id = ${row.id}::uuid
+    `;
+    await tx`
+      update auth.local_credentials
+      set failed_attempts = 0,
+          locked_until = null,
+          password_hash = coalesce(${rehashed}, password_hash),
+          updated_at = now()
+      where user_id = ${row.id}::uuid
+    `;
 
-  return { ok: true, user: { id: row.id, email: row.email } };
+    return { ok: true as const, user: { id: row.id, email: row.email } };
+  });
+
+  return outcome;
 }
 
 /**
@@ -262,19 +313,29 @@ export async function createLocalPhoneUser(
   return { id: rows[0].id };
 }
 
-/** Replace a user's password, clearing any lock. */
+/**
+ * Replace a user's password, clearing any lock.
+ *
+ * The account's rows are locked while this happens, so it cannot interleave
+ * with a sign-in that is verifying the old password: the sign-in either
+ * finishes before the change and holds a session that was valid at the time,
+ * or it finds the new hash and re-checks the password against it.
+ */
 export async function setLocalPassword(userId: string, password: string): Promise<void> {
-  const db = await localDb();
   const hash = await hashPassword(password);
-  await db`
-    insert into auth.local_credentials (user_id, password_hash)
-    values (${userId}, ${hash})
-    on conflict (user_id) do update
-      set password_hash = excluded.password_hash,
-          failed_attempts = 0,
-          locked_until = null,
-          updated_at = now()
-  `;
+  const db = await localDb();
+  await db.begin(async (tx) => {
+    await lockAccountRows(tx, userId);
+    await tx`
+      insert into auth.local_credentials (user_id, password_hash)
+      values (${userId}::uuid, ${hash})
+      on conflict (user_id) do update
+        set password_hash = excluded.password_hash,
+            failed_attempts = 0,
+            locked_until = null,
+            updated_at = now()
+    `;
+  });
 }
 
 /**
@@ -295,26 +356,102 @@ export async function localHasPassword(userId: string): Promise<boolean> {
 }
 
 /**
- * Has this account's password ever been used?
+ * The account cannot be taken over: it belongs to somebody.
  *
- * True once somebody has signed in with it — the marker `signInWithPassword`
- * writes on a successful sign-in. It is the difference between an account
- * that belongs to nobody (a failed invite left it behind and nobody knows
- * its password, so there is no session and nothing to take over) and an
- * account that belongs to somebody, whose session is still good.
- *
- * False for an account that has never been signed into, and for an account
- * that does not exist.
+ * Raised by `adoptUnusedAccount` when the account has had a session, or when
+ * it already belongs to another tenant. It is a distinct type so the caller
+ * can tell "this account is not yours to take" from "the database is
+ * unhappy", and say the first to the operator.
  */
-export async function localCredentialHasBeenUsed(userId: string): Promise<boolean> {
+export class AccountNotAdoptableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountNotAdoptableError';
+  }
+}
+
+/**
+ * Adopt an account nobody has used, and hand it a password that works.
+ *
+ * Adoption is for the account a FAILED INVITE left behind: an `auth.users`
+ * row, a credential nobody knows, and no membership. It is NOT for an account
+ * somebody has signed into — this product's sessions are stateless tokens
+ * whose role is read from the database on every request, so adopting such an
+ * account would hand its live session this tenant's driver portal, and
+ * replacing the password would not end it.
+ *
+ * The decision and the write are ONE transaction, under the account's locks,
+ * so they cannot disagree:
+ *
+ *   * the account's rows are locked, in the fixed order;
+ *   * the marker is read under that lock — if a session has ever existed for
+ *     this account, this refuses and writes nothing;
+ *   * the membership is read under that lock too — an account that belongs to
+ *     ANOTHER tenant is somebody else's, and taking it would move them out of
+ *     the portal they already belong to;
+ *   * and only then is the password replaced.
+ *
+ * The membership that makes the account belong to THIS tenant is written
+ * afterwards, by the caller, through PostgREST — a different connection, and
+ * it cannot join this transaction. That is safe because of what has already
+ * happened by then: the account has no session (the marker says so, and the
+ * marker is read under the lock), and the credential that anybody might have
+ * known has already been replaced. There is nothing for the window to leak.
+ */
+export async function adoptUnusedAccount(
+  userId: string,
+  tenantId: string,
+  password: string,
+): Promise<void> {
+  const hash = await hashPassword(password);
   const db = await localDb();
-  const rows = (await db`
-    select raw_user_meta_data ->> 'last_sign_in_at' as used_at
-    from auth.users
-    where id = ${userId}
-    limit 1
-  `) as Array<{ used_at: string | null }>;
-  return Boolean(rows[0]?.used_at);
+
+  await db.begin(async (tx) => {
+    await lockAccountRows(tx, userId);
+
+    const state = (await tx`
+      select
+        coalesce(u.raw_user_meta_data ->> ${SESSION_ISSUED_KEY}::text, '') as issued,
+        (
+          select count(*)::int
+          from tenant_memberships m
+          where m.user_id = u.id
+            and m.tenant_id <> ${tenantId}::uuid
+        ) as elsewhere
+      from auth.users u
+      where u.id = ${userId}::uuid
+    `) as Array<{ issued: string; elsewhere: number }>;
+
+    const row = state[0];
+    if (!row) {
+      throw new AccountNotAdoptableError(
+        'That email already belongs to another account. Use a different email for this driver.',
+      );
+    }
+
+    if (row.elsewhere > 0) {
+      throw new AccountNotAdoptableError(
+        'That email already belongs to another account. Use a different email for this driver.',
+      );
+    }
+
+    if (row.issued) {
+      throw new AccountNotAdoptableError(
+        'That email already has an account that has been used, so it cannot be taken over. ' +
+          'Add them to your organisation first and invite them again, or use a different email address.',
+      );
+    }
+
+    await tx`
+      insert into auth.local_credentials (user_id, password_hash)
+      values (${userId}::uuid, ${hash})
+      on conflict (user_id) do update
+        set password_hash = excluded.password_hash,
+            failed_attempts = 0,
+            locked_until = null,
+            updated_at = now()
+    `;
+  });
 }
 
 /** True when no account exists yet, so the app can offer first-run setup. */

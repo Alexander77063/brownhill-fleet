@@ -550,17 +550,16 @@ a doctored tree with a timer removed and requires it to fail.
 
 ### D18 — An account that has been signed into is never taken over
 
-**Decision.** A local account records that its password has been **used** —
-the marker `signInWithPassword` writes on a successful sign-in, in
-`auth.users.raw_user_meta_data`. The driver invite **adopts** an account that
-belongs to no tenant only while that account has never been used; an account
-that has been used is **refused**, and its credential is not touched.
+**Decision.** A local account records that a **session has existed** for it,
+and the driver invite **adopts** an account that belongs to no tenant only
+while no session has ever existed for it. An account that has had a session
+is **refused**, and its credential is not touched.
 
 **Why.** The invite matches an account by email, and an email is global. An
 account with no membership anywhere looked like nobody's, so the flow adopted
 it and replaced its password. That is right for the account a failed invite
 left behind — its password is unknown to everybody — and wrong for an account
-somebody has actually signed into.
+somebody has actually got into.
 
 The sessions in this product are **stateless tokens**: the cookie carries a
 signed JWT whose subject is the user, and the role that session gets is read
@@ -570,10 +569,31 @@ that session work again. Adopting a used account therefore hands the old
 session this tenant's driver portal, while the operator — who knows an email
 address and nothing else — believes they have simply invited a driver.
 
-**Why a sign-in is the marker.** A credential cannot tell use from disuse: a
+**Why a session is the marker.** A credential cannot tell use from disuse: a
 failed invite leaves behind a credential nobody knows, which looks exactly
-like a used one. Only a successful sign-in proves that somebody holds the
-password, so that is what is recorded.
+like a used one. Only a session proves that somebody got in.
+
+**Why the marker is written where sessions are made.** A session is minted in
+three places — the password sign-in, the phone code and the first-run setup —
+and only one of them is a password sign-in. A marker written by the sign-in
+alone therefore misses an account whose only session came through the other
+two, and that account looks unused to the invite. So the marker is written at
+the **one place a session is minted**, `issueSessionToken`, before the token
+is signed: if the marker cannot be written, no session is issued at all. No
+way of signing in can forget to write it, because there is no other place a
+session is made.
+
+**Why the decision and the write are one transaction.** PBKDF2 at 600,000
+iterations is slow enough that the world moves while a sign-in verifies a
+password. Two operations must not interleave: minting a session for an
+account, and adopting that account. So both take the account's rows under a
+lock — `auth.users` first, then `auth.local_credentials`, always in that
+order — and the marker and the credential are read and written as one
+decision. A sign-in that verified a password re-reads the credential under
+the lock and re-checks the password against whatever is there now, so a
+credential replaced in the meantime cannot be signed in with. An adoption
+reads the marker under the same lock and writes nothing if the marker is
+there. Whichever takes the lock first wins, and the other fails.
 
 **Why it lives in `raw_user_meta_data`.** The column exists on every account
 the local store creates, on every deployment the store runs on, and nothing
@@ -581,6 +601,14 @@ else in the product writes it — so the marker cannot be lost. A column of its
 own would need a migration, and the hosted box only advances its schema when
 the installer runs; a fix that depends on a column that might not be there is
 a fix that does not reach the customer.
+
+The marker is also a **security fact**, so it has to be unreachable by the
+people whose accounts it describes. It is in the `auth` schema, which
+PostgREST does not serve — it serves `public` — and no request role holds
+any privilege on `auth.users` or `auth.local_credentials`: `anon`,
+`authenticated` and `service_role` have none. That is measured against the
+database rather than assumed, and a migration that granted one of them a
+privilege would be caught by the gate.
 
 **Known limitation, stated rather than hidden.** The sessions are stateless,
 so a password reset *anywhere* in the product does not by itself end an
@@ -590,10 +618,14 @@ needs a session epoch that every request compares against — a change to the
 shape of every authenticated request, which belongs in its own piece of work
 rather than in a fix for one flow.
 
-Proved by `tests/integration/ops/invite-driver.test.ts`: the used account is
-refused, the password it already had still signs in, and no membership is
-created — while the account a failed invite stranded is still adopted and
-still given a working password.
+**The gate.** `tests/integration/auth/account-session-marker.test.ts` proves
+all four halves against a real database: a session minted without a password
+is marked, and the invite refuses that account; a sign-in blocked behind a
+password change does not come back with a session; an adoption and a sign-in
+never both succeed; and no request role holds any privilege on the account
+tables. `tests/integration/ops/invite-driver.test.ts` proves the ordinary
+case still works: the account a failed invite stranded is still adopted and
+still handed a working password.
 
 ## 7. The rent-to-buy model, in full
 

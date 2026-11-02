@@ -49,8 +49,13 @@
  * been signed into holds a session, and this product's sessions are stateless
  * tokens whose role is read from the database on every request — so adopting
  * it would hand that session this tenant's driver portal, and replacing the
- * password would not end it. A sign-in is what marks an account as used, and
- * the marker is written by the sign-in itself (`localCredentialHasBeenUsed`).
+ * password would not end it.
+ *
+ * A session is what marks an account as used, and the marker is written where
+ * every session is made — `issueSessionToken` — so no way of signing in can
+ * forget to write it. The check and the password replacement are one
+ * transaction, under the account's locks, so a sign-in cannot slip between
+ * them (`adoptUnusedAccount`).
  *
  * The operator knows an email address and nothing else, so the safe answer is
  * to refuse and to leave the credential alone.
@@ -59,7 +64,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { sendTenantEmail } from "@/lib/email/tenant-email";
 import { sendEmail } from "@/lib/notify";
 import { getBranding, brandDisplayName, brandEmailFrom } from "@/lib/branding";
-import { createLocalUser, localCredentialHasBeenUsed, setLocalPassword } from "@/lib/auth/local-store";
+import { adoptUnusedAccount, createLocalUser } from "@/lib/auth/local-store";
 import { generateTemporaryPassword } from "@/lib/auth/password-reset";
 import { localDb } from "@/lib/db/local";
 import { deploymentProfile } from "@/lib/deployment/profile";
@@ -285,15 +290,13 @@ export async function inviteDriver(
     // session this tenant's driver portal, and replacing the password would
     // not end it. The operator knows an email address and nothing else, so
     // the safe answer is to refuse — and to leave the credential alone.
+    //
+    // `adoptUnusedAccount` makes that decision and the replacement ONE
+    // transaction, under the account's locks, so a sign-in cannot slip
+    // between the check and the write.
     if (membershipRows.length === 0 && !deploymentProfile().supabaseAuth) {
-      if (await localCredentialHasBeenUsed(userId)) {
-        throw new Error(
-          "That email already has an account that has been used, so it cannot be taken over. " +
-            "Add them to your organisation first and invite them again, or use a different email address.",
-        );
-      }
       temporaryPassword = genTempPassword();
-      await setLocalPassword(userId, temporaryPassword);
+      await adoptUnusedAccount(userId, input.tenantId, temporaryPassword);
     }
   }
 

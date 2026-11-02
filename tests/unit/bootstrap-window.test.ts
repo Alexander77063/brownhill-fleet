@@ -68,7 +68,11 @@ const fake = vi.hoisted(() => {
   };
 
   async function run(strings: TemplateStringsArray, values: unknown[]): Promise<unknown[]> {
-    const text = strings.join(' ').toLowerCase();
+    // The SQL is matched on its SHAPE, not on its line breaks: a statement
+    // written over several lines in the source is one statement to the
+    // database, and the fake has to see it the same way. Whitespace is
+    // squeezed to single spaces before anything is compared.
+    const text = strings.join(' ').replace(/\s+/g, ' ').toLowerCase();
     state.statements.push({ text, inTransaction: state.depth > 0 });
 
     if (text.includes('from auth.users limit 1')) {
@@ -86,6 +90,18 @@ const fake = vi.hoisted(() => {
           locked_until: null,
         },
       ];
+    }
+    if (text.includes('select password_hash, locked_until from auth.local_credentials')) {
+      // The sign-in's SECOND read of the credential: the one it makes under
+      // the account's lock, after the password has been verified, to check
+      // that the credential it verified is still the credential there now.
+      //
+      // It has to be modelled, not ignored. An empty result here reads as
+      // "the credential is gone", and the sign-in refuses — so a fake that
+      // dropped this branch would turn a sign-in that works into a 401, and
+      // the test would be measuring the fake rather than the route.
+      if (!state.owner) return [];
+      return [{ password_hash: 'pbkdf2_sha256$600000$c2FsdA$aGFzaA', locked_until: null }];
     }
     if (text.includes('insert into auth.users')) {
       if (state.failUserInsert) throw new Error('the owner could not be created');
