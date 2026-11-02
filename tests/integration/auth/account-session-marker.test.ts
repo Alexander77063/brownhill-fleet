@@ -473,7 +473,6 @@ describe.skipIf(!env)('the account marker, on a self-hosted deployment', () => {
   });
 
   // ── 3. nobody can reach the marker ─────────────────────────────────────
-
   it('keeps the account tables out of reach of every request role', async () => {
     // The marker is a security fact, and it lives in `auth.users`. If any
     // request role could read that table it could read the marker — and if
@@ -551,5 +550,73 @@ describe.skipIf(!env)('the account marker, on a self-hosted deployment', () => {
         read_credentials: false,
       });
     }
+  });
+
+  // ── 4. the marker the PREVIOUS version wrote still counts ─────────────
+
+  it('sees the marker the previous version of this product wrote', async () => {
+    // The marker was renamed when it moved from the sign-in to the session:
+    // `last_sign_in_at` became `session_issued_at`. Every account that was
+    // signed into BEFORE the rename carries only the old key — and it is
+    // exactly those accounts that are somebody's, and that must never be
+    // adopted.
+    //
+    // A reader that only knows the new key sees an account that was used
+    // every day as an account nobody has ever used, and adopts it: the
+    // operator gets a driver, and the person who had been using the account
+    // keeps a live session that now resolves to this tenant's driver portal.
+    const { id } = await makeAccount('legacy');
+    await sql`
+      update auth.users
+      set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb)
+            || jsonb_build_object('last_sign_in_at', now())
+      where id = ${id}::uuid
+    `;
+
+    expect(await accountHasHadASession(id)).toBe(true);
+  });
+
+  it('refuses to take over an account the previous version marked', async () => {
+    // The same account, seen through the flow that matters: the invite.
+    const { id, email } = await makeAccount('legacy-taken');
+    const theirPassword = 'the-password-they-already-know';
+    await setLocalPassword(id, theirPassword);
+    await sql`
+      update auth.users
+      set raw_user_meta_data = coalesce(raw_user_meta_data, '{}'::jsonb)
+            || jsonb_build_object('last_sign_in_at', now())
+      where id = ${id}::uuid
+    `;
+
+    await expect(
+      inviteDriver({ tenantId, email, newDriver: { full_name: 'Legacy Account' } }),
+    ).rejects.toThrow(/already has an account that has been used/i);
+
+    // The credential is untouched: the password they know still signs in.
+    const signin = await signInWithPassword(email, theirPassword);
+    expect(signin.ok).toBe(true);
+
+    // And the account was not linked into this tenant.
+    const memberships = (await sql`
+      select 1 from public.tenant_memberships where user_id = ${id}::uuid
+    `) as unknown as unknown[];
+    expect(memberships).toHaveLength(0);
+  });
+
+  it('still adopts an account that has never been marked at all', async () => {
+    // The control: the legacy marker is a MARKER, not a blanket refusal. An
+    // account nobody has ever used — the one a failed invite leaves behind —
+    // must still be adopted, or the operator can never invite that driver.
+    const { id, email } = await makeAccount('untouched');
+    await setLocalPassword(id, 'a-password-nobody-knows');
+
+    await expect(
+      inviteDriver({ tenantId, email, newDriver: { full_name: 'Untouched Account' } }),
+    ).resolves.toBeDefined();
+
+    const memberships = (await sql`
+      select 1 from public.tenant_memberships where user_id = ${id}::uuid
+    `) as unknown as unknown[];
+    expect(memberships).toHaveLength(1);
   });
 });

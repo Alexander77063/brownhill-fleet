@@ -583,6 +583,22 @@ is signed: if the marker cannot be written, no session is issued at all. No
 way of signing in can forget to write it, because there is no other place a
 session is made.
 
+**Why the marker the previous version wrote still counts.** The marker moved
+from `last_sign_in_at` — written by the password sign-in — to
+`session_issued_at`, written where a session is minted. Every account signed
+into before that move carries the old key and no other, so on a deployment
+that has been used, a reader that knew only the new key would see every daily
+user as an account nobody has ever got into: the invite would adopt it, give
+it a membership in this tenant, and hand its live session this tenant's
+driver portal. That is the same failure D18 exists to prevent, reintroduced
+through the rename. There is no migration that renames the key, and there is
+not going to be one — the hosted box only advances its schema when the
+installer runs, and the documented update path does not run it — so a fix that
+depended on a migration would be a fix that does not reach the customer.
+**Both keys are read wherever the marker is read**, which reaches every
+deployment whatever its schema is, and the next session for that account writes
+the new key as well, so the two agree from then on.
+
 **Why the decision and the write are one transaction.** PBKDF2 at 600,000
 iterations is slow enough that the world moves while a sign-in verifies a
 password. Two operations must not interleave: minting a session for an
@@ -619,13 +635,18 @@ shape of every authenticated request, which belongs in its own piece of work
 rather than in a fix for one flow.
 
 **The gate.** `tests/integration/auth/account-session-marker.test.ts` proves
-all four halves against a real database: a session minted without a password
+all five halves against a real database: a session minted without a password
 is marked, and the invite refuses that account; a sign-in blocked behind a
 password change does not come back with a session; an adoption and a sign-in
-never both succeed; and no request role holds any privilege on the account
-tables. `tests/integration/ops/invite-driver.test.ts` proves the ordinary
-case still works: the account a failed invite stranded is still adopted and
-still handed a working password.
+never both succeed; no request role holds any privilege on the account
+tables; and an account marked by the **previous** version of this product is
+still refused — its credential untouched, its live session intact — while an
+account that was never marked is still adopted. The last of those is watched
+**failing** before the fix and green after it, because a gate that only ever
+passes is not evidence that it can fail.
+`tests/integration/ops/invite-driver.test.ts` proves the ordinary case still
+works: the account a failed invite stranded is still adopted and still handed
+a working password.
 
 ## 7. The rent-to-buy model, in full
 

@@ -73,6 +73,28 @@ import { localDb, type Query } from '@/lib/db/local';
 export const SESSION_ISSUED_KEY = 'session_issued_at';
 
 /**
+ * The key the PREVIOUS version of this product wrote the marker under.
+ *
+ * It was written by the password sign-in, before the marker moved to the
+ * place a session is minted. Every account that was signed into before the
+ * move carries this key and no other — which means every account that is
+ * somebody's, on every deployment that has ever been signed into.
+ *
+ * So it is still READ. A reader that knew only the new key would see a
+ * daily user as an account nobody has ever used, and would adopt it: the
+ * operator gets a driver, and the person who had been using the account
+ * keeps a live session that now resolves to this tenant's driver portal.
+ *
+ * There is no migration that renames it, and there is not going to be one:
+ * the hosted box only advances its schema when the installer runs, and the
+ * documented update path does not run it. So the key is honoured where it is
+ * read, which reaches every deployment whatever its schema is — and the
+ * next session for that account writes the new key as well, so the two
+ * agree from then on.
+ */
+export const LEGACY_SESSION_ISSUED_KEY = 'last_sign_in_at';
+
+/**
  * Lock an account's rows, always in this order.
  *
  * `auth.users` holds the marker; `auth.local_credentials` holds the password.
@@ -128,7 +150,12 @@ export async function markSessionIssued(userId: string): Promise<void> {
 export async function accountHasHadASession(userId: string): Promise<boolean> {
   const db = await localDb();
   const rows = (await db`
-    select coalesce(raw_user_meta_data ->> ${SESSION_ISSUED_KEY}::text, '') as issued
+    select
+      coalesce(
+        nullif(raw_user_meta_data ->> ${SESSION_ISSUED_KEY}::text, ''),
+        nullif(raw_user_meta_data ->> ${LEGACY_SESSION_ISSUED_KEY}::text, ''),
+        ''
+      ) as issued
     from auth.users
     where id = ${userId}::uuid
     limit 1

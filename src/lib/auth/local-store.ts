@@ -13,7 +13,7 @@
  */
 import { hashPassword, needsRehash, verifyPassword } from './password';
 import { closeBootstrapWindow, isBootstrapPending } from '@/lib/app-state';
-import { lockAccountRows, SESSION_ISSUED_KEY } from './account-usage';
+import { LEGACY_SESSION_ISSUED_KEY, lockAccountRows, SESSION_ISSUED_KEY } from './account-usage';
 import type { PortalRole } from '@/lib/iam';
 
 export interface LocalUser {
@@ -385,7 +385,12 @@ export class AccountNotAdoptableError extends Error {
  *
  *   * the account's rows are locked, in the fixed order;
  *   * the marker is read under that lock — if a session has ever existed for
- *     this account, this refuses and writes nothing;
+ *     this account, this refuses and writes nothing. BOTH marker keys count:
+ *     the current one, and the one the previous version of this product wrote
+ *     (`last_sign_in_at`), which is the only marker an account signed into
+ *     before the move carries. Reading only the current key would make every
+ *     pre-existing user look like an account nobody has ever used, and this
+ *     would hand their live session to a driver in this tenant;
  *   * the membership is read under that lock too — an account that belongs to
  *     ANOTHER tenant is somebody else's, and taking it would move them out of
  *     the portal they already belong to;
@@ -411,7 +416,11 @@ export async function adoptUnusedAccount(
 
     const state = (await tx`
       select
-        coalesce(u.raw_user_meta_data ->> ${SESSION_ISSUED_KEY}::text, '') as issued,
+        coalesce(
+          nullif(u.raw_user_meta_data ->> ${SESSION_ISSUED_KEY}::text, ''),
+          nullif(u.raw_user_meta_data ->> ${LEGACY_SESSION_ISSUED_KEY}::text, ''),
+          ''
+        ) as issued,
         (
           select count(*)::int
           from tenant_memberships m
