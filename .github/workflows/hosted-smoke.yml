@@ -239,10 +239,16 @@ jobs:
         # a server that is about to be shut down under it: the gate declares
         # the database ready, the next command arrives, and the server has
         # gone. The failure says nothing about the thing under test —
-        # "the throwaway postgres never came up" — and it loses at random.
-        # Between 2026-11-01 and 2026-11-03 this job failed at three
-        # DIFFERENT steps on three different days, and the seed gate failed
-        # twice at the same second with the same message.
+        # "the throwaway postgres never came up".
+        #
+        # It cost ONE red build in this repository's CI history: 2026-11-03,
+        # at the seed gate. What makes the cause certain is the timing in that
+        # log — the gate had a thirty-second budget (60 polls of half a
+        # second) and failed in 0.98 of them, reporting "Result: 0 passed, 0
+        # failed". A probe with thirty seconds to wait cannot time out in one,
+        # so the probe SUCCEEDED and the very next line found the server gone.
+        # The other red builds that week were three DIFFERENT defects, and
+        # reading the failing step out of a run is what tells them apart.
         #
         # The rule is written once, in scripts/lib/postgres-container.sh, and
         # this gate holds every caller to it: the shared rule asks for

@@ -24,12 +24,23 @@
 #
 #   FAIL: the throwaway postgres never came up
 #
-# ...which says nothing whatever about the thing under test. It is a race, so
-# it loses at random and a gate that loses a race fails on a different step
-# each time — which is exactly what a handover cannot publish. Between
-# 2026-11-01 and 2026-11-03 the hosted-smoke job failed at three DIFFERENT
-# steps on three different days, and the seed gate failed twice at the same
-# second with the same message. One defect, three different red builds.
+# ...which says nothing whatever about the thing under test.
+#
+# It cost ONE red build in this repository's CI history: 2026-11-03, at the
+# seed gate. What makes the cause certain is the timing in that log — the
+# gate had a THIRTY-SECOND budget (60 polls of half a second) and failed in
+# 0.98 of them, reporting "Result: 0 passed, 0 failed". A probe with thirty
+# seconds to wait cannot time out in one, so the probe SUCCEEDED and the very
+# next line found the server gone. The only server in that container that
+# comes and goes is the temporary one.
+#
+# The other red builds that week were three DIFFERENT defects — the
+# build-time font fetch, the fixture-name collision and the env-var
+# regression — and reading the failing step out of a run is what tells them
+# apart.
+#
+# The defect sat in FIVE places. Only one of them had fired in CI; the other
+# four were live in the customer's own box, where there is no CI to re-run.
 #
 # The standalone proof met the same trap and tried to escape it with a
 # "two consecutive successes" heuristic: that clears the restart only if the

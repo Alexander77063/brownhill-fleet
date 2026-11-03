@@ -24,8 +24,12 @@ services:
       # initialised, and everything that waits on `service_healthy` (the
       # bootstrap, postgrest and the app) starts against a database that is
       # about to be shut down and restarted underneath it. The failure then
-      # lands on whichever step happened to run next, which is how one defect
-      # produces a different red build every day.
+      # lands on whichever step happened to run next.
+      #
+      # It cost ONE red build in this repository's CI history: 2026-11-03, at
+      # the seed gate — and the defect sat in FIVE places, four of which had
+      # not fired yet and were live in the customer's own box, where there is
+      # no CI to re-run.
       #
       # The real server is the first one to listen on 127.0.0.1, so asking
       # for it over TCP cannot be fooled. The rule lives in
