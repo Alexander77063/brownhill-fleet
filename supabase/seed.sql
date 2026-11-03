@@ -129,8 +129,23 @@ begin
     values (v_ag, wk, v_ps, v_pe, 102000, 85000, 17000,
       (case when wk <= 28 then 'paid' else 'due' end)::rent_status);
 
-    insert into invoices (agreement_id, number, issued_on, due_on, gross_pence, net_pence, vat_pence)
-    values (v_ag, 'BRH-A1-'||lpad(wk::text,4,'0'), v_ps, v_ps, 102000, 85000, 17000)
+    -- The VAT code, from the same rule the application applies
+    -- (src/lib/accounting/vat-codes.ts) and the same function the backfill
+    -- uses (migration 0086).
+    --
+    -- Without it every monthly VAT return for this tenant reports £0 of
+    -- output VAT while box 4 carries that month's net sales — the exact
+    -- failure migration 0086 exists to end, reproduced in the local
+    -- environment. Across the thirty weeks seeded here that is £25,500 of
+    -- net sales with £5,100 of output VAT the return cannot see. The seed
+    -- runs AFTER the migrations, so the backfill has already run by the time
+    -- these invoices are created and cannot help them.
+    --
+    -- The function raises when the VAT codes have not been seeded, so the
+    -- seed fails loudly rather than creating invoices the return cannot see.
+    insert into invoices (agreement_id, number, issued_on, due_on, gross_pence, net_pence, vat_pence, vat_code_id)
+    values (v_ag, 'BRH-A1-'||lpad(wk::text,4,'0'), v_ps, v_ps, 102000, 85000, 17000,
+            accounting.invoice_vat_code_id(17000, 'b1111111-1111-1111-1111-111111111111'))
     returning id into inv;
 
     if wk <= 28 then
