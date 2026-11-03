@@ -98,6 +98,14 @@ set -e
 
 echo "$alloc_output" | grep -E "PASS|FAIL|ERROR" || true
 
+echo "==> proving a voided invoice is worth nothing"
+set +e
+void_output="$("${PSQL[@]}" -v ON_ERROR_STOP=1 < "$ROOT/standalone/sql/void-balance-proof.sql" 2>&1)"
+void_status=$?
+set -e
+
+echo "$void_output" | grep -E "PASS|FAIL|ERROR" || true
+
 status=0
 if [ "$proof_status" -ne 0 ]; then
   echo "==> RLS PROOF FAILED" >&2
@@ -109,8 +117,13 @@ if [ "$alloc_status" -ne 0 ]; then
   status=1
 fi
 
+if [ "$void_status" -ne 0 ]; then
+  echo "==> VOID BALANCE PROOF FAILED: a voided invoice is still counted as owed, and the driver's checkout would charge for it" >&2
+  status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-  echo "==> PORTABILITY VERIFIED: the app runs on plain PostgreSQL with RLS and the allocation guard intact"
+  echo "==> PORTABILITY VERIFIED: the app runs on plain PostgreSQL with RLS, the allocation guard and the void-balance rule intact"
 fi
 
 if [ "${EFM_KEEP_CONTAINER:-0}" != "1" ]; then

@@ -11,11 +11,23 @@
 //   * the reconciliation queue's "match this bank line" button.
 //
 // They agreed on WHICH invoices may receive money — that rule lives in
-// `invoice-eligibility.ts` and all three call it — but not on HOW, and not on
-// whether the allocation survived the rest of the write. The reconciliation
-// queue did its work in one transaction; the other two did theirs in a
-// sequence of separate statements, so an allocation could land without the
-// payment, or the payment without the allocation.
+// `invoice-eligibility.ts` — but not on HOW, and not on whether the
+// allocation survived the rest of the write. The reconciliation queue did its
+// work in one transaction; the other two did theirs in a sequence of separate
+// statements, so an allocation could land without the payment, or the payment
+// without the allocation.
+//
+// WHO CALLS THE SHARED RULE, EXACTLY
+// ---------------------------------
+// The reconciliation queue (`reconcile-queue.ts`) and the reconciliation API
+// (`/api/v1/accounting/reconcile`) call `invoice-eligibility.ts` directly, so
+// what the operator is offered and what the API accepts cannot disagree.
+// THIS file states the same three statuses in SQL instead of importing the
+// constant, because the list has to reach postgres as a literal list of
+// values. The two can drift — a status added to the enum and to the constant
+// would not be added here — and the drift fails CLOSED: a status this query
+// does not name is not offered to the allocation, so no money is moved
+// against it. `check_allocation` (migration 0082) is the arbiter either way.
 //
 // This is the one implementation, and it runs on a transaction handle the
 // caller supplies. The payment row, its allocations and its ledger entry are

@@ -59,10 +59,11 @@ hosted/tests/acceptance.sh                                  # all gates green
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0086 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0087 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
-**Status: passed 2026-11-01.** The replay ran against a scratch `postgres:16`
+**Status: passed 2026-11-01 against 0001–0086; migration 0087 is verified by
+the CI harness.** The replay ran against a scratch `postgres:16`
 container, in two steps: a dry run that applied every migration inside one
 transaction and rolled it back — leaving `public_tables=0` behind, so nothing
 survived it — and then a real from-zero apply in production semantics, each
@@ -71,8 +72,8 @@ accounting tables and 10 public views.
 
 A third phase runs the **migration runner itself** — not a re-implementation of
 it — against its own database: the first run applies the whole history, the
-second applies 0 migrations, and the ledger holds 86 rows. That count is 86
-and not 85 because the shim is recorded too, under its own name
+second applies 0 migrations, and the ledger holds 87 rows. That count is 87
+and not 86 because the shim is recorded too, under its own name
 (`0000_supabase_shim.sql`); the ledger holds one row per file it applied,
 and the shim is a file. The runner's own idempotency is what the deployment
 depends on — the systemd oneshot runs it on every boot.
@@ -89,6 +90,7 @@ What the run asserted, and what it found:
 | All ten tenant roles map to the expected portal role through the signup trigger — including the `director_exec` → `accounts` case 0078 exists to fix | **Passed** |
 | Row-level security is on `agreements`, `drivers`, `vehicles` and `profiles` | **Passed** |
 | Money cannot be allocated to a voided invoice, and allocations cannot exceed the invoice's gross or the payment's amount | **Enforced by CI** — `standalone/sql/billing-allocation-proof.sql`, four assertions; it fails against 0001–0081 and passes against 0001–0082 |
+| A voided invoice is worth nothing — it is not owed, not overdue, not in the arrears, and not charged at the driver's checkout | **Enforced by CI** — `standalone/sql/void-balance-proof.sql`, eight assertions; it fails against 0001–0086 and passes against 0001–0087 |
 
 And, run as a live session rather than as the schema owner — a superuser
 bypasses RLS, so a check made as the owner would have proved nothing:

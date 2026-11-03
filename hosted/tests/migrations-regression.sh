@@ -66,6 +66,8 @@ docker exec -u postgres "$cid" mkdir -p /tmp/migrations
 docker cp supabase/migrations/. "$cid":/tmp/migrations/
 docker cp standalone/sql/portable-rls-proof.sql "$cid":/tmp/
 docker cp standalone/sql/billing-allocation-proof.sql "$cid":/tmp/
+docker cp standalone/sql/void-balance-proof.sql "$cid":/tmp/
+docker cp standalone/sql/void-balance-negative.sql "$cid":/tmp/
 docker cp tests/rls/accounting-portable-proof.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-fixture.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-assert.sql "$cid":/tmp/
@@ -92,6 +94,59 @@ docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/accounting-portab
 # and the two caps that were always there still hold. This proof FAILS against
 # a schema without migration 0082, so it is a real guard and not a rubber stamp.
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/billing-allocation-proof.sql
+
+# The voided invoice is worth nothing. A cancelled invoice must not appear in
+# any amount owed, because the driver's payment checkout SUMS this balance and
+# charges it: against a schema without migration 0087, a voided invoice still
+# carried its full gross, and the customer was charged for work that had been
+# cancelled.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+
+# ── The void-balance proof can fail ─────────────────────────────────────────
+#
+# A gate that cannot fail is not a gate. The proof above is run a second
+# time against the views as migration 0011 left them, and it MUST fail
+# there. Then the migration is re-applied and the proof must pass again —
+# which is what proves that restoring the views was what broke it, and that
+# re-applying the migration is what fixes it.
+echo "== the void-balance proof can fail =="
+
+# The migration is found by CONTENT, not by number, so the guard keeps
+# guarding when the history grows.
+void_migration=""
+for f in $(ls -1 supabase/migrations/*.sql | sort); do
+  if grep -q 'create or replace view public.v_invoice_balance' "$f"; then
+    void_migration=$(basename "$f")
+    break
+  fi
+done
+
+if [ -z "$void_migration" ]; then
+  echo "FAIL: no migration replaces v_invoice_balance — the void-balance proof has nothing to be proven by"
+  exit 1
+fi
+echo "the void-balance fix is $void_migration"
+
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-negative.sql
+
+set +e
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+negative_status=$?
+set -e
+
+if [ "$negative_status" -eq 0 ]; then
+  echo "FAIL: the void-balance proof PASSED against the pre-fix views — it is not a gate"
+  # Put the fix back before leaving, so the rest of the run is not sitting on
+  # a schema with the defect restored.
+  docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$void_migration"
+  exit 1
+fi
+echo "ok: the void-balance proof fails against the pre-fix views"
+
+# Put the fix back and prove the proof is green again.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$void_migration"
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+echo "ok: the void-balance proof passes again once the fix is re-applied"
 
 # ── Phase 2: the same history, over data that already exists ───────────────────
 echo "== phase 2: the rent-to-buy backfill, over existing rent-to-buy rows =="

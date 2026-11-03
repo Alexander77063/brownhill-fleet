@@ -120,8 +120,8 @@ through a lateral subquery to resolve the cost of the car — and exposes
 
 | View | What it is for |
 | --- | --- |
-| `v_agreement_arrears` | Arrears on an agreement |
-| `v_invoice_balance` | Invoice balance |
+| `v_agreement_arrears` | Arrears on an agreement — `billed_pence`, `collected_pence`, `outstanding_pence`, with voided invoices excluded |
+| `v_invoice_balance` | Invoice balance — `balance_pence` is what is still owed, and it is zero on a voided invoice |
 | `v_receipt_vat` | VAT on receipts |
 | `v_vat_by_quarter`, `v_vat_by_quarter_tenant` | The VAT return's inputs |
 | `v_vehicle_economics`, `v_vehicle_economics_all` | Per-vehicle economics |
@@ -930,6 +930,42 @@ Before migration 0082 the trigger checked neither the invoice's status nor
 the invoice row itself, so a void invoice accepted money. The regression proof
 `standalone/sql/billing-allocation-proof.sql` fails against 0001–0081 and
 passes against 0001–0082.
+
+**A voided invoice is worth nothing.** The guard above stops *money* landing on
+a cancelled invoice. Migration 0087 closes the other side of the same hole:
+the views that say what a customer *owes* used to include voided invoices at
+their full gross, because `markInvoiceVoid` sets the status and changes
+nothing else, and `v_invoice_balance` filtered on no status at all.
+
+That was money leaving a customer's account.
+`src/app/api/payments/checkout/route.ts` sums `balance_pence` for an
+agreement and hands the sum to the payment provider as the amount to
+**charge**; a cancelled invoice in that sum meant a customer was taken to a
+payment page for work they no longer owed. `v_agreement_arrears` summed the
+same column, so the operator's arrears screen showed the cancelled work as
+still due.
+
+The rule now is: **a void invoice contributes nothing to any amount owed.** It
+stays **visible** — the operator must be able to see the document they
+cancelled, and the customer must be able to see it in their invoice list — but
+its `balance_pence` is zero, it is never `is_overdue`, and it is excluded from
+all three of the arrears figures, so the row still adds up
+(`outstanding_pence = billed_pence - collected_pence`).
+
+The regression proof `standalone/sql/void-balance-proof.sql` fails against
+0001–0086 and passes against 0001–0087. `hosted/tests/migrations-regression.sh`
+runs it a second time against the views as migration 0011 left them and
+requires it to **fail** there, so the proof is known to be able to fail.
+
+**What "collected" means in these views.** The allocation sums in
+`v_invoice_balance` and `v_agreement_arrears` count every allocation, whatever
+state its payment is in, while `src/lib/accounting/invoice-register.ts` counts
+only **confirmed** payments. No code path writes a payment in any state other
+than `confirmed` today — all four insert sites write it explicitly — so the two
+agree in practice. The difference only appears once a pending or refunded
+payment becomes possible, and closing it then means changing the views, the
+trigger `sync_invoice_status()` and the register together, so that a payment
+changing state re-syncs the invoices it was allocated to.
 
 **Status vocabularies** are enum-typed or `CHECK`-constrained, not free text —
 with one exception. `agreement_status` (`draft`, `pending_signature`, `active`,
