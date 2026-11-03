@@ -195,6 +195,23 @@ jobs:
         # pre-rename name still working, and a loud refusal when there is no
         # hostname at all.
         run: bash hosted/tests/backup-offhost-target.sh
+      - name: The off-host backup drill cannot pass for the wrong reason
+        # The drill that proves the off-host copy is watched breaks the b2
+        # CLI on purpose. It used to do that on a box where b2 had never
+        # been installed — fabricating one — and on a box whose Backblaze
+        # credentials were still the installer's placeholders, where its
+        # first half passed for the wrong reason and the whole drill was
+        # reporting on a box that had never had an off-host copy at all.
+        #
+        # The drill now asks a shared module before it touches anything,
+        # and skips out loud when the answer is no. This gate proves the
+        # module agrees with the PRODUCTION script about what real
+        # credentials are — the two must not drift — and then runs the
+        # drill against a box with placeholder credentials and checks that
+        # it skipped without touching a thing.
+        #
+        # Static: no docker, no database, no box, a couple of seconds.
+        run: bash hosted/tests/backup-drill-preconditions.sh
       - name: The bootstrap waiter can find the bootstrap
         # A step that waits for the stack's bootstrap has to be able to FIND
         # it, and the obvious way to find a container does not work:

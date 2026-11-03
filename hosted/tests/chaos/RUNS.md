@@ -68,8 +68,11 @@ migrations applied.
       `app_state` — it exercises the deployed box's restore console, not
       a fault in the product. Run it on the box.
 - [ ] **04-b2-sync-stale.sh** — NOT RUN HERE. It needs the box's own
-      `/usr/local/bin/b2` and the `alert-watch.path` unit. Run it on
-      the box.
+      `/usr/local/bin/b2`, the `alert-watch.path` unit, and **real
+      Backblaze credentials** — the drill skips out loud while they are
+      still the installer's placeholders, because a box that has never
+      copied a dump off-host has no off-host copy to go stale. Run it on
+      the box, once the credentials are real.
 
 **Not yet run on the box.** Every row above was run against the compose
 stack. The two rows marked "NOT RUN HERE" have never been run at all —
@@ -123,3 +126,20 @@ on being true.
       timer gate fails when a timer is removed from the box — because a
       gate that cannot fail is not a gate, and this one is what stops the
       box quietly going back to billing nobody.
+- [x] **hosted/tests/backup-drill-preconditions.sh** — PASS, 27 assertions
+      (26 on a filesystem that records the executable bit, 27 with one
+      out-loud skip on one that does not). The off-host backup drill
+      (`04-b2-sync-stale.sh`) must not be able to pass for the wrong
+      reason: a fabricated `b2` on the box, credentials that are still
+      the installer's placeholders, or a remote prefix that is still
+      `brownhill.example.co.uk` would each make it "prove" a stale
+      copy that was never a real copy. The rule lives in one place —
+      `hosted/tests/chaos/lib/box-preconditions.sh` — and the gate drives
+      the **production** script (`hosted/bootstrap/brownhill-backup.sh`)
+      against the same fixture files, so the gate and the box cannot
+      drift apart. The drill now skips out loud, before it touches the
+      box, and says which precondition is missing. The gate was proved
+      to bite twice: deleting the placeholder rule from the module fails
+      it in nine places, and putting the old unguarded drill in front of
+      it fails it — and the gate **refuses to run an unguarded drill at
+      all**, because running one would put a stub in `/usr/local/bin`.
