@@ -43,6 +43,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { signInCapabilities } from '@/lib/deployment/signin-modes';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = join(HERE, '..', '..', 'src', 'app');
@@ -199,5 +200,94 @@ describe('the URL the driver invite hands out', () => {
 
   it('is a page a signed-out driver can actually open', () => {
     expect(GATED_ROUTES.has('/driver/login')).toBe(false);
+  });
+});
+
+/**
+ * `/login` must offer the OTHER sign-in pages this build serves.
+ *
+ * The defect: the driver and owner forms both link back to `/login` ("← back
+ * to sign-in options"), but `/login` linked to neither. The relationship was
+ * one-way. A driver who was sent the wrong URL, followed a stale bookmark, or
+ * simply guessed `/login` arrived at the staff form, signed in there, was
+ * bounced by the role check, and had no way back to the page meant for them.
+ *
+ * The rule has two halves, and both matter:
+ *
+ *   1. `/login` offers the other sign-in pages this build SERVES.
+ *   2. `/login` offers no others. The vehicle-owner portal is gated off on
+ *      the hosted deployment Brownhill runs, so a link to `/owner/login`
+ *      there is a door that opens onto a 404.
+ *
+ * Which portals exist is decided by `signInCapabilities`, not by the page —
+ * the page asks the rule and renders what it is told. That is what keeps the
+ * two halves from drifting apart: adding a portal to the rule adds it to
+ * every build that serves it and to no build that does not.
+ */
+describe('the sign-in page offers the other portals', () => {
+  const PROFILES = ['saas', 'standalone', 'hosted', 'managed', 'managed-shared'] as const;
+  const LOGIN_ROUTE = '/login';
+  const loginSource = readFileSync(join(PAGES.get(LOGIN_ROUTE)!, 'page.tsx'), 'utf8');
+
+  it('finds the sign-in page it is checking', () => {
+    expect(PAGES.has(LOGIN_ROUTE)).toBe(true);
+  });
+
+  it('renders the portals the build serves', () => {
+    // The rule can be perfect while the page stays dead, so the page has to
+    // actually read it.
+    expect(loginSource).toContain('CAPS.portals');
+    expect(loginSource).toMatch(/CAPS\.portals\.map\(/);
+  });
+
+  it('asks the rule rather than repeating it', () => {
+    // The hrefs are not written into the page. If they were, the page and the
+    // rule would be two copies of the same fact, free to disagree — which is
+    // how the owner link would end up on a build that has no owner portal.
+    expect(loginSource).not.toContain('/driver/login');
+    expect(loginSource).not.toContain('/owner/login');
+  });
+
+  it('never offers a portal that is not a page, or that needs a session', () => {
+    const offences: string[] = [];
+    for (const profile of PROFILES) {
+      for (const portal of signInCapabilities(profile).portals) {
+        const target = portal.href.split('?')[0].split('#')[0].replace(/\/$/, '') || '/';
+        if (!PAGES.has(target)) {
+          offences.push(`${profile} offers ${target}, which is not a page`);
+        } else if (GATED_ROUTES.has(target)) {
+          offences.push(`${profile} offers ${target}, which requires a session`);
+        }
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  it('gives every portal a way back to the sign-in page', () => {
+    // The relationship has to work both ways, or offering the portals here
+    // would be sending someone down a one-way street.
+    const offences: string[] = [];
+    for (const profile of PROFILES) {
+      for (const portal of signInCapabilities(profile).portals) {
+        const directory = PAGES.get(portal.href);
+        if (!directory) continue; // reported by the test above
+        const source = readFileSync(join(directory, 'page.tsx'), 'utf8');
+        if (!hrefsIn(source).includes(LOGIN_ROUTE)) {
+          offences.push(`${portal.href} has no link back to ${LOGIN_ROUTE}`);
+        }
+      }
+    }
+    expect(offences).toEqual([]);
+  });
+
+  it('has teeth: without the rule, the page would have offered nothing', () => {
+    // A control for the two tests above. The page did once carry no link to
+    // either console, and the relationship was one-way; the checks are worth
+    // something only because that was true.
+    expect(hrefsIn(loginSource)).not.toContain('/driver/login');
+    expect(hrefsIn(loginSource)).not.toContain('/owner/login');
+    // And the way back was already there — that half was never broken.
+    const driverSource = readFileSync(join(PAGES.get('/driver/login')!, 'page.tsx'), 'utf8');
+    expect(hrefsIn(driverSource)).toContain(LOGIN_ROUTE);
   });
 });

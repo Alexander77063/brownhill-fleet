@@ -30,6 +30,14 @@
 
 export type SignInMode = 'email' | 'phone' | 'password';
 
+/** A sign-in page this build serves, offered as a link on the sign-in page. */
+export interface SignInPortal {
+  /** Where the link goes. */
+  readonly href: string;
+  /** What the link says. */
+  readonly label: string;
+}
+
 export interface SignInCapabilities {
   /** The methods this build may offer, in the order they appear. */
   readonly modes: readonly SignInMode[];
@@ -39,6 +47,22 @@ export interface SignInCapabilities {
   readonly ownerBuild: boolean;
   /** Identity comes from Supabase Auth, so this build can send a magic link. */
   readonly supabaseAuth: boolean;
+  /**
+   * The OTHER sign-in pages on this build.
+   *
+   * `/login` is the staff door, and it used to be the only door anyone could
+   * reach from it. The driver and owner forms both link *back* to `/login`,
+   * so the relationship was one-way: a driver who landed on the staff form —
+   * from a stale link, a mistyped URL, or a colleague sending them the wrong
+   * address — signed in there, was then bounced by the role check, and had no
+   * way back to the page they were meant to be on.
+   *
+   * Only the pages this build actually serves are listed. The vehicle-owner
+   * portal is gated off on the hosted deployment Brownhill runs, so a link to
+   * `/owner/login` there is a door that opens onto a 404 — offering a button
+   * that cannot work is worse than offering none.
+   */
+  readonly portals: readonly SignInPortal[];
   /**
    * This build's first-run path is the browser setup page.
    *
@@ -82,11 +106,27 @@ export function signInCapabilities(raw: string | undefined | null): SignInCapabi
 
   const defaultMode: SignInMode = supabaseAuth ? 'email' : ownerBuild ? 'phone' : 'password';
 
+  // The other doors on this build.
+  //
+  // Drivers are everywhere: the hosted box rents vehicles to drivers, the
+  // Nigerian instances manage driver agreements, and the SaaS does both.
+  // `/driver` is not in the gate table, so `/driver/login` is served on every
+  // profile.
+  //
+  // Vehicle owners are not: `/owner` is gated behind `ownerPortal`, which is
+  // true for exactly the two builds with owners — the same set as
+  // `ownerBuild` above. So the owner door is offered only where it exists.
+  const portals: readonly SignInPortal[] = [
+    { href: '/driver/login', label: 'Sign in as a driver' },
+    ...(ownerBuild ? [{ href: '/owner/login', label: 'Sign in as a vehicle owner' }] : []),
+  ];
+
   return {
     modes,
     defaultMode,
     ownerBuild,
     supabaseAuth,
     setupPathBuild: profile === 'standalone' || profile === 'managed',
+    portals,
   };
 }
