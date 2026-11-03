@@ -155,7 +155,7 @@ written for you, one is optional:
 ```bash
 mkdir -p /opt/brownhill
 cd /opt/brownhill
-git clone https://github.com/Alexander77063/elite-fleet-management.git repo
+git clone https://github.com/Alexander77063/brownhill-fleet.git repo
 cd repo
 git checkout main
 ```
