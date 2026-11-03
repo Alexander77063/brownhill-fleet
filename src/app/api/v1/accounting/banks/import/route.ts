@@ -21,26 +21,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
-import { parseBankCsv, bestMatch, type MatchCandidate, type Pounds } from '@/lib/accounting/bank-rec';
+import {
+  parseBankCsv,
+  bestMatch,
+  issuedAtFromDbValue,
+  type MatchCandidate,
+  type Pounds,
+} from '@/lib/accounting/bank-rec';
 import { summarizeImport } from '@/lib/accounting/bank-import-summary';
+import { jsonSafe } from '@/lib/accounting/json';
 import { commitJournalForBankTransaction } from '@/lib/accounting/journal-bridge';
+import { findAccountId } from '@/lib/accounting/chart-of-accounts';
 import { postBankReceiptJournal } from '@/lib/accounting/journal';
-import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
+import { loadAutoMatchCandidates } from '@/lib/accounting/reconcile-queue';
+import { insertBankLines } from '@/lib/accounting/bank-import';
 
 export const runtime = 'nodejs';
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB — same cap as driver docs
 const AUTO_MATCH_THRESHOLD = 0.9;
-
-interface OpenInvoiceRow {
-  invoice_id: string; // the matcher is keyed on "paymentId"; here that is the invoice
-  gross_pence: string;
-  allocated_pence: string;
-  invoice_no: string | null;
-  issued_on: string;
-  agreement_id: string | null;
-  driver_id: string | null;
-}
 
 type Sql = Awaited<ReturnType<typeof localDb>>;
 
@@ -161,70 +160,50 @@ export async function POST(req: NextRequest) {
     bankImportId = insertRows[0].id;
   }
 
-  // Insert each parsed row. The unique constraint on
-  // (bank_import_id, posted_at, amount_pence, description, counterparty)
-  // makes a second upload of the same file a no-op without an ON CONFLICT
-  // dance — we just ignore the unique-violation error.
+  // Insert each parsed row.
   //
-  // The id is kept against the PARSED ROW INDEX, not appended to a list: a
-  // re-upload that skips a duplicate would otherwise shift every later id
-  // by one, and the auto-matcher would then attach a match to the wrong bank
-  // line.
-  const insertedByIndex = new Map<number, string>();
-  for (let i = 0; i < parsed.transactions.length; i++) {
-    const tx = parsed.transactions[i];
-    const txRows = (await sql`
-      insert into accounting.bank_transactions
-        (bank_import_id, bank_account_id, posted_at, amount_pence,
-         description, counterparty, tenant_id)
-      values (
-        ${bankImportId}::uuid,
-        ${bankAccountId}::uuid,
-        ${tx.postedAt.toISOString()},
-        ${tx.amountPence.toString()}::bigint,
-        ${tx.description},
-        ${tx.counterparty},
-        ${tenantId}::uuid
-      )
-      on conflict (bank_import_id, posted_at, amount_pence, description, counterparty)
-      do nothing
-      returning id
-    `) as Array<{ id: string }>;
-    if (txRows.length) insertedByIndex.set(i, txRows[0].id);
-  }
+  // THE PERIOD LOCK, AND WHY THE WRITER IS A MODULE
+  // -------------------------------------------------
+  // A new bank line is the ONLY thing in the product that can CREATE a close
+  // warning: the row lands with status 'unmatched', and the close preflight
+  // counts unmatched lines dated in the month. So an import that lands in the
+  // middle of somebody's close would close a month over a line the operator
+  // never saw — the exact thing the close's confirmation is supposed to
+  // prevent.
+  //
+  // So the import takes the SAME advisory lock the close takes, for every
+  // month the statement touches, and holds it for the whole batch. The lock
+  // is transaction-scoped, so the inserts have to happen inside a
+  // transaction with it — a lock taken on a pooled connection outside a
+  // transaction is released at the end of that statement and orders nothing.
+  //
+  // That is why the write lives in @/lib/accounting/bank-import rather than
+  // here: the transaction and the lock have to be one thing, and a
+  // caller-supplied transaction is a caller-supplied chance to forget the
+  // lock. See src/lib/accounting/bank-import.ts.
+  const insertedByIndex = await insertBankLines({
+    sql,
+    tenantId,
+    bankImportId,
+    bankAccountId,
+    lines: parsed.transactions,
+  });
 
   // Build candidate list from the invoices that still owe money and haven't
   // already been matched. An invoice that has been voided is never a
   // candidate — it has been cancelled, so money must not land on it.
-  const candidates = (await sql`
-    select i.id as invoice_id,
-           i.gross_pence,
-           i.number as invoice_no,
-           i.issued_on,
-           i.agreement_id,
-           a.driver_id,
-           coalesce((select sum(pa.amount_pence)
-                       from public.payment_allocations pa
-                      where pa.invoice_id = i.id
-                        and pa.tenant_id = ${tenantId}::uuid), 0)::bigint as allocated_pence
-      from public.invoices i
-      left join public.agreements a
-             on a.id = i.agreement_id
-            and a.tenant_id = ${tenantId}::uuid
-     where i.status = any(${ALLOCATABLE_INVOICE_STATUSES}::invoice_status[])
-       and i.tenant_id = ${tenantId}::uuid
-       and not exists (
-         select 1 from accounting.bank_transactions bt
-          where bt.matched_payment_id = i.id
-            and bt.tenant_id = ${tenantId}::uuid
-       )
-     order by i.issued_on desc
-  `) as OpenInvoiceRow[];
+  //
+  // The issue day arrives as 'YYYY-MM-DD' (the loader casts the `date`
+  // column), and `issuedAtFromDbValue` turns it into the Date the scorer
+  // compares against. It used to be built by concatenating the raw column,
+  // which postgres.js hands over as a Date — and the result was an Invalid
+  // Date, so the 30-day window in the score never fired.
+  const candidates = await loadAutoMatchCandidates(sql, tenantId);
   const candidateShapes: MatchCandidate[] = candidates.map((c) => ({
     paymentId: c.invoice_id,
     grossPence: BigInt(c.gross_pence) as Pounds,
     invoiceNo: c.invoice_no ?? '',
-    issuedAt: new Date(c.issued_on + 'T00:00:00Z'),
+    issuedAt: issuedAtFromDbValue(c.issued_on),
   }));
 
   // Score + auto-match. We re-key by the inserted bank_tx id (not parsed
@@ -232,21 +211,22 @@ export async function POST(req: NextRequest) {
   const matches = new Map<number, { paymentId: string; score: number }>();
   for (let i = 0; i < parsed.transactions.length; i++) {
     const m = bestMatch(parsed.transactions[i], candidateShapes, AUTO_MATCH_THRESHOLD);
-    if (m) matches.set(i, { paymentId: m.paymentId, score: AUTO_MATCH_THRESHOLD });
+    // The score the line was MATCHED at, not the threshold it had to clear.
+    // Every accepted line clears the threshold by definition, so recording the
+    // threshold told the operator the same confidence for every line on the
+    // statement — a perfect match and a marginal one both claimed 90%.
+    if (m) matches.set(i, { paymentId: m.paymentId, score: m.score });
   }
 
   // Look up the AR account once; we need it to post the matching journal
   // entry (Dr Bank / Cr Trade Debtors).
-  const arRows = (await sql`
-    select id from accounting.chart_of_accounts where code = '1100'
-  `) as Array<{ id: string }>;
-  if (!arRows.length) {
+  const arAccountId = await findAccountId(sql, '1100', tenantId);
+  if (!arAccountId) {
     return NextResponse.json(
       { error: 'Trade Debtors (1100) account missing' },
       { status: 500 },
     );
   }
-  const arAccountId = arRows[0].id;
 
   // Apply auto-matches: record the money as a payment, allocate it to the
   // invoice it settles, post the receipt to the ledger, and point the bank
@@ -318,7 +298,7 @@ export async function POST(req: NextRequest) {
           bankAccountGlId: bankGlId,
           arAccountId,
         });
-        const journalId = await commitJournalForBankTransaction(ctx, result, bankTxId, tx);
+        const journalId = await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
 
         // 4. Point the bank line at the invoice it was matched to and at the
         //    journal it produced.
@@ -343,10 +323,21 @@ export async function POST(req: NextRequest) {
   }
 
   const summary = summarizeImport(parsed, matches);
-  return NextResponse.json({
-    ok: true,
-    bankImportId,
-    inserted: insertedByIndex.size,
-    summary,
-  });
+  // The summary carries money as BigInt and dates as Date. `NextResponse.json`
+  // calls `JSON.stringify`, which THROWS on a BigInt — so before this, a
+  // SUCCESSFUL import answered 500 "Do not know how to serialize a BigInt"
+  // with the rows already written and the money already in. The operator was
+  // told their import had failed when it had worked, and would import again.
+  //
+  // `jsonSafe` puts the pence on the wire as strings, which is what the
+  // client component on the import page already expects: its `SummaryRow`
+  // says `amountPence: string` and its formatter calls `BigInt(p)`.
+  return NextResponse.json(
+    jsonSafe({
+      ok: true,
+      bankImportId,
+      inserted: insertedByIndex.size,
+      summary,
+    }),
+  );
 }

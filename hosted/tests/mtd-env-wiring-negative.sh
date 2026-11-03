@@ -50,6 +50,7 @@ trap 'rm -rf "$TMP"' EXIT
 #   hosted/systemd/brownhill-next.service  the unit that loads the settings
 #   HANDOFF-BROWNHILL.md                   the operator's instructions
 #   src/lib/accounting/mtd.ts              reads the HMRC settings
+#   src/lib/accounting/hmrc.ts             reads the HMRC endpoint
 #   src/lib/requests.ts                    reads the application's address
 #   src/app/api/v1/accounting/mtd/[action]/route.ts
 #                                           serves the OAuth callback
@@ -68,6 +69,7 @@ make_tree() {
   cp "$REPO/hosted/systemd/brownhill-next.service" "$root/hosted/systemd/"
   cp "$REPO/HANDOFF-BROWNHILL.md"              "$root/"
   cp "$REPO/src/lib/accounting/mtd.ts"         "$root/src/lib/accounting/"
+  cp "$REPO/src/lib/accounting/hmrc.ts"        "$root/src/lib/accounting/"
   cp "$REPO/src/lib/requests.ts"               "$root/src/lib/"
   cp "$REPO/src/app/api/v1/accounting/mtd/[action]/route.ts" \
      "$root/src/app/api/v1/accounting/mtd/[action]/"

@@ -34,6 +34,7 @@ export default async function AccountingHomePage() {
 
   const tiles: { href: string; label: string; perm: string; icon: 'wallet' | 'check' | 'trending' | 'doc' | 'clock' | 'receipt' | 'shield' | 'pound' }[] = [
     { href: '/accounts/accounting/banks', label: 'Bank accounts', perm: 'billing.write', icon: 'wallet' },
+    { href: '/accounts/accounting/invoices', label: 'Invoices', perm: 'billing.read', icon: 'receipt' },
     { href: '/accounts/accounting/reconcile', label: 'Reconcile', perm: 'billing.write', icon: 'check' },
     // Chart of accounts and periods were reachable only by typing the URL —
     // they existed, they were never linked from the hub or the nav.

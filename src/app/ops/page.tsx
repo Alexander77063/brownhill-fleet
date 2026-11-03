@@ -3,6 +3,7 @@ import { Icon } from '@/components/icons';
 import { getFleetEconomics, getObligations, getArrears } from '@/lib/queries';
 import { countOpenIncidents, listOpenIncidents } from '@/lib/queries-ops-incidents';
 import { countActiveSeries, listSeries, upcomingOccurrences } from '@/lib/queries-booking-series';
+import { requireTenantContext } from '@/lib/auth/context';
 import { getTenantChecklist } from '@/lib/onboarding-checklist';
 import { OnboardingChecklist } from '@/components/OnboardingChecklist';
 import { BrandingNotice } from '@/components/BrandingNotice';
@@ -18,15 +19,19 @@ export default async function OpsDashboard({
   searchParams: Promise<{ notice?: string }>;
 }) {
   const { notice } = await searchParams;
+  // The tenant is needed, not just the role: the incident and series queues
+  // are read over the direct Postgres connection, which bypasses RLS, so the
+  // tenant has to be named in the query.
+  const ctx = await requireTenantContext();
   const [econ, obligations, arrears, checklist, openIncidentCount, openIncidents, activeSeriesCount, series] = await Promise.all([
     getFleetEconomics(),
     getObligations(),
     getArrears(),
     getTenantChecklist(),
-    countOpenIncidents(),
-    listOpenIncidents(),
-    countActiveSeries(),
-    listSeries({ status: 'active' }),
+    countOpenIncidents(ctx.tenantId),
+    listOpenIncidents(ctx.tenantId),
+    countActiveSeries(ctx.tenantId),
+    listSeries(ctx.tenantId, { status: 'active' }),
   ]);
 
   const fleetCount = econ.length;

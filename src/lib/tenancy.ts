@@ -8,7 +8,13 @@
 import { createServiceClient } from "@/lib/supabase/server";
 import { regionProvider } from "@/lib/region";
 import { seedDefaultCategories } from "@/lib/expenses";
-import { sendSigninInvite } from "@/lib/invite-email";
+import { esc, sendSigninInvite } from "@/lib/invite-email";
+import { deploymentProfile } from "@/lib/deployment/profile";
+import { portalRoleFor } from "@/lib/iam";
+import { createLocalUser, localHasPassword, setLocalPassword } from "@/lib/auth/local-store";
+import { generateTemporaryPassword } from "@/lib/auth/password-reset";
+import { sendTenantEmail } from "@/lib/email/tenant-email";
+import { localDb } from "@/lib/db/local";
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -261,32 +267,100 @@ export async function getMember(tenantId: string, userId: string): Promise<Membe
   };
 }
 
-/** Add an existing user (by email) to the tenant with a role. Invite-by-email for
- * users who haven't signed up yet is a later enhancement. */
+/**
+ * The account that already exists for this email address, if any.
+ *
+ * On the SaaS the account lives in Supabase Auth, and `profiles` is the mirror
+ * of it that the app can read. On a self-hosted build the account lives in
+ * `auth.users`, which PostgREST does not expose — it serves only the `public`
+ * schema — so it is read over the direct connection instead.
+ */
+async function findAccountByEmail(email: string): Promise<string | null> {
+  if (deploymentProfile().supabaseAuth) {
+    const sb = createServiceClient();
+    const { data: profile } = await sb
+      .from("profiles")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
+    return (profile as { id: string } | null)?.id ?? null;
+  }
+  const db = await localDb();
+  const rows = (await db`
+    select id from auth.users where email = ${email} limit 1
+  `) as Array<{ id: string }>;
+  return rows[0]?.id ?? null;
+}
+
+export interface AddMemberResult {
+  /** True when this call created the colleague's account. */
+  created: boolean;
+  /** True when a sign-in email actually went out. */
+  emailed: boolean;
+  /** The colleague's account id. */
+  userId: string;
+  /**
+   * The password the operator must hand over.
+   *
+   * Set when this deployment created the account itself. The box signs its own
+   * sessions and usually has no email provider, so a password that is only ever
+   * emailed would reach nobody. It is shown once, in the panel, and never
+   * stored in the clear.
+   */
+  temporaryPassword?: string;
+  /** True when the colleague already had an account and was only given a membership. */
+  existingAccount: boolean;
+}
+
+/**
+ * Add a colleague to the tenant, creating their login if they do not have one.
+ *
+ * ## The two deployments provision accounts in different places
+ *
+ * The SaaS has Supabase Auth behind `sb.auth`, so `auth.admin.createUser`
+ * creates the account and a magic-link email lets them in.
+ *
+ * A self-hosted build has NO auth server at all. That call would be sent to the
+ * application's own origin, where nothing answers it and Next serves its own
+ * 404 page — so the operator saw, for every single new colleague:
+ *
+ *     Could not create an account for someone@company.com:
+ *     Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+ *
+ * and no account was created at all. Here the account is created in the local
+ * store (`auth.users` + `auth.local_credentials`) exactly the way the first-run
+ * setup and the driver invite create one, and the operator is handed the
+ * password, because a box with no email provider is the normal case.
+ */
 export async function addMemberByEmail(
   tenantId: string,
   email: string,
   role: string,
   actor: string,
   extraPermissions: readonly string[] = [],
-): Promise<{ created: boolean; emailed: boolean }> {
+): Promise<AddMemberResult> {
   const sb = createServiceClient();
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail) throw new Error("An email address is required.");
 
+  // The portal this colleague will land in. The tenant role says what they may
+  // do; the portal role says which app they open. They are two vocabularies,
+  // and the account carries the portal one — 'owner' is the tenant's own
+  // full-control role and belongs on the operations desk, not in the
+  // vehicle-owner portal this deployment does not have.
+  const portalRole = portalRoleFor(role);
+
   // Resolve the person's account — or provision one so a colleague doesn't have
   // to pre-register (mirrors the driver-invite / owner-onboarding flow). Every
   // write is scoped to the caller's tenant, which the action guard has checked.
-  const { data: profile } = await sb
-    .from("profiles")
-    .select("id")
-    .eq("email", cleanEmail)
-    .maybeSingle();
+  const existingUserId = await findAccountByEmail(cleanEmail);
 
   let userId: string;
   let created = false;
-  if (profile) {
-    userId = profile.id;
+  let temporaryPassword: string | undefined;
+
+  if (existingUserId) {
+    userId = existingUserId;
   } else {
     // A brand-new driver account can't be provisioned here: the driver portal
     // resolves the user via profiles.driver_id, which ONLY the driver invite
@@ -296,22 +370,70 @@ export async function addMemberByEmail(
       throw new Error(
         `To invite a driver, use Ops → Drivers → Invite — it creates their driver record and login together. The team-member form is for office roles.`,
       );
-    const { data: authData, error: createErr } = await sb.auth.admin.createUser({
-      email: cleanEmail,
-      email_confirm: true,
-      // The handle_new_user trigger reads raw_user_meta_data->>'role' to
-      // decide which portal the new account lands on. A freshly-created
-      // member's role must match the role they're being added under so
-      // they're routed to /accounts (not /ops) when their row is later
-      // updated with the same role on tenant_memberships.
-      user_metadata: { role, full_name: cleanEmail.split("@")[0] },
-    });
-    if (createErr || !authData?.user)
-      throw new Error(
-        `Could not create an account for ${cleanEmail}: ${createErr?.message ?? "unknown error"}`,
-      );
-    userId = authData.user.id;
+
+    if (deploymentProfile().supabaseAuth) {
+      const { data: authData, error: createErr } = await sb.auth.admin.createUser({
+        email: cleanEmail,
+        email_confirm: true,
+        // The handle_new_user trigger reads raw_user_meta_data->>'role' to
+        // decide which portal the new account lands on. It is given the PORTAL
+        // role, not the tenant role: the trigger maps portal roles to
+        // themselves, so this is what puts the colleague in the right app.
+        user_metadata: { role: portalRole, full_name: cleanEmail.split("@")[0] },
+      });
+      if (createErr || !authData?.user)
+        throw new Error(
+          `Could not create an account for ${cleanEmail}: ${createErr?.message ?? "unknown error"}`,
+        );
+      userId = authData.user.id;
+    } else {
+      // No auth server here, so the account is created in the local store:
+      // the account row, the credential row and the profile the trigger makes
+      // from it, in the same shape the first-run setup uses.
+      temporaryPassword = generateTemporaryPassword();
+      const createdUser = await createLocalUser(cleanEmail, temporaryPassword, {
+        role: portalRole,
+        fullName: cleanEmail.split("@")[0],
+      });
+      userId = createdUser.id;
+    }
     created = true;
+  }
+
+  // A colleague who already had an account may never have had a password — a
+  // phone-only sign-in, or an account seeded straight into the database. On
+  // this deployment the operator is the only way that person can ever get in,
+  // so issue them one. An account that already has a password is left alone:
+  // re-adding someone must never silently reset the password they are using.
+  if (!created && !temporaryPassword && !deploymentProfile().supabaseAuth) {
+    if (!(await localHasPassword(userId))) {
+      temporaryPassword = generateTemporaryPassword();
+      await setLocalPassword(userId, temporaryPassword);
+    }
+  }
+
+  // Make sure the account has a profile in the portal it should land in. The
+  // sign-up trigger creates one when the account row is inserted; an account
+  // that predates this, or whose insert did not fire the trigger, would have
+  // none — and a member with no profile is treated as a driver. An EXISTING
+  // profile is left alone: the portal a colleague already uses is not this
+  // form's to change.
+  if (!deploymentProfile().supabaseAuth) {
+    const { data: existingProfile } = await sb
+      .from("profiles")
+      .select("id")
+      .eq("id", userId)
+      .maybeSingle();
+    if (!existingProfile) {
+      const { error: profileError } = await sb.from("profiles").insert({
+        id: userId,
+        role: portalRole,
+        full_name: cleanEmail.split("@")[0],
+        email: cleanEmail,
+      } as never);
+      if (profileError)
+        throw new Error(`Could not create the profile for ${cleanEmail}: ${profileError.message}`);
+    }
   }
 
   const { error } = await sb
@@ -330,7 +452,13 @@ export async function addMemberByEmail(
     );
   if (error) throw new Error(`Could not add member: ${error.message}`);
 
-  // Email a one-click sign-in invite to a freshly-created member (best-effort).
+  // Tell the colleague they have been added.
+  //
+  // On the SaaS that is a one-click magic link. On a self-hosted box a magic
+  // link cannot work — there is no auth server to redeem it — so the email
+  // carries the temporary password instead, and the operator is shown that
+  // password either way, because a box with no email provider is the normal
+  // case and an emailed-only password reaches nobody.
   let emailed = false;
   if (created) {
     const { data: tenant } = await sb
@@ -338,12 +466,31 @@ export async function addMemberByEmail(
       .select("name")
       .eq("id", tenantId)
       .maybeSingle();
-    const tenantName = tenant?.name ?? "your organisation";
-    emailed = await sendSigninInvite(sb, cleanEmail, {
-      subject: `You've been added to ${tenantName} on Elite Fleet Management`,
-      heading: `You're on the team at ${tenantName}`,
-      body: `You've been given access to ${tenantName}'s fleet workspace on Elite Fleet Management. Click below to sign in — no separate sign-up needed.`,
-    });
+    const tenantName = (tenant as { name?: string } | null)?.name ?? "your organisation";
+
+    if (temporaryPassword) {
+      const loginUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/login`;
+      const html = [
+        `<p>Hi ${esc(cleanEmail.split("@")[0])},</p>`,
+        `<p>You have been added to ${esc(tenantName)} on Elite Fleet Management.</p>`,
+        `<p>Sign in at <a href="${esc(loginUrl)}">${esc(loginUrl)}</a> with your email address and this temporary password:</p>`,
+        `<p><code>${esc(temporaryPassword)}</code></p>`,
+        `<p>Change it under Settings &rarr; Password once you are in.</p>`,
+      ].join("");
+      const res = await sendTenantEmail(
+        tenantId,
+        cleanEmail,
+        `Your sign-in details for ${tenantName}`,
+        html,
+      );
+      emailed = res.sent;
+    } else {
+      emailed = await sendSigninInvite(sb, cleanEmail, {
+        subject: `You've been added to ${tenantName} on Elite Fleet Management`,
+        heading: `You're on the team at ${tenantName}`,
+        body: `You've been given access to ${tenantName}'s fleet workspace on Elite Fleet Management. Click below to sign in — no separate sign-up needed.`,
+      });
+    }
   }
 
   await audit(
@@ -354,7 +501,7 @@ export async function addMemberByEmail(
     { email: cleanEmail, role, created },
     actor,
   );
-  return { created, emailed };
+  return { created, emailed, userId, temporaryPassword, existingAccount: !created };
 }
 
 export async function updateMember(

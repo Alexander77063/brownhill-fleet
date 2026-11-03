@@ -177,6 +177,32 @@ export interface MatchCandidate {
   issuedAt: Date;
 }
 
+/**
+ * The issue date of an invoice, as the scorer needs it.
+ *
+ * `public.invoices.issued_on` is a `date` column, and postgres.js hands a raw
+ * `date` back as a JavaScript Date. That value cannot be concatenated with
+ * 'T00:00:00Z': `+` with a string on the right coerces the Date through
+ * `toString()`, giving
+ *
+ *     "Sun Nov 01 2026 00:00:00 GMT+0000 (Greenwich Mean Time)T00:00:00Z"
+ *
+ * which is not a date at all. `new Date(...)` of it is an Invalid Date, the
+ * days between the receipt and the invoice become NaN, and the 30-day window
+ * in scoreMatch never fires.
+ *
+ * So the day is read here, from whichever shape the driver handed over: a
+ * day string ('YYYY-MM-DD') or the Date it parses a `date` column into.
+ */
+export function issuedAtFromDbValue(value: string | Date): Date {
+  if (value instanceof Date) {
+    // A `date` column parses as UTC midnight, so the UTC calendar day is the
+    // day the invoice was issued.
+    return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+  }
+  return new Date(`${value}T00:00:00Z`);
+}
+
 export function scoreMatch(bankTx: ParsedTransaction, payment: MatchCandidate): number {
   let s = 0;
   if (bankTx.amountPence === payment.grossPence) s += 0.5;
@@ -189,16 +215,25 @@ export function scoreMatch(bankTx: ParsedTransaction, payment: MatchCandidate): 
   return s;
 }
 
-/** Convenience: returns the best match candidate above threshold, or null. */
+/**
+ * Convenience: returns the best match candidate above threshold, or null.
+ *
+ * The candidate it returns carries the score it was matched at. The importer
+ * shows that number beside every auto-matched line, and the score is the only
+ * thing that tells the operator how sure the match was — so the score has to
+ * be the real one, not the threshold. Every accepted line clears the threshold
+ * by definition, so reporting the threshold reports the same number for every
+ * line on the statement and says nothing at all.
+ */
 export function bestMatch(
   bankTx: ParsedTransaction,
   candidates: MatchCandidate[],
   threshold = 0.9,
-): MatchCandidate | null {
+): (MatchCandidate & { score: number }) | null {
   let best: { c: MatchCandidate; s: number } | null = null;
   for (const c of candidates) {
     const s = scoreMatch(bankTx, c);
     if (s >= threshold && (!best || s > best.s)) best = { c, s };
   }
-  return best?.c ?? null;
+  return best ? { ...best.c, score: best.s } : null;
 }

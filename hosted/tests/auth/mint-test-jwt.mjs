@@ -18,7 +18,24 @@
 // `role: 'owner'` — neither of which the application ever produces.
 //
 // Usage:
-//   node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [secret]
+//   MINT_JWT_SECRET=<secret> node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [subject]
+//
+// The secret comes from the ENVIRONMENT, never from the command line.
+//
+// The command line is the wrong place for it. On Linux `/proc/<pid>/cmdline`
+// is world-readable, so a secret passed as an argument is readable by every
+// account on the box — and the secret here is the deployment's REAL signing
+// secret, not a test fixture: on the deployed box the chaos drills read it
+// out of `/etc/brownhill/secrets/` and mint a session token with it. Anyone
+// who could read that argument could mint a session for any user in any
+// tenant. `/proc/<pid>/environ` is readable only by the process's own user
+// and by root, so the environment is the right place.
+//
+// The subject is the user id the token is for. It defaults to a fixed
+// placeholder, which is all the portability proof needs — it asserts about
+// the TENANT claim. The chaos drills need a real one: they create a
+// throwaway user, and a token for a user who does not exist is refused by
+// exactly the code path the drill is there to exercise.
 //
 // The token goes to stdout. A failure is a failure on stderr with a
 // non-zero exit — never an empty token, because an empty token turns a
@@ -46,7 +63,7 @@ const RESPAWNED = 'BROWNHILL_MINTER_RESPAWNED';
 // caller know this history, the minter works it out and re-runs itself with
 // the right flags — so a caller only ever runs:
 //
-//     node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [secret]
+//     node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [subject]
 //
 // The re-run is guarded by an environment marker, so it happens exactly once.
 function typeStrippingFlags() {
@@ -86,10 +103,45 @@ if (!process.env[RESPAWNED]) {
 // possible. By this point the flags are in place.
 
 const tenant = process.argv[2];
-const secret = process.argv[3];
+const subject = process.argv[3] || 'proof-subject';
+
+// The signing secret, from the ENVIRONMENT.
+//
+// NOT from the command line — see the note at the top of this file. A secret
+// passed as an argument sits in `/proc/<pid>/cmdline`, which every account on
+// the box can read; the environment is readable only by the process's own
+// user and by root.
+//
+// `MINT_JWT_SECRET` is the name, so it cannot be confused with the
+// application's own `JWT_SHARED_SECRET` — a caller that sets one and means
+// the other should fail loudly rather than sign with a secret it did not
+// intend to.
+const secret = process.env.MINT_JWT_SECRET || '';
 
 if (!tenant) {
-  console.error('usage: mint-test-jwt.mjs <tenantId> [secret]');
+  console.error('usage: MINT_JWT_SECRET=<secret> mint-test-jwt.mjs <tenantId> [subject]');
+  process.exit(2);
+}
+
+// No stand-in secret.
+//
+// There used to be one: with no secret in the environment the minter signed
+// with a fixed string that is in this repository, and returned a perfectly
+// ordinary-looking token. The middleware does not verify signatures — it
+// reads the claims it needs — so that token was a session for ANY user in
+// ANY tenant, and a caller who forgot to set the variable got one without
+// being told anything was wrong.
+//
+// So the minter refuses. A missing secret is a loud failure, which is the
+// only honest answer: the token it produces is a credential, and a
+// credential signed with a publicly-known key is not one.
+if (!secret) {
+  console.error(
+    'mint-test-jwt: MINT_JWT_SECRET is not set, so nothing was signed. ' +
+      'The signing secret must come from the environment — never from the ' +
+      'command line, which every account on the box can read out of ' +
+      '/proc/<pid>/cmdline.',
+  );
   process.exit(2);
 }
 
@@ -103,14 +155,14 @@ try {
   process.exit(1);
 }
 
-// `signJwt` refuses an empty secret by design. The middleware does not
-// verify signatures (it reads the claims it needs and nothing else), so a
-// placeholder is enough here — but the deployment's real secret is used
-// when one is provided, so the token is a genuine session token.
+// The secret is the one the caller put in the environment — the deployment's
+// own signing secret when the drills run on the box. There is no second
+// spelling and no stand-in: the guard above has already refused to get here
+// without one.
 try {
   const token = await signJwt(
-    { sub: 'proof-subject', role: 'authenticated', tenant_id: tenant },
-    secret || 'local-proof-secret',
+    { sub: subject, role: 'authenticated', tenant_id: tenant },
+    secret,
     600,
   );
   process.stdout.write(token);

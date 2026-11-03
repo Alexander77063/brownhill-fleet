@@ -56,7 +56,14 @@ export function OverdueCheckCard() {
 
       <p className="mt-3 text-xs text-muted">
         Tip: a daily system cron entry like
-        <code className="ml-1 rounded bg-[rgba(0,0,0,0.35)] px-1 py-0.5">
+        {/*
+          `break-all` is what keeps this page inside 320 CSS px. The command is one
+          unbroken run of characters — a cron expression, two flags, a header and a
+          URL — and a single unbreakable word in it pushed the whole page wider
+          than the viewport, which is a WCAG 1.4.10 Reflow failure. The runtime
+          accessibility pass caught it on /ops/billing at 320 px.
+        */}
+        <code className="ml-1 break-all rounded bg-[rgba(0,0,0,0.35)] px-1 py-0.5">
           17 9 * * * curl -fsS -X POST -H 'authorization: Bearer $OPS_TOKEN' https://brownhillmanagementfleet.online/api/automation/rent-overdue
         </code>
         runs the same check at 09:17 every day, once you have an automation token wired up.

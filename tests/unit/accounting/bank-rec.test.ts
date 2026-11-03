@@ -128,4 +128,33 @@ describe('bestMatch', () => {
     );
     expect(m).toBeNull();
   });
+  // The score is what the operator reads beside every auto-matched row, so it
+  // has to be the score the row was MATCHED at.
+  //
+  // It was not: the importer recorded the threshold instead of the score, so
+  // every auto-matched line claimed 90% confidence whatever it was actually
+  // worth — and a perfect match (the amount, the invoice number in the
+  // description, and the line inside the 30-day window) claimed exactly the
+  // same 90% as a marginal one. The number was a constant wearing a score's
+  // clothes.
+  it('reports the score it matched at, not the threshold it had to clear', () => {
+    const m = bestMatch(
+      { postedAt: new Date('2026-09-01'), amountPence: 123_456n, description: 'STRIPE PAYOUT REF INV-001', counterparty: 'Stripe' },
+      candidates,
+    );
+    // amount (0.5) + invoice number in the description (0.4) + inside the
+    // 30-day window (0.1).
+    expect(m?.score).toBe(1);
+  });
+  it('reports a lower score for a weaker match that still clears the threshold', () => {
+    // Same amount and invoice number, but the line was posted three months
+    // after the invoice — so the date window does not fire and the score is
+    // 0.9 rather than 1.0.
+    const m = bestMatch(
+      { postedAt: new Date('2026-11-30'), amountPence: 123_456n, description: 'STRIPE PAYOUT REF INV-001', counterparty: 'Stripe' },
+      candidates,
+    );
+    expect(m?.paymentId).toBe('p1');
+    expect(m?.score).toBeCloseTo(0.9);
+  });
 });

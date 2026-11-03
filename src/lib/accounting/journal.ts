@@ -56,7 +56,6 @@ export interface InvoiceForPosting {
   net: Pounds;
   vat: Pounds;
   gross: Pounds;
-  vatCodeId: string;
   chartOfAccounts: { ar: { id: string }; revenue: { id: string }; vatOutput: { id: string } };
 }
 
@@ -164,22 +163,127 @@ export function postVatPaymentJournal(input: BankVatPaymentForPosting): PostResu
 }
 
 // ── Reversals (void + credit note) ─────────────────────────────────────────
-// Same three lines as Rule #1, all amounts negated.
+//
+// The mirror of Rule #1 — with ONE exception, and the exception is forced by
+// arithmetic rather than chosen.
+//
+// WHY THE CREDIT SIDE IS SPLIT
+// -----------------------------
+// The invoice DEBITED Trade Debtors (1100) for the gross.
+//
+// If nothing has been received, that debt is still there, and the reversal
+// credits the account by the whole gross: the debt is cancelled, and the
+// account is back where it was. Correct.
+//
+// If the money HAS been received, the payment posting CREDITED Trade Debtors
+// for the same gross — so the account is already back at zero. A reversal
+// that credited it again would leave the account at MINUS the gross: a
+// negative asset, which is not a thing that can be true. What IS true is
+// that the operator is holding money that belongs to the customer. That is a
+// liability, and the chart of accounts has one: 2120 Refunds Payable.
+//
+// So the credit side of a void is SPLIT:
+//   * the part still owed  → Cr Trade Debtors (1100)
+//   * the part already got → Cr Refunds Payable (2120)
+// and the two always add up to the gross.
+//
+// A part-paid invoice gets both lines. A paid invoice gets only the refund.
+// An unpaid invoice gets only the debtors.
+//
+// The alternative — mirroring Rule #1 blindly and leaving the paid case to
+// sort itself out — puts a negative receivable in the trial balance and calls
+// it a day. The split is the version that is arithmetically true.
 
 export interface ReversalForPosting {
   sourceId: string;
   sourceType: 'invoice_void' | 'credit_note';
   invoice: { net: Pounds; vat: Pounds; gross: Pounds };
-  chartOfAccounts: { ar: { id: string }; revenue: { id: string }; vatOutput: { id: string } };
+  chartOfAccounts: {
+    ar: { id: string };
+    revenue: { id: string };
+    vatOutput: { id: string };
+    /**
+     * 2120 Refunds Payable.
+     *
+     * Required whenever `receivedPence` is above zero: without it there is
+     * no account to carry the refund, and quietly crediting Trade Debtors
+     * instead would leave the ledger wrong with nothing saying so. So the
+     * posting stops instead.
+     */
+    refundsPayable?: { id: string };
+  };
+  /**
+   * How much of the invoice has been received and allocated to it.
+   *
+   * Defaults to zero — an invoice nothing has been paid against.
+   */
+  receivedPence?: Pounds;
 }
 
 export function postReversalJournal(input: ReversalForPosting): PostResult {
   const { ar, revenue, vatOutput } = input.chartOfAccounts;
-  const lines: JournalLine[] = [
-    { accountId: ar.id,       debitPence: 0n,        creditPence: input.invoice.gross, sourceInvoiceId: input.sourceId },
-    { accountId: revenue.id,  debitPence: input.invoice.net,  creditPence: 0n,     sourceInvoiceId: input.sourceId },
-    { accountId: vatOutput.id, debitPence: input.invoice.vat,  creditPence: 0n,     sourceInvoiceId: input.sourceId },
-  ];
+  const received = input.receivedPence ?? 0n;
+
+  if (received < 0n) {
+    throw new Error('Cannot reverse an invoice: the amount received cannot be negative.');
+  }
+  if (received > input.invoice.gross) {
+    throw new Error(
+      `Cannot reverse an invoice worth ${input.invoice.gross}p: ${received}p has been received, ` +
+        'which is more than the invoice is worth.',
+    );
+  }
+
+  const stillOwed = input.invoice.gross - received;
+  const lines: JournalLine[] = [];
+
+  // The part still owed: the debt is cancelled.
+  //
+  // A zero line is not written at all. `journal_lines` carries
+  //   check ((debit_pence > 0) <> (credit_pence > 0))
+  // so a line that is zero on BOTH sides is not an empty line — it is an
+  // ILLEGAL one, and the bridge drops zero lines for that reason.
+  if (stillOwed > 0n) {
+    lines.push({
+      accountId: ar.id,
+      debitPence: 0n,
+      creditPence: stillOwed,
+      sourceInvoiceId: input.sourceId,
+    });
+  }
+
+  // The part already received: money the operator still owes back.
+  if (received > 0n) {
+    const refunds = input.chartOfAccounts.refundsPayable;
+    if (!refunds) {
+      throw new Error(
+        'Chart of accounts: no account with code 2120 (Refunds Payable). ' +
+          'A paid invoice cannot be voided without an account to carry the refund.',
+      );
+    }
+    lines.push({
+      accountId: refunds.id,
+      debitPence: 0n,
+      creditPence: received,
+      sourceInvoiceId: input.sourceId,
+    });
+  }
+
+  // The revenue and the VAT are reversed in full either way: the invoice was
+  // issued for that money and it is not being charged for.
+  lines.push({
+    accountId: revenue.id,
+    debitPence: input.invoice.net,
+    creditPence: 0n,
+    sourceInvoiceId: input.sourceId,
+  });
+  lines.push({
+    accountId: vatOutput.id,
+    debitPence: input.invoice.vat,
+    creditPence: 0n,
+    sourceInvoiceId: input.sourceId,
+  });
+
   return assertBalanced({
     lines,
     sumDebits: sum(lines.map(l => l.debitPence)),

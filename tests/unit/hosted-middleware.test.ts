@@ -144,6 +144,50 @@ describe('the hosted middleware', () => {
   });
 });
 
+describe('the routes a system timer calls', () => {
+  // These are not called by a browser. They are called by a timer on the box,
+  // and the bearer they carry is a SHARED SECRET — `CRON_SECRET`,
+  // `AUTOMATION_TOKEN` — not a session token. A shared secret is not a JWT.
+  //
+  // The middleware used to read every `Authorization: Bearer …` as a session
+  // token and answer 401 `bad_token` for an API path it could not parse. On
+  // Brownhill's own box — the only profile where this middleware runs at all
+  // — that meant EVERY scheduled job was refused before its own gate ran: no
+  // rent invoice was raised, no agreement completed, no reminder sent, no VAT
+  // snapshot taken, and the rent-overdue automation never ran.
+  //
+  // The jobs existed, the timers fired, the secret was provisioned — and the
+  // box did nothing, while every health check that asked "does the route
+  // answer 401 without a token?" said yes.
+  //
+  // The middleware must leave these alone. Each of these routes gates itself,
+  // with a constant-time comparison that fails closed.
+
+  it('does not claim the bearer on a cron route', async () => {
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/api/cron/generate-rent', 'a-shared-secret-not-a-jwt'));
+    expect(res.status).not.toBe(401);
+  });
+
+  it('does not claim the bearer on an automation route', async () => {
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/api/automation/rent-overdue', 'a-shared-secret-not-a-jwt'));
+    expect(res.status).not.toBe(401);
+  });
+
+  it('still claims the bearer on an ordinary API path — the exemption is narrow', async () => {
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/api/v1/accounting/reports/pnl', 'not-a-jwt'));
+    expect(res.status).toBe(401);
+  });
+
+  it('still holds the tenant rule on an ordinary API path', async () => {
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/t/tenant-b/dashboard', appToken('tenant-a')));
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('the drain', () => {
   function stubPostgrest(): void {
     vi.stubGlobal('fetch', async (input: unknown) => {

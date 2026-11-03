@@ -1,0 +1,22 @@
+# hosted/systemd/brownhill-cron-sweep-obligations.timer
+#
+# The daily obligations sweep.
+#
+# This refreshes the unified obligations surface: the document compliance
+# checks (insurance, PCO, DVLA re-check, MOT, VED) and the GFV settlement and
+# PCN report windows. It is what keeps the compliance picture on the console
+# honest, so it runs before the reminder job that acts on those obligations.
+#
+# The schedule is the one vercel.json declares for this path ("0 7 * * *"):
+# every day at 07:00. See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill daily obligations sweep (sweep-obligations)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+Unit=brownhill-cron@sweep-obligations.service
+
+[Install]
+WantedBy=timers.target

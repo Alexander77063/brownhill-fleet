@@ -51,22 +51,60 @@ export async function updateSettingsAction(formData: FormData): Promise<void> {
   revalidatePath('/admin');
 }
 
-export async function addMemberAction(formData: FormData): Promise<void> {
-  const ctx = await requirePermission('members.manage');
-  const role = String(formData.get('role') ?? 'ops');
-  assertAssignableRole(role, ctx.role); // validate + block owner/admin escalation
-  // Extra permissions a member gets on top of their role defaults — what lets a
-  // single-operator org hand-pick exactly what the accountant can see and do
-  // without inventing a new role.
-  const extra = formData.getAll('permission').map(String).filter(Boolean);
-  await addMemberByEmail(
-    ctx.tenantId,
-    String(formData.get('email') ?? ''),
-    role,
-    ctx.userId,
-    extra,
-  );
-  revalidatePath('/admin');
+/**
+ * The outcome of adding a member.
+ *
+ * The action returns this instead of throwing, because a throw out of a server
+ * action takes the WHOLE page with it: the browser showed Next's error digest
+ * and the operator lost the form they were filling in, with no idea whether
+ * the colleague had been added. A failure now says what went wrong, in the
+ * page, next to the button.
+ */
+export interface AddMemberActionResult {
+  ok: boolean;
+  /** The colleague's email, as it was stored. */
+  email?: string;
+  /** True when this call created their account. */
+  created?: boolean;
+  /** True when the colleague already had an account. */
+  existingAccount?: boolean;
+  /**
+   * The temporary password to hand over.
+   *
+   * Set on a deployment that signs its own sessions and usually has no email
+   * provider. Shown once, in the panel.
+   */
+  temporaryPassword?: string;
+  /** Human-readable error text, for the panel. */
+  message?: string;
+}
+
+export async function addMemberAction(formData: FormData): Promise<AddMemberActionResult> {
+  const email = String(formData.get('email') ?? '').trim().toLowerCase();
+  try {
+    const ctx = await requirePermission('members.manage');
+    const role = String(formData.get('role') ?? 'ops');
+    assertAssignableRole(role, ctx.role); // validate + block owner/admin escalation
+    // Extra permissions a member gets on top of their role defaults — what lets a
+    // single-operator org hand-pick exactly what the accountant can see and do
+    // without inventing a new role.
+    const extra = formData.getAll('permission').map(String).filter(Boolean);
+    const outcome = await addMemberByEmail(ctx.tenantId, email, role, ctx.userId, extra);
+    revalidatePath('/admin');
+    return {
+      ok: true,
+      email,
+      created: outcome.created,
+      existingAccount: outcome.existingAccount,
+      temporaryPassword: outcome.temporaryPassword,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      email,
+      message: e instanceof Error ? e.message : 'Could not add the member.',
+    };
+  }
 }
 
 export async function updateMemberAction(formData: FormData): Promise<void> {

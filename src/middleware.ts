@@ -155,6 +155,43 @@ function isAdminPath(pathname: string): boolean {
   );
 }
 
+/**
+ * Is this path one whose bearer is NOT a session token?
+ *
+ * These routes are called by a timer on the box, not by a browser. The bearer
+ * they carry is a SHARED SECRET — `CRON_SECRET`, `AUTOMATION_TOKEN` — and a
+ * shared secret is not a JWT.
+ *
+ * The middleware must leave them alone. It used to read every
+ * `Authorization: Bearer …` as a session token and answer 401 `bad_token`
+ * for an API path it could not parse. That was fatal on exactly the profiles
+ * where this middleware runs at all — `hosted` and `standalone`, the two
+ * Brownhill products — where the customer operates the box: every scheduled
+ * job was refused before its own gate could look at it.
+ *
+ * The consequence was not a slow box. It was a box that billed nobody:
+ * `/api/cron/generate-rent` raises the weekly rent invoice and nothing else
+ * does, so no invoice was raised, the ledger's revenue column stayed empty,
+ * the VAT return reported nothing and the receivables never aged. No
+ * agreement was completed, no reminder was sent, no VAT snapshot was taken,
+ * and the rent-overdue automation never ran. The timers fired, the secret was
+ * provisioned, the jobs were refused — and the health checks, which asked
+ * only "does the route answer 401 without a token?", were satisfied.
+ *
+ * Every route named here gates ITSELF, with a constant-time comparison that
+ * fails closed: `isCronAuthorized` (src/lib/cron.ts) for the cron routes,
+ * and an `AUTOMATION_TOKEN` comparison for the automation routes. The
+ * middleware not claiming the bearer is what lets those gates run.
+ */
+function carriesItsOwnCredential(pathname: string): boolean {
+  return (
+    pathname === '/api/cron' ||
+    pathname.startsWith('/api/cron/') ||
+    pathname === '/api/automation' ||
+    pathname.startsWith('/api/automation/')
+  );
+}
+
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
@@ -203,6 +240,15 @@ export async function middleware(req: NextRequest) {
       );
     }
   }
+
+  // A timer's bearer is a shared secret, not a session token. Leave it alone
+  // so the route's own gate can do its job — and so the box's scheduled jobs
+  // are not refused before they start.
+  //
+  // This is AFTER the drain check on purpose: a restore closes the database
+  // under the application, and the cron writes to it, so a job must not run
+  // into a half-restored database.
+  if (carriesItsOwnCredential(pathname)) return NextResponse.next();
 
   const auth = req.headers.get('authorization');
   if (!auth?.startsWith('Bearer ')) return NextResponse.next(); // not yet authed; downstream 401s

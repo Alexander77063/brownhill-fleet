@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server';
  *
  * Vercel Cron invokes these endpoints with `Authorization: Bearer ${CRON_SECRET}`
  * and **no session cookie**, so `/api/cron` is exempt from the session middleware
- * (see PUBLIC_PREFIXES in src/lib/supabase/middleware.ts). That makes this function
+ * (see `carriesItsOwnCredential` in src/middleware.ts). That makes this function
  * the only thing standing in front of jobs that raise invoices, end agreements and
  * email drivers — so it must fail closed.
  *

@@ -183,6 +183,26 @@ if [[ ! -f /etc/brownhill/secrets/bootstrap.env ]]; then
   bs=$(openssl rand -hex 32)
   write_secret /etc/brownhill/secrets/bootstrap.env "BOOTSTRAP_TOKEN=$bs"
 fi
+# CRON_SECRET — the token the scheduled jobs present.
+#
+# The cron routes are exempt from the session middleware, because a scheduled
+# call carries a bearer token and no cookie. That leaves `isCronAuthorized`
+# (src/lib/cron.ts) as the only thing in front of the job that raises
+# invoices — and it fails closed: with CRON_SECRET unset, and NODE_ENV=
+# production as the unit sets it, every /api/cron/* call answers 401.
+#
+# Which is exactly what the box did. Nothing on it supplied the secret and
+# nothing on it called the routes either, so the rent job never ran, no
+# invoice was ever raised, and Brownhill's books stayed empty. The secret and
+# the timers below are the two halves of the fix; neither is enough alone.
+#
+# It is generated like the other machine-to-machine secrets, so the operator
+# may pre-place their own in /etc/brownhill/secrets/cron.env and the
+# installer will keep it.
+if [[ ! -f /etc/brownhill/secrets/cron.env ]]; then
+  cron=$(openssl rand -hex 32)
+  write_secret /etc/brownhill/secrets/cron.env "CRON_SECRET=$cron"
+fi
 
 # The app's own environment.
 #
@@ -231,15 +251,40 @@ hosted/bootstrap/write-app-env.sh /etc/brownhill/secrets
 # derivation is right for every deployment. It is listed here so the
 # operator can see it, and can set it explicitly if HMRC's registration
 # names a different address.
+#
+# HMRC_MTD_VRN is the VAT registration number — the number a return is filed
+# against, because HMRC files one at POST /organisations/vat/{vrn}/returns.
+# It was nowhere: no column, no setting, no field, so there was no way to
+# say which organisation a return belonged to. The tenant can set its own
+# number on the MTD page, which is the better answer for a multi-tenant
+# deployment; this is the installation-wide DEFAULT. The first tenant to
+# connect to HMRC adopts it — by saving it on the MTD page, or by having it
+# set here before that tenant connects — and no other tenant can take it
+# afterwards, because a VAT registration number belongs to one organisation.
+# It is never used behind a tenant's back: a return is always filed under the
+# tenant's own number. Empty means "no number", and the application then
+# refuses to file rather than filing against the wrong organisation.
+#
+# HMRC_MTD_BASE_URL is the HMRC endpoint. Empty means HMRC's own sandbox (or
+# production, per HMRC_ENV). It exists so the chaos drills can point the
+# deployed application at a stub and watch it fail closed — an operator
+# should never have to edit this to run a drill, and nothing but the drills
+# should ever need to set it.
 if [[ ! -f /etc/brownhill/secrets/mtd.env ]]; then
   write_secret /etc/brownhill/secrets/mtd.env \
     "HMRC_MTD_CLIENT_ID=" \
     "HMRC_MTD_CLIENT_SECRET=" \
     "HMRC_MTD_REDIRECT_URI=" \
-    "HMRC_ENV=sandbox"
+    "HMRC_ENV=sandbox" \
+    "HMRC_MTD_VRN=" \
+    "HMRC_MTD_BASE_URL="
   echo "note: /etc/brownhill/secrets/mtd.env was created with empty HMRC" >&2
   echo "      credentials. The HMRC connection stays unconnected until you" >&2
   echo "      fill them in and restart brownhill-next.service." >&2
+  echo "      Set HMRC_MTD_VRN to this tenant's VAT registration number, or" >&2
+  echo "      set it on the MTD page once the tenant is connected. It is" >&2
+  echo "      the installation's default: the first tenant to connect adopts" >&2
+  echo "      it, and no other tenant can take it afterwards." >&2
 fi
 
 # The B2 credentials are the operator's to supply — they cannot be generated.
@@ -293,6 +338,22 @@ install -m 0644 hosted/systemd/brownhill-certbot-renew.timer   /etc/systemd/syst
 install -m 0644 hosted/systemd/alert-watch.service             /etc/systemd/system/
 install -m 0644 hosted/systemd/alert-watch.path                /etc/systemd/system/
 
+# The application's own scheduled jobs.
+#
+# These are the jobs Vercel Cron runs on the SaaS. The hosted box has no
+# Vercel, so until these were installed nothing called /api/cron/* at all —
+# and the rent job among them is what raises the invoice. One template
+# service, and a timer per job carrying that job's schedule.
+install -m 0644 hosted/systemd/brownhill-cron@.service                /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-complete-agreements.timer /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-device-health.timer     /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-escalations.timer       /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-generate-rent.timer     /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-owner-reports.timer     /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-send-reminders.timer    /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-sweep-obligations.timer /etc/systemd/system/
+install -m 0644 hosted/systemd/brownhill-cron-vat-snapshot.timer      /etc/systemd/system/
+
 # ── scripts the units execute ────────────────────────────────────────────────
 # The units call these by absolute path from /usr/local/bin. Without them
 # every one of those units fails with "ExecStart= ... No such file".
@@ -316,6 +377,13 @@ install -m 0750 hosted/bootstrap/brownhill-alert-forward.sh  /usr/local/bin/
 # shell and SQL — so it is world-readable.
 install -d -m 0755 /usr/local/lib/brownhill
 install -m 0644 standalone/scripts/schema-ledger.sh /usr/local/lib/brownhill/schema-ledger.sh
+
+# The caller the cron timers run. It is the only thing on the box that knows
+# how to present CRON_SECRET to the application's cron routes, and it is
+# written in node with no dependencies beyond node's own http module —
+# because the runtime is pinned and already on the box (the app runs on it),
+# while curl is not something the installer puts there.
+install -m 0755 hosted/scripts/brownhill-cron.mjs /usr/local/lib/brownhill/brownhill-cron.mjs
 
 # restore.sh is NOT called by a unit — it is spawned by absolute path from the
 # restore console (src/app/admin/restore/route.ts), and exercised by
@@ -422,6 +490,33 @@ systemctl enable brownhill-next.service
 systemctl enable --now brownhill-backup.timer
 systemctl enable --now brownhill-backup-verify.timer
 systemctl enable --now brownhill-certbot-renew.timer
+
+# The application's own scheduled jobs.
+#
+# These are the jobs Vercel Cron runs on the SaaS, and the hosted box has no
+# Vercel — so until now nothing on the box called /api/cron/* at all. The
+# rent job among them is what raises the invoice.
+#
+# They are started here rather than left for the operator to start by hand,
+# because a timer that is enabled but never started is the same as no timer:
+# the box looks provisioned and bills nobody.
+#
+# The first run of a Persistent=true timer happens as soon as it is
+# activated, if its window was missed while it was inactive — and on a
+# freshly enabled timer there is no previous run at all, so it fires
+# immediately. That is intended: it is the same catch-up the rent job does
+# for the weeks it was not running. On a box where the app has not been
+# deployed yet the run fails with "connection refused" and says so in the
+# journal; that is the truth about a box that is not ready, and it is better
+# than a green timer that has never called anything.
+systemctl enable --now brownhill-cron-complete-agreements.timer
+systemctl enable --now brownhill-cron-device-health.timer
+systemctl enable --now brownhill-cron-escalations.timer
+systemctl enable --now brownhill-cron-generate-rent.timer
+systemctl enable --now brownhill-cron-owner-reports.timer
+systemctl enable --now brownhill-cron-send-reminders.timer
+systemctl enable --now brownhill-cron-sweep-obligations.timer
+systemctl enable --now brownhill-cron-vat-snapshot.timer
 
 # The disk-space alert. A .path unit watches for a marker file; the marker is
 # written by the backup script when /var/backups fills up.

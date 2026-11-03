@@ -62,8 +62,15 @@ export function validateSeriesInput(input: SeriesInput): SeriesValidationError |
 }
 
 export interface ExpandInput {
-  startDate: string;            // YYYY-MM-DD
-  endDate: string | null;
+  /**
+   * 'YYYY-MM-DD', or the Date a driver hands over for a `date` column.
+   *
+   * postgres.js parses a raw `date` into a JavaScript Date, so a series read
+   * back from the database arrives in that shape. Both are accepted, and
+   * both mean the same UTC day.
+   */
+  startDate: string | Date;
+  endDate: string | Date | null;
   daysOfWeek: ReadonlyArray<number>;
   horizonWeeks?: number;        // only used when endDate is null
 }
@@ -98,7 +105,13 @@ export function expandSeries(input: ExpandInput): string[] {
   return out;
 }
 
-function parseDate(yyyyMmDd: string): Date {
+function parseDate(yyyyMmDd: string | Date): Date {
+  // A driver hands a `date` column back as a Date already at UTC midnight.
+  if (yyyyMmDd instanceof Date) {
+    return new Date(
+      Date.UTC(yyyyMmDd.getUTCFullYear(), yyyyMmDd.getUTCMonth(), yyyyMmDd.getUTCDate()),
+    );
+  }
   // Parse as UTC midnight so the .getUTCDay() weekday math is independent
   // of the runtime's local timezone.
   const [y, m, d] = yyyyMmDd.split('-').map((s) => Number.parseInt(s, 10));

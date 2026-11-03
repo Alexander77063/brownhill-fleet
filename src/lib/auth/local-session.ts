@@ -15,6 +15,8 @@
 import { cookies } from 'next/headers';
 import { signJwt, verifyJwt, type JwtClaims } from './jwt';
 import { resolveJwtSecret } from './secret';
+import { markSessionIssued } from './account-usage';
+import { deploymentProfile } from '@/lib/deployment/profile';
 import { localDb } from '@/lib/db/local';
 import {
   SESSION_COOKIE,
@@ -44,11 +46,37 @@ export function sessionSecret(): string {
   return resolveJwtSecret();
 }
 
+/**
+ * Mint a session for a user, and record that one now exists.
+ *
+ * The recording is not bookkeeping. It is what tells the product that an
+ * account belongs to somebody — and the product needs to know that before it
+ * adopts an account for a driver, because this product's sessions are
+ * stateless tokens: an account that has had a session keeps that session, and
+ * giving the account a membership would hand the session a portal it was
+ * never issued for.
+ *
+ * So the marker is written HERE, at the one place every session is made —
+ * the password sign-in, the phone code and the first-run setup alike — rather
+ * than in whichever of those happens to remember. A future way of signing in
+ * that forgot to mark the account would be a hole; there is no such way,
+ * because there is no other place a session is made.
+ *
+ * The marker is written BEFORE the token is signed. If the write fails, no
+ * session is issued at all — which is the direction that matters: a session
+ * without a marker would be an account nobody could tell was taken.
+ */
 export async function issueSessionToken(
   user: { id: string; email?: string | null },
   tenantId: string | null,
   seconds: number = SESSION_SECONDS,
 ): Promise<string> {
+  // Under Supabase Auth the account is Supabase's, there is no local account
+  // row to mark, and Supabase mints the session itself.
+  if (!deploymentProfile().supabaseAuth) {
+    await markSessionIssued(user.id);
+  }
+
   return signJwt(
     {
       sub: user.id,

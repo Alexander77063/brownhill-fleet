@@ -21,8 +21,8 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Unit tests | Vitest | 2.1.9 | 489 passing, 2 skipped |
-| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is a separate CI job |
+| Tests | Vitest | 2.1.9 | `pnpm test` — 712 passing, 0 skipped, 56 files. The database-backed ones need `DATABASE_URL` |
+| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 95 scans across 83 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
 | Backups | Backblaze B2 (S3-compatible) via `@aws-sdk/client-s3` | 3.1094.0 | Off-host copy of the nightly dump |
@@ -63,12 +63,13 @@ nginx  (:443, TLS via certbot, HSTS)          ← only public listener
 - The app talks to PostgREST on **loopback only**. PostgREST never binds a
   public interface.
 - The browser never sees a database URL. Every query goes through the app.
-- `app_state` holds the operational flags the middleware reads:
-  `bootstrap_pending`, `app_draining`. The Node server reads it through
-  `localDb()` — a direct connection as the table owner. The **Edge** middleware
-  cannot open a database connection, so it reads the drain flag over HTTP from
-  PostgREST as `anon`, against a one-row RLS policy that exposes the drain row
-  and nothing else. See §7.1 of the [schema document](./06-database-schema.md).
+- `app_state` holds the operational flags: `bootstrap_pending` — the first-run
+  window, read by the Node server — and `app_draining`, the restore switch.
+  The Node server reads it through `localDb()` — a direct connection as the
+  table owner. The **Edge** middleware cannot open a database connection, so
+  it reads the drain flag over HTTP from PostgREST as `anon`, against a
+  one-row RLS policy that exposes the drain row and nothing else. See §7.1 of
+  the [schema document](./06-database-schema.md).
 
 ### 3.1 The data-access seam (decision D2)
 
@@ -107,6 +108,38 @@ The split exists so that **the maths and the rendering are testable without a
 server** — and so the on-screen report, the downloaded document and the email
 are literally the same code path. They cannot disagree, because there is only
 one of them.
+
+### 3.3 The scheduled jobs (decision D17)
+
+The application's scheduled work runs as **eight systemd timers** on the box,
+one per cron route, over a single template service:
+
+```
+brownhill-cron@.service   →  hosted/scripts/brownhill-cron.mjs <slug>
+brownhill-cron-<slug>.timer  →  OnCalendar=…  Persistent=true
+```
+
+- The **schedule** is `vercel.json`'s, because the same application runs on
+  Vercel for other deployments. `hosted/tests/cron-timers.sh` asserts that
+  the two agree, that every application cron route has a timer and that every
+  timer has a route.
+- The **caller** is `hosted/scripts/brownhill-cron.mjs`, and it is the only
+  thing on the box that knows how to present the shared secret to the
+  application. It reads `CRON_SECRET` from `/etc/brownhill/secrets/cron.env`,
+  refuses to run without one, and fails loudly when the endpoint fails — a
+  timer that exits 0 on a failed job is a timer that hides its own failures.
+- The **middleware does not claim the timer's bearer**. Every other
+  `Authorization: Bearer …` on an API path is read as a session token, and the
+  middleware answered 401 `bad_token` for one it could not parse — which on
+  the `hosted` and `standalone` profiles, the two the customer operates,
+  refused **every** scheduled job before the route's own gate could look at
+  it. `carriesItsOwnCredential` in `src/middleware.ts` exempts `/api/cron/*`
+  and `/api/automation/*`, and only those.
+
+The consequence of getting this wrong was not a slow box. It was a box that
+**billed nobody**: `/api/cron/generate-rent` is what raises the weekly rent
+invoice, so no invoice was raised, the ledger's revenue column stayed empty,
+the VAT return reported nothing and the receivables never aged.
 
 ## 4. Integrations
 
@@ -292,6 +325,8 @@ Concretely, on the hosted box:
 | `HMRC_MTD_CLIENT_SECRET` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` |
 | `HMRC_MTD_REDIRECT_URI` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (empty → derived from the app's address) |
 | `HMRC_ENV` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (`sandbox` or `production`) |
+| `HMRC_MTD_VRN` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (the installation's default: the first tenant to connect adopts it, and the tenant's own `accounting.firs_credentials.vrn` is what a return is filed against) |
+| `HMRC_MTD_BASE_URL` | `src/lib/accounting/hmrc.ts` | `install.sh` | `mtd.env` (empty → HMRC's own sandbox/production address; the chaos drills point it at a stub) |
 | `NEXT_PUBLIC_APP_URL` | `src/lib/requests.ts`, `src/lib/accounting/mtd.ts` | `write-app-env.sh` | `app.env` |
 
 **Why.** A variable that is *set* under one spelling and *read* under
@@ -401,6 +436,218 @@ fails when it cannot do its job, and the deploy checks the staged tree
 again, independently, before installing it. A deployment that cannot be made
 self-contained is not deployed; the previous build keeps running.
 
+### D16 — A close is one transaction, and an acknowledgement carries the figures
+
+**Decision.** Closing an accounting period takes a per-(tenant, period)
+Postgres **advisory lock**, and the lock, the re-read of the warnings, the
+period row and its audit row all happen in **one transaction**
+(`src/lib/accounting/close.ts`, `src/lib/accounting/period-lock.ts`). Every
+write that can change what the close warns about takes the same lock — the
+bank import (`src/lib/accounting/bank-import.ts`) and the journal posting
+(`src/lib/accounting/journal-bridge.ts`) — and each of those takes the lock
+on a **transaction handle** it owns, so a caller cannot supply a
+transaction and forget the lock.
+
+The operator's acknowledgement carries the warning's **count and amount**,
+not only its name. The wire format is
+`{ code, count, amountPence }`, and the server compares all three.
+
+**Why.** The close used to be three transactions with nothing between them:
+read the preflight, create the period row if it did not exist, close the
+period. A bank line dated in the month that landed in that window was never
+shown to the operator, never acknowledged, and the month closed over it
+anyway. The ledger was not corrupted — the posting guard still refuses a
+posting into a closed period — but the **confirmation was a lie**: the
+operator was asked to acknowledge what was outstanding, and the system shut a
+month over something they had not seen.
+
+The lock is the ordering; the figures are what was acknowledged. Both are
+needed, and neither is enough alone. A lock alone stops a line landing
+*during* the close but does nothing about a line that landed between the
+operator reading the dialog and the operator pressing confirm. A
+figure-carrying acknowledgement alone stops that, but not a line that lands
+while the close is running.
+
+**Why the figures.** The warning's *code* does not change when a fourth bank
+line arrives — it is still `open_bank_items`. So an acknowledgement carrying
+only the code would still match, and the month would close over a line the
+operator had never seen. "I have seen that there is something outstanding" is
+not "I have seen *that much* outstanding", and only the second one is worth
+acting on.
+
+**Why an advisory lock and not a row lock.** A month with no postings has no
+period row — the journal bridge creates rows lazily — so a row-lock
+protocol would have to create the rows it locks, which is a lock protocol
+with a surprise in it. An advisory lock needs no row, creates nothing, and is
+scoped exactly to (tenant, period), so two tenants or two months never wait
+on each other. `pg_advisory_xact_lock` is released when the transaction ends,
+so a crash cannot leave one held.
+
+**Why not SERIALIZABLE.** Postgres's serialisable snapshot isolation needs two
+rw-conflict edges forming a cycle before it aborts a transaction. A single
+serialisable reader against a non-serialisable writer does not reliably
+produce that cycle, so the guarantee would be intermittent. The advisory lock
+forces the ordering in both directions and is reliable.
+
+**Why the transaction is not the route's.** A transaction that can only be
+exercised through HTTP is a transaction nobody tests directly. The
+transaction lives in `src/lib/accounting/close.ts` and is called by the
+route, so it can be tested against a real postgres.
+
+Proved by `tests/integration/accounting/close-race.test.ts`: a close whose
+acknowledgement no longer matches the figures is refused; a close with an
+unacknowledged new line is refused; and a bank import is shown to be
+**blocked on the lock**, checked in `pg_locks` so that a writer queued for a
+connection cannot be mistaken for a writer waiting on the lock. The gate was
+watched failing with the lock removed from the writer.
+
+### D17 — The box runs the application's scheduled jobs, and its own bearer
+
+**Decision.** Every application cron route has a **systemd timer** on the
+box, over one `brownhill-cron@.service` template that runs
+`hosted/scripts/brownhill-cron.mjs`. The schedule is `vercel.json`'s, because
+the same application runs elsewhere. The shared secret is provisioned to
+`/etc/brownhill/secrets/cron.env` and loaded by both the application and the
+timer. And the Edge middleware **does not claim a timer's bearer**: it reads
+every other `Authorization: Bearer …` on an API path as a session token.
+
+**Why.** Two omissions looked like one. `CRON_SECRET` was provisioned
+nowhere, so every `/api/cron/*` answered 401 — right of it, since
+`isCronAuthorized` fails closed when the secret is unset in production. And
+nothing called the routes: the only three timers on the box were the backup,
+the backup verify and the certbot renewal.
+
+The middleware was the third omission, and the worst one. It read every
+bearer as a session token and answered 401 `bad_token` for an API path it
+could not parse. That is fatal on exactly the profiles where the middleware
+runs at all — `hosted` and `standalone`, the two the customer operates — so
+**every scheduled job was refused before its own gate could look at it**. The
+timers fired, the secret was provisioned, the jobs were refused, and the
+health checks, which asked only "does the route answer 401 without a token?",
+were satisfied.
+
+The consequence was not a slow box but a box that **billed nobody**:
+`/api/cron/generate-rent` is what raises the weekly rent invoice, so no
+invoice was ever raised, the ledger's revenue column stayed empty, the VAT
+return reported nothing and the receivables never aged.
+
+**Why the exemption is narrow.** `carriesItsOwnCredential` exempts
+`/api/cron/*` and `/api/automation/*` and nothing else. A wider exemption
+would be an unauthenticated surface; a narrower one would leave the
+automation routes broken. `tests/unit/hosted-middleware.test.ts` asserts both
+halves — the cron route is not claimed, **and** an ordinary API path still
+is.
+
+**Why a caller and not `curl` in the timer.** `brownhill-cron.mjs` is the
+only thing on the box that knows how to present the secret, and it refuses to
+run without one and fails loudly when the endpoint fails. A timer that exits
+0 on a failed job is a timer that hides its own failures, which is how a box
+ends up billing nobody *and* reporting that it is fine.
+
+Proved by `hosted/tests/cron-timers.sh` (48 assertions) and
+`hosted/tests/cron-timers-negative.sh` (6), which runs the same gate against
+a doctored tree with a timer removed and requires it to fail.
+
+### D18 — An account that has been signed into is never taken over
+
+**Decision.** A local account records that a **session has existed** for it,
+and the driver invite **adopts** an account that belongs to no tenant only
+while no session has ever existed for it. An account that has had a session
+is **refused**, and its credential is not touched.
+
+**Why.** The invite matches an account by email, and an email is global. An
+account with no membership anywhere looked like nobody's, so the flow adopted
+it and replaced its password. That is right for the account a failed invite
+left behind — its password is unknown to everybody — and wrong for an account
+somebody has actually got into.
+
+The sessions in this product are **stateless tokens**: the cookie carries a
+signed JWT whose subject is the user, and the role that session gets is read
+from `tenant_memberships` on every request. So replacing a password does not
+end the session that password opened, and re-creating the membership makes
+that session work again. Adopting a used account therefore hands the old
+session this tenant's driver portal, while the operator — who knows an email
+address and nothing else — believes they have simply invited a driver.
+
+**Why a session is the marker.** A credential cannot tell use from disuse: a
+failed invite leaves behind a credential nobody knows, which looks exactly
+like a used one. Only a session proves that somebody got in.
+
+**Why the marker is written where sessions are made.** A session is minted in
+three places — the password sign-in, the phone code and the first-run setup —
+and only one of them is a password sign-in. A marker written by the sign-in
+alone therefore misses an account whose only session came through the other
+two, and that account looks unused to the invite. So the marker is written at
+the **one place a session is minted**, `issueSessionToken`, before the token
+is signed: if the marker cannot be written, no session is issued at all. No
+way of signing in can forget to write it, because there is no other place a
+session is made.
+
+**Why the marker the previous version wrote still counts.** The marker moved
+from `last_sign_in_at` — written by the password sign-in — to
+`session_issued_at`, written where a session is minted. Every account signed
+into before that move carries the old key and no other, so on a deployment
+that has been used, a reader that knew only the new key would see every daily
+user as an account nobody has ever got into: the invite would adopt it, give
+it a membership in this tenant, and hand its live session this tenant's
+driver portal. That is the same failure D18 exists to prevent, reintroduced
+through the rename. There is no migration that renames the key, and there is
+not going to be one — the hosted box only advances its schema when the
+installer runs, and the documented update path does not run it — so a fix that
+depended on a migration would be a fix that does not reach the customer.
+**Both keys are read wherever the marker is read**, which reaches every
+deployment whatever its schema is, and the next session for that account writes
+the new key as well, so the two agree from then on.
+
+**Why the decision and the write are one transaction.** PBKDF2 at 600,000
+iterations is slow enough that the world moves while a sign-in verifies a
+password. Two operations must not interleave: minting a session for an
+account, and adopting that account. So both take the account's rows under a
+lock — `auth.users` first, then `auth.local_credentials`, always in that
+order — and the marker and the credential are read and written as one
+decision. A sign-in that verified a password re-reads the credential under
+the lock and re-checks the password against whatever is there now, so a
+credential replaced in the meantime cannot be signed in with. An adoption
+reads the marker under the same lock and writes nothing if the marker is
+there. Whichever takes the lock first wins, and the other fails.
+
+**Why it lives in `raw_user_meta_data`.** The column exists on every account
+the local store creates, on every deployment the store runs on, and nothing
+else in the product writes it — so the marker cannot be lost. A column of its
+own would need a migration, and the hosted box only advances its schema when
+the installer runs; a fix that depends on a column that might not be there is
+a fix that does not reach the customer.
+
+The marker is also a **security fact**, so it has to be unreachable by the
+people whose accounts it describes. It is in the `auth` schema, which
+PostgREST does not serve — it serves `public` — and no request role holds
+any privilege on `auth.users` or `auth.local_credentials`: `anon`,
+`authenticated` and `service_role` have none. That is measured against the
+database rather than assumed, and a migration that granted one of them a
+privilege would be caught by the gate.
+
+**Known limitation, stated rather than hidden.** The sessions are stateless,
+so a password reset *anywhere* in the product does not by itself end an
+outstanding session. This decision removes the one path that took an account
+over on nothing but an email address. Ending the other sessions properly
+needs a session epoch that every request compares against — a change to the
+shape of every authenticated request, which belongs in its own piece of work
+rather than in a fix for one flow.
+
+**The gate.** `tests/integration/auth/account-session-marker.test.ts` proves
+all five halves against a real database: a session minted without a password
+is marked, and the invite refuses that account; a sign-in blocked behind a
+password change does not come back with a session; an adoption and a sign-in
+never both succeed; no request role holds any privilege on the account
+tables; and an account marked by the **previous** version of this product is
+still refused — its credential untouched, its live session intact — while an
+account that was never marked is still adopted. The last of those is watched
+**failing** before the fix and green after it, because a gate that only ever
+passes is not evidence that it can fail.
+`tests/integration/ops/invite-driver.test.ts` proves the ordinary case still
+works: the account a failed invite stranded is still adopted and still handed
+a working password.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -482,12 +729,13 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Unit | `pnpm test` | 489 passing, 2 skipped, 35 files. Pure logic: pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule and the operator's password reset |
+| Tests | `pnpm test` | 712 passing, 0 skipped, 56 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 52 tests across 7 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, the HMRC filing, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
-| Contrast | `pnpm test:a11y` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
-| E2E + axe | `pnpm test:axe` | Playwright, against a running app |
+| Contrast | `pnpm test:a11y:contrast` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
+| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **95 scans across 83 pages**, including the 320 px reflow pass and the tokenised signing route |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 The three accessibility suites — form audit, lint and contrast — all run in the
@@ -495,6 +743,20 @@ The three accessibility suites — form audit, lint and contrast — all run in 
 `hosted/tests/a11y-contrast-negative.sh`, which runs it against three
 deliberately broken stylesheets and requires it to fail on each: a gate that
 cannot fail is not a gate.
+
+The runtime axe pass is a separate job, in the `a11y` workflow. It needs a
+browser and the hosted stack, so it cannot live in the fast lane, and it is not
+in the `hosted-smoke` workflow either — that workflow's trigger paths are the
+schema, and adding `src/**` to them would drag the migration-replay job into
+every interface change. The `a11y` workflow builds the stack from
+`hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
+scans **83 distinct pages of the hosted deployment in 95 analyses** — ten of
+those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The
+coverage numbers are computed rather than typed: `tests/a11y/routes.ts` holds
+the route lists and `tests/unit/a11y-coverage.test.ts` counts them, checks that
+every route scanned is a route the app serves, that every route the app serves
+is either scanned or explained, and that every document publishing a coverage
+figure publishes the computed one.
 
 ### 8.1 What is *not* unit-tested, and why
 

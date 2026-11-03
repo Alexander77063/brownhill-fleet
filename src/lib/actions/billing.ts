@@ -34,13 +34,24 @@ export async function sendPaymentLink(formData: FormData): Promise<void> {
 
   // Read the driver + agreement + outstanding total so the SMS tells the
   // driver what they're being asked to pay.
+  //
+  // TENANT SCOPE
+  // ------------
+  // The agreement was already filtered by tenant. The DRIVER was not, and the
+  // driver is what leaves the building: the query above used to take the
+  // name and the phone number from whatever driver id the form posted, so an
+  // ops user could send a payment text to another tenant's driver — telling
+  // them what they owe, on a link that belongs to this tenant. Both joins
+  // now carry the tenant.
   const rows = (await sql`
     select d.full_name as driver_name, d.phone as driver_phone,
            a.tenant_id, coalesce(sum(i.gross_pence), 0)::bigint as outstanding_pence
       from agreements a
       join drivers   d on d.id = ${driverId}::uuid
+                    and d.tenant_id = ${ctx.tenantId}::uuid
       left join invoices i on i.agreement_id = a.id
                           and i.status in ('open','overdue')
+                          and i.tenant_id = ${ctx.tenantId}::uuid
      where a.id = ${agreementId}::uuid and a.tenant_id = ${ctx.tenantId}::uuid
    group by d.full_name, d.phone, a.tenant_id
   `) as Array<{ driver_name: string; driver_phone: string | null; tenant_id: string; outstanding_pence: string }>;
@@ -78,11 +89,13 @@ export async function sendPaymentLink(formData: FormData): Promise<void> {
   }
 
   // Record the SMS status on the row so ops can audit whether the link
-  // actually reached the driver.
+  // actually reached the driver. The token identifies the row, and the
+  // tenant says which tenant's row it is allowed to be.
   await sql`
     update payment_link_tokens
        set sms_status = ${smsStatus}
      where token = ${token}
+       and tenant_id = ${ctx.tenantId}::uuid
   `;
 
   revalidatePath('/ops/billing');

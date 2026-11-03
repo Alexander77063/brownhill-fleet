@@ -302,7 +302,22 @@ if command -v node >/dev/null 2>&1; then
   # Called as plain `node`: the minter works out for itself which TypeScript
   # flags this Node needs, so the gate does not have to know that they moved
   # between releases.
-  token=$(node "$(native_path "$MINTER")" "tenant-A" "s3cret" 2>"$TMP/mint.err")
+  #
+  # The secret goes in the ENVIRONMENT, because that is where a secret
+  # belongs: `/proc/<pid>/cmdline` is world-readable on Linux, and the
+  # deployment's real signing secret is what the drills mint with. The minter
+  # has no fallback any more — it refuses to sign without one — so the gate
+  # has to supply one.
+  #
+  # It is generated here rather than written in the file. A literal secret in
+  # the tree is exactly what the credential gate exists to refuse, and a
+  # throwaway one does not need to be remembered: it signs one token and is
+  # never used for anything else.
+  guard_secret="$( (od -An -N24 -tx1 < /dev/urandom 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1) | tr -d ' \n')"
+  if [[ -z "$guard_secret" ]]; then
+    skip "no randomness available to make a throwaway signing secret"
+  else
+  token=$(MINT_JWT_SECRET="$guard_secret" node "$(native_path "$MINTER")" "tenant-A" "guard-subject" 2>"$TMP/mint.err")
   mint_rc=$?
   if [[ "$mint_rc" -eq 0 && -n "$token" ]]; then
     ok "the minter produced a token"
@@ -323,6 +338,28 @@ if command -v node >/dev/null 2>&1; then
     ok "the token is a well-formed three-part JWT"
   else
     bad "the token is not a well-formed JWT"
+  fi
+
+  # And the minter has NO FALLBACK.
+  #
+  # It used to sign with a fixed string that is committed in this repository
+  # when no secret was in the environment. The middleware does not verify
+  # signatures — it reads the claims it needs — so that token was a working
+  # session for any user in any tenant, handed out without complaint. A
+  # fallback secret is not a test fixture here; it is a master key.
+  #
+  # `tests/unit/mint-test-jwt.test.ts` pins this as well, but that runs in
+  # the unit-tests job. This gate runs in the hosted-smoke job, next to the
+  # proof that actually mints tokens on the box — so the box's own job can
+  # see it too.
+  if MINT_JWT_SECRET="" node "$(native_path "$MINTER")" "tenant-A" "guard-subject" \
+      >"$TMP/nosecret.out" 2>"$TMP/nosecret.err"; then
+    bad "the minter signed a token with no secret in the environment — it has a fallback secret"
+  elif [[ -s "$TMP/nosecret.out" ]]; then
+    bad "the minter printed a token with no secret in the environment — it has a fallback secret"
+  else
+    ok "the minter refuses to sign with no secret in the environment"
+  fi
   fi
 else
   skip "node is not available; the minter was not exercised"

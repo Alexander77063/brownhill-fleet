@@ -1,0 +1,26 @@
+# hosted/systemd/brownhill-cron-escalations.timer
+#
+# The escalation ladder.
+#
+# This drives the escalation ladder for open emergencies — the thing that
+# turns a reported breakdown into somebody being dispatched. It is the most
+# frequent job on the box, and the one where a missed run is felt first: an
+# emergency that sits unescalated for five minutes is five minutes of the
+# driver waiting.
+#
+# The schedule is the one vercel.json declares for this path ("*/5 * * * *"):
+# every five minutes. Written in systemd's calendar syntax that is
+# `*-*-* *:0/5:00`.
+#
+# See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill escalation ladder (escalations)
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00
+Persistent=true
+Unit=brownhill-cron@escalations.service
+
+[Install]
+WantedBy=timers.target

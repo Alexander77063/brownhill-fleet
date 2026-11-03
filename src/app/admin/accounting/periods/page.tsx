@@ -13,7 +13,8 @@ import { PageHeader, Card, CardTitle, Table, Th, Td, EmptyState, Button } from '
 import { formatDate } from '@/lib/display';
 import { requirePermission } from '@/lib/auth/context';
 import { listPeriods, reopenWindowDays, reopenStatus, reopenDeadline } from '@/lib/accounting/periods';
-import { closePeriodAction, reopenPeriodAction } from '@/lib/actions/accounting-periods';
+import { reopenPeriodAction } from '@/lib/actions/accounting-periods';
+import { ClosePeriodButton } from '@/components/accounting/ClosePeriodButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -81,13 +82,7 @@ export default async function AdminPeriodsPage() {
                     </Td>
                     <Td>{isLocked ? <span className="text-[var(--color-loss)]">locked</span> : <span className="text-muted">—</span>}</Td>
                     <Td className="text-right">
-                      {isOpen && (
-                        <form action={closePeriodAction} className="inline">
-                          <input type="hidden" name="year" value={p.year} />
-                          <input type="hidden" name="month" value={p.month} />
-                          <Button type="submit" variant="outline" size="sm">Close</Button>
-                        </form>
-                      )}
+                      {isOpen && <ClosePeriodButton year={p.year} month={p.month} />}
                       {reopen === 'open' && (
                         <form action={reopenPeriodAction} className="ml-2 inline">
                           <input type="hidden" name="year" value={p.year} />
@@ -107,7 +102,7 @@ export default async function AdminPeriodsPage() {
       <Card className="mt-4">
         <CardTitle>How this works</CardTitle>
         <ul className="mt-3 space-y-2 text-sm text-muted">
-          <li><span className="text-cream">Close</span> — sets <code>closed_at = now()</code>. The journal-bridge (<code>src/lib/accounting/journal-bridge.ts</code>) then refuses any new post whose period is this (year, month).</li>
+          <li><span className="text-cream">Close</span> — asks first. It shows what is outstanding in the month (bank lines that have not been categorised, a VAT return HMRC has not accepted) and wants each warning acknowledged before anything happens. Confirming sets <code>closed_at = now()</code>, and the journal-bridge (<code>src/lib/accounting/journal-bridge.ts</code>) then refuses any new post into this (year, month).</li>
           <li><span className="text-cream">Reopen</span> — clears <code>closed_at</code>. Only available for {windowDays} days after close; after that the window is locked.</li>
           <li><span className="text-cream">Lock</span> — sets <code>locked_at = now()</code>. <span className="text-cream">Permanent</span>; cannot be undone. Not exposed in v1; the operator can run an SQL <code>UPDATE</code> on the live DB to set it after monthly close is final.</li>
         </ul>

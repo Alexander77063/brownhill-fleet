@@ -45,9 +45,12 @@ export interface SignInCapabilities {
    * The desktop product and the dedicated Nigerian instance both create their
    * first account and tenant at `/setup`, and the sign-in page sends the
    * operator there when the database is empty. The hosted deployment does
-   * not: it is onboarded through `/api/v1/bootstrap`, which also closes the
-   * bootstrap window, so its sign-in page must not send anyone to `/setup`
-   * behind the operator's back.
+   * not: it is onboarded through `/api/v1/bootstrap`, so its sign-in page
+   * must not send anyone to `/setup` behind the operator's back.
+   *
+   * This is about which door the handover tells the operator to use, not
+   * about which door is safe: both close the first-run window, in the same
+   * transaction that creates the owner.
    */
   readonly setupPathBuild: boolean;
 }

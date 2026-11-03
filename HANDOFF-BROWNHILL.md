@@ -142,7 +142,7 @@ written for you, one is optional:
 | File | Written by | Use |
 | --- | --- | --- |
 | `app.env` | `install.sh`, and again by `substitute-fqdn.sh` | The application's own run-time environment: `DATABASE_URL`, `BOOTSTRAP_TOKEN`, `POSTGREST_URL` and `NEXT_PUBLIC_APP_URL`. **Rewritten on every `install.sh` run**, so a rotated database password takes effect on the next install rather than needing a hand edit. `NEXT_PUBLIC_APP_URL` follows `BROWNHILL_FQDN`. |
-| `mtd.env` | `install.sh` creates it empty; you fill it in | The HMRC Making Tax Digital credentials — `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`, `HMRC_ENV`. Optional: without it the application starts and the HMRC page says the connection is not configured. See Appendix A, Step A.1. |
+| `mtd.env` | `install.sh` creates it empty; you fill it in | The HMRC Making Tax Digital credentials — `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI`, `HMRC_ENV`, `HMRC_MTD_VRN`, `HMRC_MTD_BASE_URL`. Optional: without it the application starts and the HMRC page says the connection is not configured. See Appendix A, Step A.1. |
 
 `hosted/bootstrap/operator-secrets.example` is a template you can copy and fill in. Once filled, drop it onto the box at `/etc/brownhill/secrets/` (renamed to remove `.example`) before `install.sh`. The default behaviour is to **generate** secrets at install time if your file is absent.
 
@@ -155,7 +155,7 @@ written for you, one is optional:
 ```bash
 mkdir -p /opt/brownhill
 cd /opt/brownhill
-git clone https://github.com/Alexander77063/elite-fleet-management.git repo
+git clone https://github.com/Alexander77063/brownhill-fleet.git repo
 cd repo
 git checkout main
 ```
@@ -234,11 +234,20 @@ exited 3 on every boot after the first. That is fixed, and
 
 Two things worth knowing:
 
-- **The first-run flag is a one-way door.** The bootstrap endpoint flips
-  `app_state.bootstrap_pending` to `'0'` when you complete first-run setup
-  (step H), and the bootstrap script does not set it back. Do not be surprised
-  that `bootstrap_pending` is `'0'` on a system that has been set up — that is
-  correct, and the first-run endpoint stays closed.
+- **The first-run flag is a one-way door.** The application flips
+  `app_state.bootstrap_pending` to `'0'` when first-run setup completes —
+  through the signed endpoint (step H) or through the browser setup page at
+  `/setup`, whichever the operator used — and the flip happens in the same
+  transaction as the owner account, so a setup that fails leaves the flag
+  armed and nothing half-made. The bootstrap script does not set it back. Do
+  not be surprised that `bootstrap_pending` is `'0'` on a system that has been
+  set up — that is correct, and the first-run endpoints stay closed.
+
+  If you ever find `bootstrap_pending='1'` on a box that **already has an
+  owner account**, the flag is stale, not the box un-onboarded. The
+  application corrects it by itself: the owner's next sign-in closes the
+  window, and both first-run endpoints refuse to serve. You do not need to
+  write to `app_state` by hand.
 - **A database that was provisioned before the ledger existed** has to be
   adopted once, explicitly:
 
@@ -329,7 +338,7 @@ If any gate fails, the script prints the offending output. The spec's monitoring
 
 ### Step H — Create the owner account (one-time first-run)
 
-The `/api/v1/bootstrap` endpoint is reachable **only when `app_state.bootstrap_pending='1'`**, and only after presenting a valid HMAC signature with `BOOTSTRAP_TOKEN`. From the machine where you have `BOOTSTRAP_TOKEN` available:
+The `/api/v1/bootstrap` endpoint is reachable **only while the first-run window is open** — `app_state.bootstrap_pending='1'` **and** no owner account exists yet — and only after presenting a valid HMAC signature with `BOOTSTRAP_TOKEN`. Either half of the window closing closes the endpoint: a box that has already been onboarded answers 410 Gone even if its flag still says `'1'`. From the machine where you have `BOOTSTRAP_TOKEN` available:
 
 ```bash
 TOKEN=$(sudo cat /etc/brownhill/secrets/bootstrap.env | cut -d= -f2)
@@ -635,12 +644,30 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
    HMRC_MTD_CLIENT_SECRET=<client_secret>
    HMRC_MTD_REDIRECT_URI=https://<your-host>/api/v1/accounting/mtd/callback
    HMRC_ENV=sandbox
+   HMRC_MTD_VRN=<vat_registration_number>
+   HMRC_MTD_BASE_URL=
    ```
    - `HMRC_MTD_REDIRECT_URI` may be left **empty**: the application then
      derives it from the deployment's own address, which is the same URL.
    - `HMRC_ENV` is `sandbox` while you are testing against HMRC's sandbox,
      and `production` once you are filing live returns. Set it explicitly
      rather than relying on the default.
+   - `HMRC_MTD_VRN` is the **VAT registration number** — the number HMRC
+     issued, 3 to 15 digits. It matters because HMRC files a return at
+     `POST /organisations/vat/{vrn}/returns`: the number is in the path, so
+     it decides which organisation the return belongs to. Leave it empty if
+     you are unsure — the application then refuses to file rather than filing
+     against the wrong organisation, and you can set it on
+     `/admin/accounting/mtd` once the tenant is connected. It is **not** the
+     Nigerian FIRS tax identification number that the same table also carries.
+     It is the installation's **default**: the first tenant to connect to
+     HMRC adopts it, and no other tenant can take it afterwards — a VAT
+     registration number belongs to one organisation. A return is always
+     filed under the tenant's own number, so this value never files on its
+     own.
+   - `HMRC_MTD_BASE_URL` may be left **empty**: the application then uses
+     HMRC's own address for the environment named by `HMRC_ENV`. The chaos
+     drills set it, briefly, to point the application at a stub.
    - The file is optional. Without it the application starts, and the HMRC
      settings page says the connection is not configured.
 4. Restart the application so it picks the file up:
@@ -648,18 +675,59 @@ If the in-app accounting module is enabled in your deploy (PR #89 + #90 + #91 + 
    sudo systemctl restart brownhill-next.service
    ```
 
-### Step A.2 — Complete the OAuth consent (operator-paste-the-code in v1)
+### Step A.2 — Complete the OAuth consent
 
 1. In the Brownhill app, navigate to `/admin/accounting/mtd` and click **Connect to HMRC**.
 2. The consent screen redirects to HMRC; the operator signs in with their Government Gateway credentials and grants the app access to VAT filings.
-3. On the consent screen's "code" parameter URL, copy the `code` value.
-4. The app's callback handler — `src/app/api/v1/accounting/mtd/[action]/route.ts`, the `callback` action — accepts the code and exchanges it for tokens via `submitVatReturn`'s `exchangeCodeForTokens`. Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in `src/lib/accounting/mtd.ts`. This handler ships in this repository; nothing further has to be wired.
+3. HMRC sends the browser back to
+   `https://<your-host>/api/v1/accounting/mtd/callback?code=…&state=…`. The
+   app's callback handler — `src/app/api/v1/accounting/mtd/[action]/route.ts`,
+   the `callback` action — reads that code itself and exchanges it for tokens
+   via `exchangeCodeForTokens`. **There is nothing to copy and paste**: the
+   handler ships in this repository and does the exchange on the round trip.
+   Tokens are stored encrypted at rest via the AES-GCM / HKDF helpers in
+   `src/lib/accounting/mtd.ts`.
+4. You land back on `/admin/accounting/mtd` with a green **Connected to HMRC**
+   message and the token expiry time. If you refused consent, or the state
+   could not be verified, the page says so and nothing was saved.
 
-### Step A.3 — Submit a VAT return
+### Step A.3 — Set the VAT registration number, then submit a VAT return
 
-1. Navigate to `/admin/accounting/reports/vat-return?period=YYYY-MM`.
-2. Review the box figures; if correct, click **Submit to HMRC**.
-3. The submit handler calls `aggregateVatReturn` + `submitVatReturn` (the fail-safe flow): only on HMRC success is the §2 Rule #5 journal entry posted; on rejection or token expiry, no journal entry is written and the operator gets an inline error.
+1. On `/admin/accounting/mtd`, set the **VAT registration number** — the
+   number HMRC issued, 3 to 15 digits. HMRC files a return at
+   `POST /organisations/vat/{vrn}/returns`, so the number is in the path: it
+   decides which organisation the return belongs to. It is stored against the
+   tenant's HMRC connection, and a return is always filed under the tenant's
+   own number.
+   - If `HMRC_MTD_VRN` is set in `mtd.env` and this tenant has not connected
+     yet, the page offers that number and the box is pre-filled with it:
+     press **Save the VAT registration number** to adopt it. That is the
+     step that makes the installation's default real — until then the
+     tenant has no number of its own and the application refuses to file.
+     Only one tenant can hold a given number, so if the page says the number
+     is already in use by another tenant on this installation, type this
+     tenant's own number instead.
+2. Navigate to `/admin/accounting/reports/vat-return?period=YYYY-MM`.
+3. Review the box figures; if correct, click **Submit to HMRC**.
+4. The submit handler calls `aggregateVatReturn` + `submitVatReturn` (the fail-safe flow): only on HMRC success is the §2 Rule #5 journal entry posted; on rejection or token expiry, no journal entry is written and the operator gets an inline error.
+5. Read what the page says:
+   - **Accepted** — the page shows HMRC's own reference (the correlation id).
+     Quote it in any correspondence with HMRC.
+   - **Refused** — the page shows HMRC's own words, and nothing was posted to
+     the ledger. Fix what HMRC objected to and file again; the submission row
+     keeps the reason.
+   - **Cannot file yet** — the page says whether the tenant has no HMRC
+     connection, no VAT registration number, or a token that needs
+     reconnecting.
+   - **HMRC could not be reached** — nothing was sent and nothing was posted.
+     Filing again is safe.
+   - **Already filed** — HMRC has this return for this period and it has
+     been posted to the ledger. A return cannot be filed twice for the same
+     period; file an adjustment return with HMRC if it needs correcting.
+   - **Already in progress** — another filing of this period is under way.
+     Wait for it to finish. If the filing started and never finished, the
+     page offers **File it again** — check HMRC's filing history first,
+     because HMRC may already have it.
 
 ### Step A.4 — Reconcile bank statements
 

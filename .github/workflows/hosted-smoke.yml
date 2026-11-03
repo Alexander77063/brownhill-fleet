@@ -35,6 +35,31 @@ on:
       - 'hosted/**'
       - 'package.json'
       - '.github/workflows/hosted-smoke.yml'
+      # The accounting module and the tests that need a real postgres.
+      #
+      # The filter used to name the schema, the scripts and the hosted box —
+      # and nothing under src/. So a change to the ledger's own code never
+      # brought this job up, and the database-backed tests never ran in CI at
+      # all. The accounting module is where the money is, so it is the last
+      # thing that should be left out of a job that exists to prove the
+      # deployment works.
+      - 'src/lib/accounting/**'
+      - 'src/app/api/v1/accounting/**'
+      - 'src/lib/db/**'
+      - 'src/lib/auth/local-store.ts'
+      - 'tests/integration/**'
+      - 'tests/rls/**'
+      # Every page and every library the operator touches.
+      #
+      # The journey below fetches every operator page with a real session and
+      # looks for a 500 in the answer, because that is the fault class a
+      # status-code assertion cannot see: `/ops` and `/ops/series` both went
+      # 500 as soon as a booking series existed, and nothing in the suite
+      # could see it. A gate that only runs when the DATABASE changes cannot
+      # catch a page that breaks.
+      - 'src/app/**'
+      - 'src/lib/**'
+      - 'src/components/**'
   workflow_dispatch:
     inputs:
       production:
@@ -76,6 +101,14 @@ jobs:
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+      # The token the scheduled jobs present.
+      #
+      # The stack runs NODE_ENV=production, and `isCronAuthorized` fails
+      # closed there: with CRON_SECRET unset, every /api/cron/* call answers
+      # 401 and the box raises no rent invoice at all. It is not a secret —
+      # it is a value for a matrix — and the compose stack reads it from this
+      # job's own environment.
+      CRON_SECRET: ci-cron-secret-for-matrices-only-do-not-reuse
     steps:
       - uses: actions/checkout@v4
       - name: The migration ledger's fingerprint
@@ -105,6 +138,54 @@ jobs:
         # second of work. It runs first because it is the cheapest gate that
         # can catch the most expensive mistake.
         run: bash hosted/tests/env-var-names.sh
+      - name: The box runs its scheduled jobs
+        # The hosted deployment had NO scheduled job of any kind, and the
+        # reason was two separate omissions that only looked like one:
+        #
+        #   * CRON_SECRET was provisioned nowhere, so every call to a cron
+        #     route answered 401;
+        #   * no timer called the routes, so nothing called them at all.
+        #
+        # The consequence was not a slow box. It was a box that billed
+        # nobody: /api/cron/generate-rent is what raises the weekly rent
+        # invoice, so no invoice was raised, the ledger's revenue column
+        # stayed empty, the VAT return reported nothing and the receivables
+        # never aged.
+        #
+        # This gate holds the box's timers to the SaaS's schedules, holds the
+        # secret to being provisioned and loaded, and exercises the caller
+        # against a stub endpoint.
+        #
+        # Static: no docker, no database, a few seconds.
+        run: bash hosted/tests/cron-timers.sh
+      - name: The cron gate can fail
+        # A gate that cannot fail is not a gate. This breaks the cron
+        # deployment on purpose — a deleted timer, an unprovisioned secret, a
+        # moved schedule, a missing bearer, a timer that is installed but
+        # never started — one defect at a time, each in a fresh copy of the
+        # tree, and requires the gate to NOTICE every one of them.
+        #
+        # It runs against an unmodified copy first and requires that to
+        # pass, so a gate broken for any reason at all cannot satisfy the
+        # checks below.
+        run: bash hosted/tests/cron-timers-negative.sh
+      - name: PostgREST's schema cache
+        # PostgREST reads the database schema once, at start-up, and caches it.
+        # A PostgREST that starts before the migrations have run has a cache
+        # with nothing in it, and every write through it then fails — an
+        # INSERT answers 404 with an empty body, an RPC answers PGRST202, an
+        # embedded relationship answers PGRST200. Reads keep working, so the
+        # pages look fine and the writes are silently lost.
+        #
+        # It happened here: the compose stack started PostgREST before the
+        # bootstrap oneshot applied the schema, the legal acceptance could
+        # not be recorded, and every operator route redirected to
+        # /legal/accept. This gate asserts both halves of the fix — the
+        # dependency order in the compose file, and the reload notification
+        # the bootstrap sends to a PostgREST that is already running.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/postgrest-schema-cache.sh
       - name: The off-host backup's path prefix
         # The copy that leaves the box is the reason a backup exists. It is
         # filed under a path built from the deployment's hostname, and that
@@ -114,6 +195,23 @@ jobs:
         # pre-rename name still working, and a loud refusal when there is no
         # hostname at all.
         run: bash hosted/tests/backup-offhost-target.sh
+      - name: The off-host backup drill cannot pass for the wrong reason
+        # The drill that proves the off-host copy is watched breaks the b2
+        # CLI on purpose. It used to do that on a box where b2 had never
+        # been installed — fabricating one — and on a box whose Backblaze
+        # credentials were still the installer's placeholders, where its
+        # first half passed for the wrong reason and the whole drill was
+        # reporting on a box that had never had an off-host copy at all.
+        #
+        # The drill now asks a shared module before it touches anything,
+        # and skips out loud when the answer is no. This gate proves the
+        # module agrees with the PRODUCTION script about what real
+        # credentials are — the two must not drift — and then runs the
+        # drill against a box with placeholder credentials and checks that
+        # it skipped without touching a thing.
+        #
+        # Static: no docker, no database, no box, a couple of seconds.
+        run: bash hosted/tests/backup-drill-preconditions.sh
       - name: The bootstrap waiter can find the bootstrap
         # A step that waits for the stack's bootstrap has to be able to FIND
         # it, and the obvious way to find a container does not work:
@@ -129,6 +227,51 @@ jobs:
         # own log, and waits for one that is still running. It needs only
         # docker, so it runs before the build.
         run: bash hosted/tests/bootstrap-wait.sh
+      - name: Every wait for a postgres goes over TCP
+        # The postgres image does not start one server. It starts a
+        # TEMPORARY one to run initdb, shuts it down, and only then starts
+        # the real one — and the temporary one is started with
+        # `listen_addresses=''`, so it answers on the unix socket and on
+        # nothing else.
+        #
+        # psql connects over the socket unless told otherwise. So a
+        # readiness probe that runs `psql -c 'SELECT 1'` is answered YES by
+        # a server that is about to be shut down under it: the gate declares
+        # the database ready, the next command arrives, and the server has
+        # gone. The failure says nothing about the thing under test —
+        # "the throwaway postgres never came up".
+        #
+        # It cost ONE red build in this repository's CI history: 2026-11-03,
+        # at the seed gate. What makes the cause certain is the timing in that
+        # log — the gate had a thirty-second budget (60 polls of half a
+        # second) and failed in 0.98 of them, reporting "Result: 0 passed, 0
+        # failed". A probe with thirty seconds to wait cannot time out in one,
+        # so the probe SUCCEEDED and the very next line found the server gone.
+        # The other red builds that week were three DIFFERENT defects, and
+        # reading the failing step out of a run is what tells them apart.
+        #
+        # The rule is written once, in scripts/lib/postgres-container.sh, and
+        # this gate holds every caller to it: the shared rule asks for
+        # 127.0.0.1 (the real server is the first to listen there and the
+        # temporary one never does), every script that starts a postgres
+        # waits with that rule, no script carries a probe of its own, and
+        # every compose readiness probe names a TCP host.
+        #
+        # Static: no docker, no database, a few seconds.
+        run: bash hosted/tests/postgres-readiness-probe.sh
+      - name: The readiness gate can fail
+        # A gate that cannot fail is not a gate. This one breaks the rule on
+        # purpose, in a copy of the tree, and requires the gate to notice:
+        # the compose healthcheck back on the socket, a gate that stops
+        # using the shared rule, a gate that stops using the shared wait, a
+        # gate that probes postgres itself, and the shared rule itself losing
+        # its TCP host. Each defect goes into a FRESH copy, and the gate is
+        # first required to PASS against an unmodified copy — without that,
+        # a gate that failed for any reason at all would satisfy every one
+        # of these checks.
+        #
+        # Static: no docker, no database, a few seconds.
+        run: bash hosted/tests/postgres-readiness-probe-negative.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4
@@ -195,7 +338,45 @@ jobs:
         # code, so the wait is exactly as long as the bootstrap takes.
         run: bash hosted/scripts/wait-for-bootstrap.sh --compose-file hosted/dev/docker-compose.yml
       - name: Run the integration suite (DEPLOYMENT_PROFILE=hosted)
-        run: DEPLOYMENT_PROFILE=hosted pnpm test
+        # DATABASE_URL is what turns the database-backed tests ON.
+        #
+        # They check for it and SKIP when it is absent — out loud, because a
+        # skipped check and a passing check look the same in a build log. So
+        # without this line the job went green while the ledger's atomicity
+        # and the accounting schema's tenant isolation were never executed
+        # anywhere in CI.
+        #
+        # The address is the compose stack's own published port: the postgres
+        # service publishes 55432 on the runner's loopback, and it authenticates
+        # with trust, so the URL carries no password. The application inside
+        # the compose network reaches the same database as `postgres:5432`.
+        #
+        # APP_ORIGIN is the second half of the same deal, and it was missing
+        # for the same reason. The service client calls the application's OWN
+        # origin, which rewrites /rest/v1 to PostgREST — without the origin it
+        # has nowhere to send its requests, so the tests that exercise the
+        # flows an operator actually uses (adding a team member, inviting a
+        # driver) could not run at all.
+        #
+        # REQUIRE_INTEGRATION=1 closes the loophole those two lines leave
+        # open: without it, a missing variable means the integration tests
+        # SKIP and this job goes green having never run them. With it, a
+        # missing variable is a FAILURE. This job is the only one that has
+        # the database and the running application, so it is the only one that
+        # may claim these tests passed.
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:55432/postgres
+          APP_ORIGIN: http://127.0.0.1:55431
+          REQUIRE_INTEGRATION: '1'
+        run: |
+          # The variables above are what turn the database-backed tests ON.
+          # Without them the suite SKIPS them and this job still goes green,
+          # so the job refuses to run a suite that could only skip.
+          if [ -z "$DATABASE_URL" ] || [ -z "$APP_ORIGIN" ]; then
+            echo "::error::the integration tests need DATABASE_URL and APP_ORIGIN; a suite that skips them proves nothing"
+            exit 1
+          fi
+          DEPLOYMENT_PROFILE=hosted pnpm test
       - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh
       - name: The chain assertion can fail
@@ -212,6 +393,20 @@ jobs:
         run: bash hosted/tests/tls-assertion-negative.sh
       - name: Migrations-regression
         run: bash hosted/tests/migrations-regression.sh
+      - name: A failed seed leaves the database fail-closed
+        # The seed reinstates a tenant_id default for the duration of its
+        # inserts and drops it again at the BOTTOM of the file. The teardown
+        # was the last statement, so a seed that failed partway through left
+        # the default SET — which is the opposite of the state it exists to
+        # restore, and it took away the 23502 guard that migration 0052
+        # installs so that an application write which forgets tenant_id is
+        # refused.
+        #
+        # The seed is one transaction now, so a failure rolls the whole thing
+        # back. This proves it, and proves the gate can see the defect: it
+        # runs the seed WITH its transaction wrapper removed, on purpose, and
+        # requires that copy to leave the database fail-open.
+        run: bash hosted/tests/seed-fail-closed.sh
       - name: Bootstrap idempotency (a re-run applies nothing)
         # The bootstrap is a systemd oneshot that runs on every boot, so it has
         # to be a no-op against a database that is already provisioned. It was
@@ -220,6 +415,117 @@ jobs:
         run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
+      - name: Two fixtures cannot share a stamp
+        # Every drill stamps its rows with a token, and that token goes into
+        # a tenant's slug, a user's email, a vehicle's registration and an
+        # invoice's number — all four of which are unique. The token used
+        # to be the clock and the process id, which is unique only if two
+        # fixtures are never built in the same second by the same shell.
+        #
+        # The isolation gate below builds exactly two of them, back to
+        # back, and in CI they landed in the same second: the gate died on
+        # `duplicate key value violates unique constraint
+        # "tenants_slug_key"` before it could prove anything at all. On a
+        # slower machine it passed, because the two inserts fell into
+        # different seconds — a gate that fails on a fast machine and
+        # passes on a slow one is not a gate.
+        #
+        # This one freezes the clock, so the collision is guaranteed rather
+        # than likely, and it reads the stamp out of the files that use it.
+        run: bash hosted/tests/drill-stamp-uniqueness.sh
+      - name: Two fixtures cannot see each other
+        # Every drill builds its own tenant, and every drill is entitled to
+        # assume that tenant holds exactly one agreement and one invoice. The
+        # fixture used to break that assumption: it joined its own vehicle
+        # against every driver in the database named 'Chaos Drill', with no
+        # tenant filter, so two live fixtures produced two agreements and two
+        # invoices with the SAME number — and `invoices.number` is unique.
+        #
+        # The failure reads like a database fault and is not one, and it
+        # happened on the handover journey on its very first run. It runs
+        # BEFORE the drills, because a suite whose fixtures can see each
+        # other proves nothing about the faults it exists to test.
+        run: bash hosted/tests/fixture-isolation.sh
+      - name: The isolation gate can fail
+        # A gate that cannot fail is not a gate. The isolation gate above
+        # passes today, and on its own that is worth nothing — the same is
+        # true of a gate that was written to be green.
+        #
+        # So this breaks the thing on purpose, in a copy of the tree, and
+        # requires the gate to NOTICE: the fixture's join loses its tenant
+        # filter and matches the rival's driver, which is the defect that
+        # really was there. It runs against an unmodified copy first and
+        # requires that to pass, so a gate broken for any reason at all
+        # cannot satisfy the check below — and the failure it looks for has
+        # to be the SPECIFIC symptom of this defect (two invoices with the
+        # same number, refused by the unique index), not some unrelated
+        # error.
+        run: bash hosted/tests/fixture-isolation-negative.sh
+      - name: The chaos drills
+        # The drills are the suite that was missing from CI entirely.
+        #
+        # They used to be a set of files nothing ran. Two of them (05 and 08)
+        # were `echo OK` — six lines that asserted nothing — and one (06) was
+        # committed with four merge conflict markers still in it, so it did not
+        # even parse. The handover lists them as monthly exercises, and a
+        # monthly exercise nobody can run is a monthly exercise that has not
+        # happened.
+        #
+        # The drills that drive the application (05, 06, 07, 08, 09) run
+        # against this same compose stack: each builds its own throwaway
+        # tenant, drives the real routes with a real session, and deletes
+        # what it made — including when it fails. The HMRC ones point the
+        # application at the `stub-hmrc` service and put it back afterwards.
+        #
+        # 01 and 02 run here too. They used to be box-only — 01 because it
+        # killed the systemd unit, 02 because it curled a port nothing
+        # listens on — and a database-recovery drill that only the customer
+        # can run is a database-recovery drill that never runs. They now kill
+        # and restart whichever database this deployment has, and assert
+        # against real rows that had to survive it.
+        #
+        # 03 and 04 are NOT in this list, and the reason is not that they
+        # are unfinished: 03 needs the box's own /usr/local/bin/restore.sh
+        # and 04 needs the box's own /usr/local/bin/b2 and the alert-watch
+        # path unit. They exercise the deployed box and are run there.
+        #
+        # They run AFTER the hosted smoke, because the smoke asserts against
+        # the container the stack brought up and a drill recreates it.
+        #
+        # Every drill runs even if an earlier one failed, so one CI cycle
+        # shows the state of the whole suite rather than the first fault.
+        run: |
+          set -uo pipefail
+          failed=0
+          for drill in hosted/tests/chaos/0[12]-*.sh hosted/tests/chaos/0[5-9]-*.sh; do
+            name="$(basename "$drill")"
+            echo "::group::$name"
+            if bash "$drill"; then
+              echo "::endgroup::"
+              echo "PASS: $name"
+            else
+              echo "::endgroup::"
+              echo "FAIL: $name"
+              failed=$((failed + 1))
+            fi
+          done
+          if [[ "$failed" -ne 0 ]]; then
+            echo "$failed chaos drill(s) failed."
+            exit 1
+          fi
+      - name: The Brownhill handover journey
+        # The journey is the handover itself, run against the deployment that
+        # is here: one operator signs in with a real password, every
+        # operations, admin and accounting page answers with their own rows in
+        # them, another tenant sees none of it, and the accounting module
+        # bills rent, takes the money, reads the books back and cancels a
+        # mis-billed invoice.
+        #
+        # It runs LAST, after the drills, because it is the umbrella: it
+        # drives the accounting gate itself, and it needs a stack the drills
+        # have left healthy (drill 09 recreates the application container to
+        # point it at the HMRC stub and puts it back afterwards).
+        run: bash hosted/tests/journey/operator-journey.sh
       - name: Tear down
         if: always()
         run: docker compose -f hosted/dev/docker-compose.yml down -v
@@ -238,6 +544,14 @@ jobs:
     env:
       JWT_SHARED_SECRET: ci-jwt-secret-for-matrices-only-do-not-reuse
       BOOTSTRAP_TOKEN: ci-bootstrap-token-do-not-reuse
+      # The token the scheduled jobs present.
+      #
+      # The stack runs NODE_ENV=production, and `isCronAuthorized` fails
+      # closed there: with CRON_SECRET unset, every /api/cron/* call answers
+      # 401 and the box raises no rent invoice at all. It is not a secret —
+      # it is a value for a matrix — and the compose stack reads it from this
+      # job's own environment.
+      CRON_SECRET: ci-cron-secret-for-matrices-only-do-not-reuse
     steps:
       - uses: actions/checkout@v4
       - name: The migration ledger's fingerprint
@@ -267,3 +581,8 @@ jobs:
         run: bash hosted/tests/hosted-bootstrap-idempotency.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
+      - name: The Brownhill handover journey
+        # The same journey the CI job runs, but against the customer's own
+        # box. This is the run that matters for the handover: it is the one
+        # the box itself does, with its own secrets and its own paths.
+        run: bash hosted/tests/journey/operator-journey.sh

@@ -48,16 +48,21 @@ jobs:
         # The design system claims WCAG 2.1 AA conformance for the colour
         # tokens and that every control sits inside a <label>, and the
         # accessibility statement on /accessibility is made on the strength
-        # of exactly these two checks.
+        # of exactly these checks.
         #
-        # Both were promises in a document. `pnpm test:a11y` pointed at a
-        # test file that did not exist and failed with "No test files found",
-        # so the contrast claim was never checked by anything. The form audit
-        # existed but ran nowhere, so a new unlabelled control would have
-        # landed without anyone noticing.
+        # The contrast test is `pnpm test:a11y:contrast`. It used to be called
+        # `pnpm test:a11y`, and that name now belongs to the runtime axe pass
+        # — which needs a browser and a running stack, and lives in the
+        # `a11y` workflow. The form audit existed but ran nowhere, so a new
+        # unlabelled control would have landed without anyone noticing.
+        #
+        # The three static checks are what `pnpm a11y` runs, and all three
+        # run here: the strict jsx-a11y rules over the components, the AST
+        # form audit, and the token contrast arithmetic.
         run: |
+          pnpm lint:a11y
           pnpm a11y:forms
-          pnpm test:a11y
+          pnpm test:a11y:contrast
       - name: The contrast gate can fail
         # A gate that cannot fail is not a gate. This runs the real contrast
         # test against three deliberately broken stylesheets and requires it

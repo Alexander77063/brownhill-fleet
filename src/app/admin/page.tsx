@@ -3,14 +3,14 @@ import { contextCan, getAuthContext } from '@/lib/auth/context';
 import { getTenant, listMembers } from '@/lib/tenancy';
 import { getTenantBilling } from '@/lib/billing';
 import {
-  addMemberAction,
   createTenantAction,
   openPortalAction,
   startCheckoutAction,
   updateMemberAction,
   updateSettingsAction,
 } from '@/lib/actions/admin';
-import { groupPermissions } from '@/app/admin/permissions-catalog';
+import { AddMemberPanel } from '@/app/admin/AddMemberPanel';
+import { Field, inputCls } from '@/app/admin/Field';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,9 +22,6 @@ const MODULES: [string, string][] = [
   ['bookings', 'Bookings & dispatch'],
   ['gps', 'GPS / telematics'],
 ];
-
-const inputCls =
-  'rounded-md border border-hair bg-[var(--surface)] px-2.5 py-1.5 text-sm text-cream focus:border-gold-bright focus:outline-none';
 
 export default async function AdminPage() {
   const ctx = await getAuthContext();
@@ -132,40 +129,7 @@ export default async function AdminPage() {
 
         {canMembers && (
           <Card>
-            <CardTitle>Add a member</CardTitle>
-            <form action={addMemberAction} className="mt-3 space-y-3">
-              <Field label="Email" hint="we'll create their login and email them a sign-in invite">
-                <input name="email" type="email" required placeholder="name@company.com" className={`${inputCls} w-full`} />
-              </Field>
-              <Field label="Role">
-                <select name="role" defaultValue="ops" className={`${inputCls} w-full`}>
-                  {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </Field>
-              <Field
-                label="Extra permissions"
-                hint="On top of what the role grants — pick exactly what they need (e.g. an accountant gets billing.write + payments.record + reads)."
-              >
-                <div className="max-h-72 space-y-2 overflow-y-auto rounded-md border border-hair-soft bg-[var(--surface-soft)] p-3">
-                  {groupPermissions().map((g) => (
-                    <fieldset key={g.group} className="rounded-md border border-hair-soft p-2">
-                      <legend className="px-1 text-[10px] font-semibold uppercase tracking-wider text-parchment">
-                        {g.group}
-                      </legend>
-                      <div className="grid grid-cols-1 gap-1 sm:grid-cols-2">
-                        {g.items.map((p) => (
-                          <label key={p.key} className="flex items-center gap-2 text-xs text-cream">
-                            <input type="checkbox" name="permission" value={p.key} className="accent-[var(--color-gold)]" />
-                            <span>{p.label}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </fieldset>
-                  ))}
-                </div>
-              </Field>
-              <Button type="submit" variant="outline" size="sm">Add member</Button>
-            </form>
+            <AddMemberPanel roles={ROLES} />
           </Card>
         )}
       </section>
@@ -271,13 +235,4 @@ function Wrap({ children }: { children: React.ReactNode }) {
 }
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="grid min-h-[60vh] place-items-center px-4 text-center text-muted">{children}</div>;
-}
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-parchment">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-[11px] text-muted">{hint}</span>}
-    </label>
-  );
 }

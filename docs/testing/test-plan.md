@@ -640,9 +640,9 @@ Any leak is **S1** and should stop the release.
 
 ### 12.1 Accessibility
 
-The product targets **WCAG 2.1 AA**. Automated coverage already exists (55 axe checks in
-CI). What automation cannot do — and what testers should do — is judge whether things are
-*usable*.
+The product targets **WCAG 2.1 AA**. Automated coverage already exists: **95 axe scans
+across 83 pages**, run in CI by `pnpm test:a11y` (the `a11y` workflow). What automation
+cannot do — and what testers should do — is judge whether things are *usable*.
 
 | ID | Test | Expected |
 |---|---|---|

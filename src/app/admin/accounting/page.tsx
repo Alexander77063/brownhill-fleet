@@ -24,6 +24,7 @@ export default async function AdminAccountingHomePage() {
 
   const tiles: { href: string; label: string; hint: string; icon: 'wallet' | 'check' | 'trending' | 'doc' | 'clock' | 'receipt' | 'shield' | 'pound' }[] = [
     { href: '/admin/accounting/banks', label: 'Bank accounts', hint: 'Add the accounts money lands in.', icon: 'wallet' },
+    { href: '/admin/accounting/invoices', label: 'Invoices', hint: 'Every invoice raised, and void one by mistake.', icon: 'receipt' },
     { href: '/admin/accounting/reconcile', label: 'Reconcile', hint: 'Match statements to the ledger.', icon: 'check' },
     { href: '/admin/accounting/coa', label: 'Chart of accounts', hint: 'The FRS 102 baseline, read-only.', icon: 'doc' },
     { href: '/admin/accounting/periods', label: 'Periods', hint: 'Close a month, reopen inside the grace window.', icon: 'clock' },

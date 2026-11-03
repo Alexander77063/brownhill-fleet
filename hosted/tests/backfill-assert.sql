@@ -171,4 +171,335 @@ begin
 end
 $$;
 
+\echo '--- K8. every invoice carries the VAT code its VAT implies'
+--
+-- `public.invoices.vat_code_id` existed since migration 0067 and NOTHING
+-- EVER WROTE IT. The VAT return groups on it:
+--
+--   select vc.code, sum(i.net_pence), sum(i.vat_pence)
+--     from public.invoices i
+--     left join accounting.vat_codes vc on vc.id = i.vat_code_id
+--    where i.status <> 'void'
+--    group by vc.code
+--
+-- With the column null, `vc.code` was null for every invoice, so the grouped
+-- rows never matched 'T1' or 'T0'. Box 1 -- the output VAT DUE to HMRC --
+-- was permanently zero, while box 4 carried the whole of the sales net.
+do $$
+declare
+  r record; uncoded int;
+begin
+  select count(*) into uncoded from invoices where vat_code_id is null;
+  if uncoded <> 0 then
+    raise exception 'FAIL: % invoice(s) still have no VAT code, so the VAT return cannot see them', uncoded;
+  end if;
+
+  for r in
+    select i.number, i.vat_pence, vc.code
+      from invoices i
+      join accounting.vat_codes vc on vc.id = i.vat_code_id
+     order by i.number
+  loop
+    if r.vat_pence = 0 then
+      if r.code <> 'T0' then
+        raise exception 'FAIL: the zero-rated invoice % carries the code %, expected T0', r.number, r.code;
+      end if;
+    elsif r.code <> 'T1' then
+      raise exception 'FAIL: the standard-rated invoice % carries the code %, expected T1', r.number, r.code;
+    end if;
+  end loop;
+  raise notice 'PASS K8: every invoice carries a VAT code, and the zero-rated one is T0';
+end
+$$;
+
+\echo '--- K9. the three live invoices are posted and the void one is not'
+do $$
+declare
+  n int;
+begin
+  select count(*) into n from invoices
+   where number in ('BRH-BF-0001','BRH-BF-0002','BRH-BF-0003')
+     and posted_journal_id is not null;
+  if n <> 3 then
+    raise exception 'FAIL: % of the 3 live invoices are posted, expected 3', n;
+  end if;
+
+  select count(*) into n from invoices
+   where number = 'BRH-BF-0004' and posted_journal_id is not null;
+  if n <> 0 then
+    raise exception 'FAIL: the void invoice was posted to the ledger';
+  end if;
+
+  select count(*) into n
+    from accounting.journal_entries je
+    join invoices i on i.id = je.source_id
+   where je.source_type = 'invoice' and i.number = 'BRH-BF-0004';
+  if n <> 0 then
+    raise exception 'FAIL: the void invoice has % journal entr(y/ies), expected none', n;
+  end if;
+  raise notice 'PASS K9: the three live invoices are posted and the void one is not';
+end
+$$;
+
+\echo '--- K10. rule 1 posted exactly Dr 1100 / Cr 4000 / Cr 2200 -- and no VAT line when there is no VAT'
+do $$
+declare
+  n int; d bigint; c bigint; v bigint;
+begin
+  select count(*) into n
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0003';
+  if n <> 2 then
+    raise exception 'FAIL: the zero-rated invoice has % journal lines, expected 2 -- a VAT line would be zero on BOTH sides, which journal_lines forbids', n;
+  end if;
+
+  select count(*) into n
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0003' and a.code = '2200';
+  if n <> 0 then
+    raise exception 'FAIL: the zero-rated invoice has a VAT Output line';
+  end if;
+
+  select count(*) into n
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0001';
+  if n <> 3 then
+    raise exception 'FAIL: the standard-rated invoice has % journal lines, expected 3', n;
+  end if;
+
+  select l.debit_pence into d
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0001' and a.code = '1100';
+  select l.credit_pence into c
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0001' and a.code = '4000';
+  select l.credit_pence into v
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join invoices i on i.id = je.source_id
+   where i.number = 'BRH-BF-0001' and a.code = '2200';
+  if d is distinct from 102000 or c is distinct from 85000 or v is distinct from 17000 then
+    raise exception 'FAIL: BRH-BF-0001 posted Dr 1100 % / Cr 4000 % / Cr 2200 %, expected 102000 / 85000 / 17000', d, c, v;
+  end if;
+  raise notice 'PASS K10: rule 1 posted Dr 1100 % / Cr 4000 % / Cr 2200 %, and the zero-rated invoice has no VAT line', d, c, v;
+end
+$$;
+
+\echo '--- K11. only money that arrived is posted'
+do $$
+declare
+  n int; d bigint; c bigint;
+begin
+  select count(*) into n from payments
+   where idempotency_key = 'bf-gc-1' and posted_journal_id is not null;
+  if n <> 1 then
+    raise exception 'FAIL: the confirmed payment was not posted';
+  end if;
+
+  select count(*) into n from payments
+   where idempotency_key in ('bf-gc-2','bf-gc-3') and posted_journal_id is not null;
+  if n <> 0 then
+    raise exception 'FAIL: % payment(s) that never arrived were posted', n;
+  end if;
+
+  select count(*) into n from accounting.journal_entries where source_type = 'payment';
+  if n <> 1 then
+    raise exception 'FAIL: % payment journal entries, expected 1', n;
+  end if;
+
+  select l.debit_pence into d
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join payments p on p.id = je.source_id
+   where p.idempotency_key = 'bf-gc-1' and a.code = '1200';
+  select l.credit_pence into c
+    from accounting.journal_lines l
+    join accounting.journal_entries je on je.id = l.journal_id
+    join accounting.chart_of_accounts a on a.id = l.account_id
+    join payments p on p.id = je.source_id
+   where p.idempotency_key = 'bf-gc-1' and a.code = '1100';
+  if d is distinct from 102000 or c is distinct from 102000 then
+    raise exception 'FAIL: the payment posted Dr 1200 % / Cr 1100 %, expected 102000 / 102000', d, c;
+  end if;
+  raise notice 'PASS K11: the confirmed payment posted Dr 1200 % / Cr 1100 %; the pending and failed ones were not posted', d, c;
+end
+$$;
+
+\echo '--- K12. every posting landed in the month its DOCUMENT belongs to'
+--
+-- Not the month the posting was made. A rent invoice raised on the 1st for a
+-- week that began on the 28th of the month before belongs to the month
+-- before, and that is where the operator''s VAT return and year-end accounts
+-- look for it.
+do $$
+declare
+  n int; y int; m int; wrong int;
+begin
+  select p.year, p.month into y, m
+    from invoices i
+    join accounting.journal_entries je on je.id = i.posted_journal_id
+    join accounting.periods p on p.id = je.period_id
+   where i.number = 'BRH-BF-0001';
+  if y is distinct from 2026 or m is distinct from 4 then
+    raise exception 'FAIL: the April invoice was posted into %-%', y, m;
+  end if;
+
+  select p.year, p.month into y, m
+    from invoices i
+    join accounting.journal_entries je on je.id = i.posted_journal_id
+    join accounting.periods p on p.id = je.period_id
+   where i.number = 'BRH-BF-0002';
+  if y is distinct from 2026 or m is distinct from 5 then
+    raise exception 'FAIL: the May invoice was posted into %-%', y, m;
+  end if;
+
+  select p.year, p.month into y, m
+    from invoices i
+    join accounting.journal_entries je on je.id = i.posted_journal_id
+    join accounting.periods p on p.id = je.period_id
+   where i.number = 'BRH-BF-0003';
+  if y is distinct from 2026 or m is distinct from 6 then
+    raise exception 'FAIL: the June invoice was posted into %-%', y, m;
+  end if;
+
+  select p.year, p.month into y, m
+    from payments pm
+    join accounting.journal_entries je on je.id = pm.posted_journal_id
+    join accounting.periods p on p.id = je.period_id
+   where pm.idempotency_key = 'bf-gc-1';
+  if y is distinct from 2026 or m is distinct from 4 then
+    raise exception 'FAIL: the April payment was posted into %-%', y, m;
+  end if;
+
+  select count(*) into wrong
+    from accounting.journal_entries je
+    join accounting.periods p on p.id = je.period_id
+   where p.year  = extract(year  from current_date)::int
+     and p.month = extract(month from current_date)::int;
+  if wrong <> 0 then
+    raise exception 'FAIL: % posting(s) landed in the current month rather than the document''s month', wrong;
+  end if;
+  raise notice 'PASS K12: every posting landed in the month its document belongs to, and none landed in the current month';
+end
+$$;
+
+\echo '--- K13. the ledger balances'
+do $$
+declare
+  n int; d bigint; c bigint;
+begin
+  select count(*) into n from (
+    select je.id
+      from accounting.journal_entries je
+      left join accounting.journal_lines l on l.journal_id = je.id
+     group by je.id
+    having coalesce(sum(l.debit_pence),0) <> coalesce(sum(l.credit_pence),0)
+  ) x;
+  if n <> 0 then
+    raise exception 'FAIL: % journal entr(y/ies) do not balance', n;
+  end if;
+
+  select coalesce(sum(debit_pence),0), coalesce(sum(credit_pence),0) into d, c
+    from accounting.journal_lines;
+  if d <> c then
+    raise exception 'FAIL: the trial balance is out by % pence', d - c;
+  end if;
+  raise notice 'PASS K13: every entry balances and the trial balance is % / %', d, c;
+end
+$$;
+
+\echo '--- K14. the trial balance says what the business actually did'
+do $$
+declare
+  d bigint; c bigint;
+begin
+  select coalesce(sum(l.debit_pence),0), coalesce(sum(l.credit_pence),0) into d, c
+    from accounting.journal_lines l join accounting.chart_of_accounts a on a.id = l.account_id
+   where a.code = '1100';
+  if d <> 286500 or c <> 102000 then
+    raise exception 'FAIL: Trade Debtors is Dr % / Cr %, expected Dr 286500 / Cr 102000', d, c;
+  end if;
+
+  select coalesce(sum(l.debit_pence),0), coalesce(sum(l.credit_pence),0) into d, c
+    from accounting.journal_lines l join accounting.chart_of_accounts a on a.id = l.account_id
+   where a.code = '1200';
+  if d <> 102000 or c <> 0 then
+    raise exception 'FAIL: the Bank account is Dr % / Cr %, expected Dr 102000 / Cr 0', d, c;
+  end if;
+
+  select coalesce(sum(l.debit_pence),0), coalesce(sum(l.credit_pence),0) into d, c
+    from accounting.journal_lines l join accounting.chart_of_accounts a on a.id = l.account_id
+   where a.code = '4000';
+  if d <> 0 or c <> 255750 then
+    raise exception 'FAIL: Sales is Dr % / Cr %, expected Dr 0 / Cr 255750', d, c;
+  end if;
+
+  select coalesce(sum(l.debit_pence),0), coalesce(sum(l.credit_pence),0) into d, c
+    from accounting.journal_lines l join accounting.chart_of_accounts a on a.id = l.account_id
+   where a.code = '2200';
+  if d <> 0 or c <> 30750 then
+    raise exception 'FAIL: VAT Output is Dr % / Cr %, expected Dr 0 / Cr 30750', d, c;
+  end if;
+
+  raise notice 'PASS K14: Trade Debtors Dr 286500 / Cr 102000, Bank Dr 102000, Sales Cr 255750, VAT Output Cr 30750';
+end
+$$;
+
+\echo '--- K15. the VAT return now sees the output VAT'
+do $$
+declare
+  net bigint; vat bigint; n int;
+  -- The two months are kept apart on purpose: one pair of variables would
+  -- carry the June figures into a message that also talks about April, and
+  -- the PASS line would then report the wrong April numbers while the
+  -- assertion itself was still right.
+  apr_net bigint; apr_vat bigint;
+  jun_net bigint; jun_vat bigint;
+begin
+  select coalesce(sum(i.net_pence),0), coalesce(sum(i.vat_pence),0), count(*)
+    into net, vat, n
+    from invoices i
+    join accounting.vat_codes vc on vc.id = i.vat_code_id
+   where i.status <> 'void'
+     and vc.code = 'T1'
+     and date_trunc('month', i.issued_on::timestamp) = date_trunc('month', date '2026-04-01');
+  if n <> 1 or net <> 85000 or vat <> 17000 then
+    raise exception 'FAIL: the April VAT return sees % row(s) of T1 (net %, VAT %), expected 1 (net 85000, VAT 17000)', n, net, vat;
+  end if;
+  apr_net := net; apr_vat := vat;
+
+  select coalesce(sum(i.net_pence),0), coalesce(sum(i.vat_pence),0), count(*)
+    into net, vat, n
+    from invoices i
+    join accounting.vat_codes vc on vc.id = i.vat_code_id
+   where i.status <> 'void'
+     and vc.code = 'T0'
+     and date_trunc('month', i.issued_on::timestamp) = date_trunc('month', date '2026-06-01');
+  if n <> 1 or net <> 102000 or vat <> 0 then
+    raise exception 'FAIL: the June VAT return sees % row(s) of T0 (net %, VAT %), expected 1 (net 102000, VAT 0)', n, net, vat;
+  end if;
+  jun_net := net; jun_vat := vat;
+
+  raise notice 'PASS K15: April T1 net % VAT %, June T0 net % VAT %',
+    apr_net, apr_vat, jun_net, jun_vat;
+end
+$$;
+
 \echo '=== BACKFILL ASSERTIONS COMPLETE ==='

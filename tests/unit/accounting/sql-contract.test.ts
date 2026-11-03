@@ -32,24 +32,18 @@
 // missing tenant predicate all become build failures.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
-import path from 'node:path';
 import {
-  buildSchemaModel,
   extractColumnRefs,
   extractConflictTarget,
   extractInsertTarget,
-  extractSqlStatements,
   extractTableBindings,
   extractTables,
-  type SchemaModel,
-  type SqlStatement,
 } from '../../helpers/schema-model';
-
-const REPO = path.resolve(__dirname, '../../..');
-const MIGRATIONS_DIR = path.join(REPO, 'supabase/migrations');
-const SHIM_PATH = path.join(REPO, 'standalone/sql/0000_supabase_shim.sql');
-const SRC_DIR = path.join(REPO, 'src');
+import {
+  buildRepoSchemaModel,
+  extractAppStatements,
+  resolveTable,
+} from '../../helpers/repo-schema';
 
 /**
  * The accounting reference tables are GLOBAL, not per-tenant.
@@ -66,35 +60,12 @@ const GLOBAL_ACCOUNTING_TABLES = new Set(['chart_of_accounts', 'vat_codes']);
 /** Schemas the application addresses by name. */
 const KNOWN_SCHEMAS = new Set(['public', 'accounting', 'auth', 'storage']);
 
-function buildModel(): SchemaModel {
-  const shim = { name: '0000_supabase_shim.sql', sql: readFileSync(SHIM_PATH, 'utf8') };
-  const migrations = readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith('.sql'))
-    .sort()
-    .map((f) => ({ name: f, sql: readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }));
-  // The shim runs before migration 0001 on the standalone build and mirrors
-  // the auth schema Supabase provides on the hosted build, so it belongs in
-  // the model either way.
-  return buildSchemaModel([shim, ...migrations]);
-}
-
-const model = buildModel();
-const statements: SqlStatement[] = extractSqlStatements(SRC_DIR, REPO);
-
-/** Resolves a table reference against the model. */
-function lookup(schema: string | null, name: string): { schema: string; name: string; known: boolean } {
-  if (schema) {
-    const t = model.get(schema, name);
-    return { schema, name, known: !!t };
-  }
-  // A bare name resolves to public unless another schema claims it.
-  if (model.get('public', name)) return { schema: 'public', name, known: true };
-  for (const key of model.tables.keys()) {
-    const [s, n] = key.split('.');
-    if (n === name) return { schema: s, name, known: true };
-  }
-  return { schema: 'public', name, known: false };
-}
+// The schema model and the application's SQL are loaded through the shared
+// helper, so this gate and the tenant-scope gate are always looking at the
+// SAME migrations. Two gates that each replay their own copy of the schema
+// drift apart, and the one that drifts stops meaning anything.
+const model = buildRepoSchemaModel();
+const statements = extractAppStatements();
 
 describe('the schema model reflects the migrations', () => {
   it('replays the migrations into a non-empty schema', () => {
@@ -134,8 +105,8 @@ describe('the application only names relations that exist', () => {
     for (const stmt of statements) {
       for (const ref of extractTables(stmt.text)) {
         if (ref.schema && !KNOWN_SCHEMAS.has(ref.schema)) continue;
-        const found = lookup(ref.schema, ref.name);
-        if (!found.known) {
+        const table = resolveTable(model, ref.schema, ref.name);
+        if (!table) {
           problems.push(`${stmt.file}:${stmt.line} — "${ref.raw}" does not exist in the migrated schema`);
         }
       }
@@ -152,16 +123,14 @@ describe('every ON CONFLICT target matches a real unique constraint', () => {
       if (!target) continue;
       const insert = extractInsertTarget(stmt.text);
       if (!insert) continue;
-      const found = lookup(insert.schema, insert.name);
-      if (!found.known) continue; // the relation test reports this
-      const table = model.get(found.schema, found.name);
-      if (!table) continue;
+      const table = resolveTable(model, insert.schema, insert.name);
+      if (!table) continue; // the relation test reports this
       if (!model.hasUniqueOn(table, target)) {
         const declared = Array.from(table.uniques.values())
           .map((c) => `(${c.join(', ')})`)
           .join(', ') || '(none)';
         problems.push(
-          `${stmt.file}:${stmt.line} — ON CONFLICT (${target.join(', ')}) on ${found.schema}.${found.name} ` +
+          `${stmt.file}:${stmt.line} — ON CONFLICT (${target.join(', ')}) on ${table.schema}.${table.name} ` +
           `matches no unique constraint. Declared: ${declared}. ` +
           `Postgres raises 42P10 at runtime.`,
         );
@@ -214,14 +183,12 @@ describe('every qualified column reference names a column that exists', () => {
         if (KNOWN_SCHEMAS.has(ref.alias)) continue; // `accounting.periods` — a relation, not a column
         const binding = bindings.find((b) => b.alias === ref.alias);
         if (!binding) continue; // not bound in this statement
-        const found = lookup(binding.schema, binding.name);
-        if (!found.known) continue; // the relation test reports this
-        const table = model.get(found.schema, found.name);
-        if (!table) continue;
+        const table = resolveTable(model, binding.schema, binding.name);
+        if (!table) continue; // the relation test reports this
         if (!table.columns.has(ref.column)) {
           problems.push(
             `${stmt.file}:${stmt.line} — "${ref.alias}.${ref.column}" does not exist: ` +
-            `${found.schema}.${found.name} has no column "${ref.column}". ` +
+            `${table.schema}.${table.name} has no column "${ref.column}". ` +
             `Postgres raises 42883 ("column does not exist") at runtime.`,
           );
         }

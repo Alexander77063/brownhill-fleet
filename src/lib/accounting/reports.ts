@@ -58,6 +58,7 @@ export async function renderProfitAndLoss(tenantId: string, fromDate: Date, toDa
       join accounting.journal_entries je on je.id = jl.journal_id
       join accounting.chart_of_accounts coa on coa.id = jl.account_id
      where coa.type in ('revenue', 'expense')
+       and jl.tenant_id = ${tenantId}::uuid
        and je.tenant_id = ${tenantId}::uuid
        and je.posted_at >= ${fromDate.toISOString()}::timestamptz
        and je.posted_at <= ${toDate.toISOString()}::timestamptz
@@ -116,6 +117,7 @@ export async function renderBalanceSheet(tenantId: string, asOfDate: Date): Prom
       join accounting.journal_entries je on je.id = jl.journal_id
       join accounting.chart_of_accounts coa on coa.id = jl.account_id
      where coa.type in ('asset', 'liability', 'equity')
+       and jl.tenant_id = ${tenantId}::uuid
        and je.tenant_id = ${tenantId}::uuid
        and je.posted_at <= ${asOfDate.toISOString()}::timestamptz
      group by coa.code, coa.name, coa.type
@@ -183,7 +185,12 @@ export async function renderCashflow(tenantId: string, fromDate: Date, toDate: D
                      else 0 end) as delta_pence
       from accounting.journal_lines jl
       join accounting.journal_entries je on je.id = jl.journal_id
-     where jl.account_id = (select id from accounting.chart_of_accounts where code = '1100')
+     where jl.account_id = (select id from accounting.chart_of_accounts
+                             where code = '1100'
+                               and (tenant_id is null or tenant_id = ${tenantId}::uuid)
+                             order by tenant_id nulls last
+                             limit 1)
+       and jl.tenant_id = ${tenantId}::uuid
        and je.tenant_id = ${tenantId}::uuid
   `) as Array<{ delta_pence: string }>;
   const apMovement = (await sql`
@@ -195,7 +202,12 @@ export async function renderCashflow(tenantId: string, fromDate: Date, toDate: D
                      else 0 end) as delta_pence
       from accounting.journal_lines jl
       join accounting.journal_entries je on je.id = jl.journal_id
-     where jl.account_id = (select id from accounting.chart_of_accounts where code = '2100')
+     where jl.account_id = (select id from accounting.chart_of_accounts
+                             where code = '2100'
+                               and (tenant_id is null or tenant_id = ${tenantId}::uuid)
+                             order by tenant_id nulls last
+                             limit 1)
+       and jl.tenant_id = ${tenantId}::uuid
        and je.tenant_id = ${tenantId}::uuid
   `) as Array<{ delta_pence: string }>;
 
@@ -276,13 +288,16 @@ export async function renderArAging(tenantId: string, asOfDate: Date): Promise<A
            (${utcDate(asOfDate)}::date - i.issued_on) as age_days
       from public.invoices i
       left join public.agreements a on a.id = i.agreement_id
+                                      and a.tenant_id = ${tenantId}::uuid
       left join public.drivers d on d.id = a.driver_id
+                                  and d.tenant_id = ${tenantId}::uuid
       left join lateral (
            select sum(pa.amount_pence) as amount_pence
              from public.payment_allocations pa
              join public.payments p on p.id = pa.payment_id
             where pa.invoice_id = i.id
               and p.status = 'confirmed'
+              and pa.tenant_id = ${tenantId}::uuid
               and p.tenant_id = ${tenantId}::uuid
            ) paid on true
      where i.status <> 'void'

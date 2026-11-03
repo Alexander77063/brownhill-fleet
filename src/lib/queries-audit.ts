@@ -33,7 +33,7 @@ export async function listAuditEntries(filter: AuditFilter): Promise<AuditEntryR
   const sb = await createClient();
   let q = sb
     .from('audit_log')
-    .select('id, actor, action, entity_type, entity_id, detail, created_at, profiles!audit_log_actor_fkey(email)')
+    .select('id, actor, action, entity_type, entity_id, detail, created_at')
     .order('created_at', { ascending: false })
     .limit(filter.limit);
 
@@ -46,15 +46,42 @@ export async function listAuditEntries(filter: AuditFilter): Promise<AuditEntryR
   const { data, error } = await q;
   if (error) throw new Error(`audit_log read failed: ${error.message}`);
 
-  return ((data ?? []) as unknown as Array<{
+  const rows = (data ?? []) as unknown as Array<{
     id: number; actor: string | null; action: string;
     entity_type: string | null; entity_id: string | null;
     detail: Record<string, unknown> | null; created_at: string;
-    profiles: { email: string | null } | null;
-  }>).map((r) => ({
+  }>;
+
+  // The actor's email lives in `profiles`, and `audit_log.actor` is a foreign
+  // key to `auth.users` — not to `public.profiles`. The `auth` schema is not
+  // exposed to PostgREST, so the two cannot be embedded: PostgREST looks for
+  // a relationship named `audit_log_actor_fkey` between `audit_log` and
+  // `profiles`, finds the key pointing somewhere else, and answers PGRST200
+  // ("Could not find a relationship between 'audit_log' and 'profiles' in the
+  // schema cache"). The page then fails to render at all.
+  //
+  // The email is therefore fetched in a second query over the actors on this
+  // page. It runs as the same signed-in user over the same connection, so the
+  // `profiles` row-level policy applies to it exactly as it would have
+  // applied to an embed: an operator (the `ops` role) reads them, anyone
+  // else sees only their own row and no audit rows at all.
+  const actorIds = [...new Set(rows.map((r) => r.actor).filter((v): v is string => !!v))];
+  const emails = new Map<string, string | null>();
+  if (actorIds.length > 0) {
+    const { data: profiles, error: profileError } = await sb
+      .from('profiles')
+      .select('id, email')
+      .in('id', actorIds);
+    if (profileError) throw new Error(`profile read failed: ${profileError.message}`);
+    for (const p of (profiles ?? []) as unknown as Array<{ id: string; email: string | null }>) {
+      emails.set(p.id, p.email ?? null);
+    }
+  }
+
+  return rows.map((r) => ({
     id: r.id,
     actorId: r.actor,
-    actorEmail: r.profiles?.email ?? null,
+    actorEmail: r.actor ? (emails.get(r.actor) ?? null) : null,
     action: r.action,
     entityType: r.entity_type,
     entityId: r.entity_id,

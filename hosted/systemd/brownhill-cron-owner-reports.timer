@@ -1,0 +1,21 @@
+# hosted/systemd/brownhill-cron-owner-reports.timer
+#
+# The monthly Vehicle Protection Report.
+#
+# This produces last month's report for every owner with a vehicle — the
+# document an owner sends to their insurer, which is why it is a per-owner
+# report rather than an internal statistic.
+#
+# The schedule is the one vercel.json declares for this path ("0 6 1 * *"):
+# the first of each month at 06:00. See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill monthly owner report (owner-reports)
+
+[Timer]
+OnCalendar=*-*-01 06:00:00
+Persistent=true
+Unit=brownhill-cron@owner-reports.service
+
+[Install]
+WantedBy=timers.target

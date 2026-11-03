@@ -4,13 +4,15 @@
 #
 # WHY THIS TEST EXISTS
 # --------------------
-# The HMRC integration reads four settings and the rest of the application
-# reads a fifth:
+# The HMRC integration reads six settings and the rest of the application
+# reads a seventh:
 #
 #   HMRC_MTD_CLIENT_ID       the HMRC application's client id
 #   HMRC_MTD_CLIENT_SECRET   its client secret
 #   HMRC_MTD_REDIRECT_URI    where HMRC sends the authorisation code back
 #   HMRC_ENV                 sandbox or production
+#   HMRC_MTD_VRN             the VAT registration number a return is filed against
+#   HMRC_MTD_BASE_URL        the HMRC endpoint (empty = HMRC's own)
 #   NEXT_PUBLIC_APP_URL      the deployment's own address
 #
 # Nothing on the deployed box provided any of them. The code's own fallback
@@ -92,6 +94,9 @@ SUBSTITUTE=hosted/bootstrap/substitute-fqdn.sh
 UNIT=hosted/systemd/brownhill-next.service
 HANDOFF=HANDOFF-BROWNHILL.md
 MTD_CODE=src/lib/accounting/mtd.ts
+# The wire protocol lives in its own module — the endpoint it talks to and
+# the token grant it uses are read there, not in mtd.ts.
+HMRC_CODE=src/lib/accounting/hmrc.ts
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -107,13 +112,20 @@ read_setting() { echo "HMRC_MTD_$1"; }
 CLIENT_ID="$(read_setting CLIENT_ID)"
 CLIENT_SECRET="$(read_setting CLIENT_SECRET)"
 REDIRECT_URI="$(read_setting REDIRECT_URI)"
+VRN="$(read_setting VRN)"
+BASE_URL="$(read_setting BASE_URL)"
 HMRC_ENV="HMRC_ENV"
 APP_URL="NEXT_PUBLIC_APP_URL"
 
 # The settings that must be provided by something. The redirect URI is not
 # among them: the code derives it from the application's own address when it
 # is unset, and that derivation is the one that is right.
-required=("$CLIENT_ID" "$CLIENT_SECRET" "$HMRC_ENV" "$APP_URL")
+#
+# The VAT registration number and the endpoint ARE among them. The number is
+# what a return is filed against — HMRC puts it in the path — and the endpoint
+# is what the chaos drills point the deployed application at, so both have to
+# be settable on the box without a hand edit to a systemd unit.
+required=("$CLIENT_ID" "$CLIENT_SECRET" "$HMRC_ENV" "$APP_URL" "$VRN" "$BASE_URL")
 
 # The installer provides a setting by writing it into a secret file. This
 # looks for the assignment anywhere in the installer, which is what
@@ -144,7 +156,7 @@ done
 # The code must actually read the name the installer provides. This is the
 # half that has broken before: the two sides drifting apart.
 for setting in "${required[@]}" "$REDIRECT_URI"; do
-  if grep -qE "process\.env\.$setting\b" "$MTD_CODE" src/lib/requests.ts 2>/dev/null; then
+  if grep -qE "process\.env\.$setting\b" "$MTD_CODE" src/lib/requests.ts "$HMRC_CODE" 2>/dev/null; then
     ok "the application reads $setting"
   else
     bad "the application never reads $setting"
@@ -184,7 +196,7 @@ fi
 echo
 echo "== 3: the handover names the settings the code reads =="
 
-for setting in "$CLIENT_ID" "$CLIENT_SECRET" "$REDIRECT_URI" "$HMRC_ENV"; do
+for setting in "$CLIENT_ID" "$CLIENT_SECRET" "$REDIRECT_URI" "$HMRC_ENV" "$VRN" "$BASE_URL"; do
   if grep -qE "(^|[^A-Za-z0-9_])$setting=" "$HANDOFF" 2>/dev/null; then
     ok "the handover tells the operator to set $setting"
   else

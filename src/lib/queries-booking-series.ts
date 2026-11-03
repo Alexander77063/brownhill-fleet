@@ -46,18 +46,43 @@ interface RawRow {
   created_at: string;
 }
 
-export async function listSeries(opts?: { status?: SeriesStatus }): Promise<BookingSeriesRow[]> {
+export async function listSeries(
+  tenantId: string,
+  opts?: { status?: SeriesStatus },
+): Promise<BookingSeriesRow[]> {
   const sql = await localDb();
+  // The dates are cast to text AT THE SOURCE. This module reads through
+  // postgres.js, which hands a raw `date` back as a JavaScript Date — and
+  // `expandSeries` parses 'YYYY-MM-DD' with `.split('-')`, so a Date threw
+  // `TypeError: yyyyMmDd.split is not a function` and took /ops and
+  // /ops/series down with it. The created-at stamp is rendered as an ISO
+  // instant for the same reason: it is typed as a string, so it must be one.
+  //
+  // TENANT SCOPE
+  // ------------
+  // This reads through the direct Postgres connection, which is the table
+  // owner, so RLS does not apply to it: the tenant has to be in the SQL.
+  // Every table the statement touches is filtered by it — the series, and the
+  // driver and vehicle it joins to. The joins carry the tenant in their ON
+  // clause (not the WHERE), so a series whose driver belongs to another
+  // tenant renders with no driver rather than with another tenant's driver.
   const rows = (await sql`
     select s.id, s.driver_id, d.full_name as driver_name,
            s.vehicle_id, v.registration as vehicle_reg,
            s.pickup, s.dropoff, s.start_time, s.fare_pence, s.passenger_name,
-           s.days_of_week, s.start_date, s.end_date, s.horizon_weeks,
-           s.status, s.created_at
+           s.days_of_week,
+           s.start_date::text as start_date,
+           s.end_date::text as end_date,
+           s.horizon_weeks,
+           s.status,
+           to_char(s.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as created_at
       from booking_series s
       left join drivers  d on d.id = s.driver_id
+                         and d.tenant_id = ${tenantId}::uuid
       left join vehicles v on v.id = s.vehicle_id
-     where (${opts?.status ?? null}::text is null or s.status = ${opts?.status ?? null}::text)
+                         and v.tenant_id = ${tenantId}::uuid
+     where s.tenant_id = ${tenantId}::uuid
+       and (${opts?.status ?? null}::text is null or s.status = ${opts?.status ?? null}::text)
      order by s.created_at desc
   `) as RawRow[];
   return rows.map((r) => ({
@@ -91,8 +116,13 @@ export function upcomingOccurrences(r: Pick<BookingSeriesRow, 'startDate' | 'end
   });
 }
 
-export async function countActiveSeries(): Promise<number> {
+export async function countActiveSeries(tenantId: string): Promise<number> {
   const sql = await localDb();
-  const r = (await sql`select count(*)::int as n from booking_series where status = 'active'`) as Array<{ n: number }>;
+  const r = (await sql`
+    select count(*)::int as n
+      from booking_series
+     where status = 'active'
+       and tenant_id = ${tenantId}::uuid
+  `) as Array<{ n: number }>;
   return r[0]?.n ?? 0;
 }

@@ -10,9 +10,18 @@
 // install.
 //
 // One implementation, one place to get the table name and the tenant right.
+//
+// WHAT IT SHOWS BEFORE THE RETURN CAN BE FILED
+// --------------------------------------------
+// A return is filed at `POST /organisations/vat/{vrn}/returns`, so a tenant
+// with no VAT registration number has nowhere to file it. The panel says so
+// — and so does the route, which refuses with 428. The button is only
+// offered when the return can actually be filed, because a button that
+// always fails teaches the operator to ignore it.
 
 import { aggregateVatReturn } from '@/lib/accounting/mtd-box';
-import { loadCredentialMeta } from '@/lib/accounting/mtd';
+import { loadVrnStatus } from '@/lib/accounting/mtd';
+import SubmitVatReturnButton from './SubmitVatReturnButton';
 
 export interface VatReturnPanelProps {
   /** The tenant whose figures these are. */
@@ -21,8 +30,8 @@ export interface VatReturnPanelProps {
   month: number;
   /** Where the "Connect now" link points — the console this panel is in. */
   connectHref: string;
-  /** The `status` query parameter, when the page was reached via a redirect. */
-  status?: string | null;
+  /** Whether the person looking at this may file a return. */
+  canSubmit: boolean;
 }
 
 function fmt(p: bigint): string {
@@ -35,28 +44,56 @@ export default async function VatReturnPanel({
   year,
   month,
   connectHref,
-  status,
+  canSubmit,
 }: VatReturnPanelProps) {
   const boxes = await aggregateVatReturn(tenantId, year, month);
-  const creds = await loadCredentialMeta(tenantId);
-  const connected = !!creds;
+  const vrnStatus = await loadVrnStatus(tenantId);
+  const connected = vrnStatus.connected;
   const period = `${year}-${String(month).padStart(2, '0')}`;
+
+  // The VAT registration number the return is filed against. It is the
+  // TENANT'S OWN — the return is never filed under the installation's
+  // default number unless this tenant has adopted it.
+  const vrn = vrnStatus.vrn;
 
   return (
     <>
-      {status === 'submitted' && (
+      {!connected && (
         <div
           role="status"
-          className="mb-4 rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900"
+          className="mb-4 rounded-[var(--radius)] border border-[var(--color-warn)] p-3 text-sm text-[var(--color-warn)]"
         >
-          The VAT return for {period} was submitted to HMRC.
+          <p>
+            HMRC MTD is not connected, so this return cannot be filed.{' '}
+            <a href={connectHref} className="underline">
+              Connect to HMRC
+            </a>
+            .
+          </p>
         </div>
       )}
 
-      {!connected && (
-        <p className="text-yellow-600 mb-4">
-          ⚠ HMRC MTD is not connected. <a href={connectHref} className="underline">Connect now</a>.
-        </p>
+      {connected && !vrn && (
+        <div
+          role="status"
+          className="mb-4 rounded-[var(--radius)] border border-[var(--color-warn)] p-3 text-sm text-[var(--color-warn)]"
+        >
+          <p>
+            This tenant has no VAT registration number (VRN), so there is nowhere to file this
+            return. HMRC files a return at <code>POST /organisations/vat/{'{vrn}'}/returns</code>.{' '}
+            <a href={connectHref} className="underline">
+              Add the VAT registration number
+            </a>
+            {vrnStatus.installVrn && vrnStatus.installVrnAvailable && (
+              <>
+                {' '}
+                This installation is configured with <span className="font-mono">{vrnStatus.installVrn}</span> — save it
+                on the HMRC page to file this tenant&apos;s returns under it.
+              </>
+            )}
+            .
+          </p>
+        </div>
       )}
 
       <table className="min-w-full border mb-6">
@@ -116,10 +153,15 @@ export default async function VatReturnPanel({
         </tbody>
       </table>
 
-      {connected && (
-        <form action={`/api/v1/accounting/mtd/submit?period=${period}`} method="post">
-          <button className="px-4 py-2 bg-blue-600 text-white rounded">Submit to HMRC</button>
-        </form>
+      {connected && vrn && canSubmit && (
+        <SubmitVatReturnButton year={year} month={month} />
+      )}
+
+      {connected && vrn && !canSubmit && (
+        <p className="text-sm text-muted">
+          You do not have the permission to file a VAT return for this tenant. Ask the ops admin
+          to grant it on your membership.
+        </p>
       )}
     </>
   );

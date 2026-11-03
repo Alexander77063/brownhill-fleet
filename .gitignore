@@ -115,3 +115,6 @@ hosted/dev/certs/ca.key
 # Hosted static rasterisations are built artefacts (Task 15: pnpm build:icons).
 hosted/static/
 !hosted/static/.gitkeep
+# Scratch space for the tooling's own diagnostics. Nothing here is a build
+# artefact of the application and nothing here belongs in the repository.
+.tmp/

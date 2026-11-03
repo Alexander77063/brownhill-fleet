@@ -24,6 +24,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# The one rule for waiting on a containerised postgres. See the file for why
+# the socket is a trap and TCP is not.
+# shellcheck source=scripts/lib/postgres-container.sh
+source "$ROOT/scripts/lib/postgres-container.sh"
+
 # Git Bash on Windows rewrites a container path like /tmp/migrations into a
 # Windows path before it reaches docker, so `mkdir -p /tmp/migrations` inside
 # the container becomes `mkdir -p C:/Users/.../Temp/migrations` and fails with
@@ -39,10 +44,19 @@ fi
 cid=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 trap "docker rm -f $cid >/dev/null 2>&1 || true" EXIT
 sleep 2
-for _ in $(seq 1 30); do
-  docker exec -u postgres "$cid" psql -c 'SELECT 1' >/dev/null 2>&1 && break
-  sleep 0.5
-done
+# Wait for the REAL server, over TCP.
+#
+# This used to be a socket probe — `psql -c 'SELECT 1'` — and it was a race:
+# the postgres image answers a socket probe from the TEMPORARY server it
+# starts to run initdb, then shuts that server down. The gate would declare
+# the database ready and the next command would find the server gone. The
+# old loop had no final assert either, so a database that never came up was
+# reported as a MIGRATION failure, which is a different defect entirely.
+if ! wait_for_container_postgres "$cid" 60; then
+  echo "FAIL: the throwaway postgres never came up"
+  docker logs --tail 30 "$cid" 2>&1 || true
+  exit 1
+fi
 
 docker cp standalone/sql/0000_supabase_shim.sql "$cid":/tmp/
 # The migrations go straight from the working tree into the container — the
@@ -52,6 +66,9 @@ docker exec -u postgres "$cid" mkdir -p /tmp/migrations
 docker cp supabase/migrations/. "$cid":/tmp/migrations/
 docker cp standalone/sql/portable-rls-proof.sql "$cid":/tmp/
 docker cp standalone/sql/billing-allocation-proof.sql "$cid":/tmp/
+docker cp standalone/sql/void-balance-proof.sql "$cid":/tmp/
+docker cp standalone/sql/void-balance-negative.sql "$cid":/tmp/
+docker cp tests/rls/accounting-portable-proof.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-fixture.sql "$cid":/tmp/
 docker cp hosted/tests/backfill-assert.sql "$cid":/tmp/
 
@@ -61,10 +78,75 @@ for f in $(ls -1 supabase/migrations/*.sql | sort); do
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$bn"
 done
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/portable-rls-proof.sql
+# The accounting schema's own assertions (10-16): the tables it is built on,
+# the accounts the ledger posts to, the VAT codes, the append-only audit log,
+# and the global-code uniqueness that migration 0069 dropped.
+#
+# This file used to exist and NOTHING RAN IT. It was written, it was
+# correct-looking, and it had never once been executed — so it kept a stale
+# table name ('mtd_credentials', renamed to 'firs_credentials' by migration
+# 0069) and two assertions written as "is at least one of these there?"
+# instead of "are they all there?". Six required chart-of-accounts codes, one
+# of them missing for the life of the module ('2200', VAT Output), and the
+# assertion was green. It is run here now.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/accounting-portable-proof.sql
 # The billing allocation guard: money may never be allocated to a void invoice,
 # and the two caps that were always there still hold. This proof FAILS against
 # a schema without migration 0082, so it is a real guard and not a rubber stamp.
 docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/billing-allocation-proof.sql
+
+# The voided invoice is worth nothing. A cancelled invoice must not appear in
+# any amount owed, because the driver's payment checkout SUMS this balance and
+# charges it: against a schema without migration 0087, a voided invoice still
+# carried its full gross, and the customer was charged for work that had been
+# cancelled.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+
+# ── The void-balance proof can fail ─────────────────────────────────────────
+#
+# A gate that cannot fail is not a gate. The proof above is run a second
+# time against the views as migration 0011 left them, and it MUST fail
+# there. Then the migration is re-applied and the proof must pass again —
+# which is what proves that restoring the views was what broke it, and that
+# re-applying the migration is what fixes it.
+echo "== the void-balance proof can fail =="
+
+# The migration is found by CONTENT, not by number, so the guard keeps
+# guarding when the history grows.
+void_migration=""
+for f in $(ls -1 supabase/migrations/*.sql | sort); do
+  if grep -q 'create or replace view public.v_invoice_balance' "$f"; then
+    void_migration=$(basename "$f")
+    break
+  fi
+done
+
+if [ -z "$void_migration" ]; then
+  echo "FAIL: no migration replaces v_invoice_balance — the void-balance proof has nothing to be proven by"
+  exit 1
+fi
+echo "the void-balance fix is $void_migration"
+
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-negative.sql
+
+set +e
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+negative_status=$?
+set -e
+
+if [ "$negative_status" -eq 0 ]; then
+  echo "FAIL: the void-balance proof PASSED against the pre-fix views — it is not a gate"
+  # Put the fix back before leaving, so the rest of the run is not sitting on
+  # a schema with the defect restored.
+  docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$void_migration"
+  exit 1
+fi
+echo "ok: the void-balance proof fails against the pre-fix views"
+
+# Put the fix back and prove the proof is green again.
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f "/tmp/migrations/$void_migration"
+docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -f /tmp/void-balance-proof.sql
+echo "ok: the void-balance proof passes again once the fix is re-applied"
 
 # ── Phase 2: the same history, over data that already exists ───────────────────
 echo "== phase 2: the rent-to-buy backfill, over existing rent-to-buy rows =="
@@ -114,6 +196,52 @@ else
   done
 
   docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -d backfill -f /tmp/backfill-assert.sql
+
+  # ── The ledger backfill is idempotent ─────────────────────────────────────
+  # Migration 0086 restores the ledger for the invoices and payments that
+  # already exist. It is replayed by this harness, by the portability proof
+  # and by any operator who runs it by hand, so a second run that added a
+  # SECOND set of journal lines would double the business's revenue while
+  # every individual posting still looked correct.
+  #
+  # It is found by CONTENT, not by number, for the same reason the split
+  # point above is: the history grows, and renumbering a migration is not a
+  # reason for this guard to stop guarding.
+  echo "== the GL backfill is idempotent =="
+  gl_migration=""
+  for f in $(ls -1 supabase/migrations/*.sql | sort); do
+    if grep -q 'accounting.ensure_period' "$f"; then
+      gl_migration=$(basename "$f")
+      break
+    fi
+  done
+
+  if [ -z "$gl_migration" ]; then
+    echo "no migration creates accounting.ensure_period — the GL backfill is not there to test"
+  else
+    echo "the GL backfill is $gl_migration"
+
+    gl_counts() {
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.journal_entries' | tr -d '\r'
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.journal_lines' | tr -d '\r'
+      docker exec -u postgres "$cid" psql -U postgres -d backfill -tAc \
+        'select count(*) from accounting.audit_log' | tr -d '\r'
+    }
+
+    before="$(gl_counts | tr '\n' '/')"
+    docker exec -u postgres "$cid" psql -v ON_ERROR_STOP=1 -d backfill -f "/tmp/migrations/$gl_migration"
+    after="$(gl_counts | tr '\n' '/')"
+
+    if [ "$before" != "$after" ]; then
+      echo "FAIL: a second run of $gl_migration changed the ledger"
+      echo "  before: $before"
+      echo "  after : $after"
+      exit 1
+    fi
+    echo "ok: a second run of $gl_migration changed nothing ($after)"
+  fi
 fi
 
 # ── Phase 3: the migration runner is idempotent ──────────────────────────────

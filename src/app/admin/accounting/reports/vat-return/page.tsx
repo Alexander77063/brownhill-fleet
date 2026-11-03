@@ -25,7 +25,9 @@ export default async function VatReturnPage({
         year={year}
         month={month}
         connectHref="/admin/accounting/mtd"
-        status={sp.status ?? null}
+        // This console is behind `tenant.settings`, which is the gate the
+        // MTD route applies to a filing.
+        canSubmit
       />
     </main>
   );

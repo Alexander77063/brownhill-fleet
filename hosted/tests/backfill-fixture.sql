@@ -72,4 +72,73 @@ select id, type, term_weeks, weekly_gross_pence, weekly_net_pence, weekly_vat_pe
        deposit_pence, option_credit_weekly_pence, agreed_residual_pence
   from agreements order by id;
 
+-- ── The invoices and payments a live deployment would already hold ────────
+--
+-- The ledger backfill (migration 0086) has the same shape of problem as 0077,
+-- and the same answer. From zero, its backfill updates zero rows and its
+-- assertions are never exercised; a live deployment has thirty weeks of rent
+-- invoices and the money that came in against them — every one of them with
+-- `posted_journal_id` null and `vat_code_id` null, because nothing posted
+-- them and nothing ever wrote a VAT code onto them.
+--
+-- So the fixture carries them:
+--
+--   BRH-BF-0001  standard-rated, April,  £1,020.00   (net 850.00, VAT 170.00)
+--   BRH-BF-0002  standard-rated, May,     £825.00   (net 687.50, VAT 137.50)
+--   BRH-BF-0003  ZERO-RATED,   June,    £1,020.00   (net 1,020.00, VAT 0.00)
+--   BRH-BF-0004  VOID,         June,    £1,020.00   (net 850.00, VAT 170.00)
+--
+--   bf-gc-1      confirmed payment, April, £1,020.00
+--   bf-gc-2      PENDING  payment, April, £1,020.00
+--   bf-gc-3      FAILED   payment, April, £1,020.00
+--
+-- Each one is there for a reason, and each is a way the backfill can be
+-- wrong:
+--
+--   * the zero-rated one proves the VAT line is LEFT OUT. A line that is zero
+--     on both sides is not a zero line — it is an ILLEGAL line, because
+--     `journal_lines` carries `check ((debit_pence > 0) <> (credit_pence > 0))`.
+--     Writing one takes the whole entry down with it, and the rent for that
+--     week is never billed.
+--
+--   * the void one proves a cancelled invoice is not posted. A cancelled
+--     invoice has no revenue.
+--
+--   * the pending and failed ones prove that money which did not arrive is
+--     not posted. A pending payment is not a receipt.
+--
+-- The months are fixed rather than relative, because the assertions name the
+-- month each posting must land in — a backfill that puts an April invoice in
+-- today's month is wrong, and only a fixed date can say so.
+insert into invoices (agreement_id, number, issued_on, due_on, gross_pence, net_pence,
+                      vat_pence, status, tenant_id)
+values
+ ('a1111111-1111-1111-1111-111111111111','BRH-BF-0001','2026-04-06','2026-04-06',102000,85000,17000,'open','b1111111-1111-1111-1111-111111111111'),
+ ('a1111111-1111-1111-1111-111111111111','BRH-BF-0002','2026-05-04','2026-05-04', 82500,68750,13750,'open','b1111111-1111-1111-1111-111111111111'),
+ ('a1111111-1111-1111-1111-111111111111','BRH-BF-0003','2026-06-01','2026-06-01',102000,102000,    0,'open','b1111111-1111-1111-1111-111111111111'),
+ ('a1111111-1111-1111-1111-111111111111','BRH-BF-0004','2026-06-15','2026-06-15',102000,85000,17000,'void','b1111111-1111-1111-1111-111111111111');
+
+insert into payments (driver_id, agreement_id, source, idempotency_key, amount_pence,
+                      received_on, status, tenant_id)
+values
+ ('d1111111-1111-1111-1111-111111111111','a1111111-1111-1111-1111-111111111111','gocardless','bf-gc-1',102000,'2026-04-07','confirmed','b1111111-1111-1111-1111-111111111111'),
+ ('d1111111-1111-1111-1111-111111111111','a1111111-1111-1111-1111-111111111111','gocardless','bf-gc-2',102000,'2026-04-08','pending', 'b1111111-1111-1111-1111-111111111111'),
+ ('d1111111-1111-1111-1111-111111111111','a1111111-1111-1111-1111-111111111111','gocardless','bf-gc-3',102000,'2026-04-09','failed',  'b1111111-1111-1111-1111-111111111111');
+
+-- The confirmed payment is allocated to the April invoice, which is what a
+-- live book looks like: the money that came in against the bill it settles.
+insert into payment_allocations (payment_id, invoice_id, amount_pence, tenant_id)
+select p.id, i.id, p.amount_pence, p.tenant_id
+  from payments p
+  join invoices i on i.number = 'BRH-BF-0001'
+ where p.idempotency_key = 'bf-gc-1';
+
+\echo '--- the invoices and payments as 0086 will find them'
+select number, issued_on, gross_pence, net_pence, vat_pence, status::text,
+       posted_journal_id is null as unposted, vat_code_id is null as uncoded
+  from invoices order by number;
+select idempotency_key, received_on, amount_pence, status::text,
+       posted_journal_id is null as unposted
+  from payments order by idempotency_key;
+
 \echo '=== BACKFILL FIXTURE LOADED ==='

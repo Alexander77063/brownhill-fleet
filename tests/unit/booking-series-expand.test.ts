@@ -141,4 +141,34 @@ describe('expandSeries', () => {
     });
     expect(dates).toEqual(['2026-09-01']);
   });
+
+  // THE SHAPE THE DATABASE ACTUALLY PRODUCES
+  // ----------------------------------------
+  // `booking_series.start_date` and `end_date` are `date` columns, and
+  // postgres.js hands a raw `date` back as a JavaScript Date — not as
+  // 'YYYY-MM-DD'. The expansion parses its input with `yyyyMmDd.split('-')`,
+  // so a Date threw `TypeError: yyyyMmDd.split is not a function` inside
+  // expandSeries(), which took /ops and /ops/series down with it.
+  //
+  // The rest of this file passes strings because that is what the fixtures
+  // were, and the fixtures were the reason the bug survived. This case uses
+  // the driver's real output.
+  it('expands a series whose dates arrive as Date objects', () => {
+    const dates = expandSeries({
+      startDate: new Date('2026-09-01T00:00:00.000Z'),
+      endDate:   new Date('2026-09-07T00:00:00.000Z'),
+      daysOfWeek: [1, 3, 5],  // Mon, Wed, Fri
+    });
+    expect(dates).toEqual(['2026-09-02', '2026-09-04', '2026-09-07']);
+  });
+
+  it('expands an open-ended series whose start date arrives as a Date object', () => {
+    const dates = expandSeries({
+      startDate: new Date('2026-09-01T00:00:00.000Z'),
+      endDate:   null,
+      daysOfWeek: [2],          // every Tue
+      horizonWeeks: 2,
+    });
+    expect(dates).toEqual(['2026-09-01', '2026-09-08', '2026-09-15']);
+  });
 });

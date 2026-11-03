@@ -1,0 +1,25 @@
+# hosted/systemd/brownhill-cron-send-reminders.timer
+#
+# The daily notification sweep.
+#
+# This sends the driver-document renewals, the vehicle-document renewals, the
+# overdue-charge chases and the rent due/overdue reminders. Every send is
+# deduped through the notifications table, so a run that fires twice does not
+# message anybody twice.
+#
+# It runs at 07:30 — after the obligations sweep at 07:00 — so the obligation
+# rows it acts on are fresh.
+#
+# The schedule is the one vercel.json declares for this path ("30 7 * * *").
+# See hosted/tests/cron-timers.sh.
+
+[Unit]
+Description=Brownhill daily notification sweep (send-reminders)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+Unit=brownhill-cron@send-reminders.service
+
+[Install]
+WantedBy=timers.target

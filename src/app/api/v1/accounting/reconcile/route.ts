@@ -34,17 +34,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { safeNextPath } from '@/lib/safe-next';
+import { findAccountId, MissingChartOfAccountsError } from '@/lib/accounting/chart-of-accounts';
+import { periodRefusal } from '@/lib/accounting/periods';
 import {
   postVatPaymentJournal,
   postBankFeeJournal,
-  postPaymentJournal,
   type Pounds,
 } from '@/lib/accounting/journal';
+import { postPaymentToLedger } from '@/lib/accounting/gl-posting';
 import {
   commitJournalForBankTransaction,
-  commitJournalForPayment,
+  withJournalTx,
 } from '@/lib/accounting/journal-bridge';
 import { invoiceAllocationRejection } from '@/lib/accounting/invoice-eligibility';
+import type { ISql } from 'postgres';
 
 const ALLOWED = new Set(['match', 'vat', 'fee', 'ignore']);
 
@@ -63,6 +66,20 @@ class MatchRejected extends Error {
     super(message);
     this.name = 'MatchRejected';
   }
+}
+
+/**
+ * The answer to a posting the ledger refused because the period is closed or
+ * locked — a conflict, not a failure, so it is 409 and the body names the
+ * period and who closed it.
+ *
+ * Returns null for anything else, so an unexpected failure is never dressed
+ * up as a conflict.
+ */
+function periodRefusalResponse(err: unknown): NextResponse | null {
+  const refusal = periodRefusal(err);
+  if (!refusal) return null;
+  return NextResponse.json(refusal.body, { status: refusal.status });
 }
 
 export async function POST(req: NextRequest) {
@@ -94,8 +111,18 @@ export async function POST(req: NextRequest) {
 
   // Load the bank line. Tenant-scoped on both sides of the join: a bank
   // account id from another tenant must not drag its transactions in.
+  //
+  // `posted_on` is the day the BANK posted the line, rendered as text.
+  // postgres.js hands a `timestamptz` column back as a JavaScript Date, and
+  // this route needs the day as a string: the payment's `received_on` is a
+  // `date`, and the ledger entry belongs to the month the bank posted the
+  // money — not the month the operator happened to press the button.
+  //
+  // UTC on both sides, so the day here and the month in
+  // `bankTransactionPeriod` agree about where the boundary is.
   const rows = (await sql`
-    select bt.id, bt.bank_account_id, bt.amount_pence, bt.description, bt.posted_at,
+    select bt.id, bt.bank_account_id, bt.amount_pence, bt.description,
+           to_char(bt.posted_at at time zone 'UTC', 'YYYY-MM-DD') as posted_on,
            bt.status::text as status,
            ba.gl_account_id as bank_gl_id
       from accounting.bank_transactions bt
@@ -108,7 +135,7 @@ export async function POST(req: NextRequest) {
     amount_pence: string;
     bank_gl_id: string;
     description: string;
-    posted_at: string;
+    posted_on: string;
     status: string;
   }>;
   if (!rows.length) return NextResponse.json({ error: 'unknown bank_tx' }, { status: 404 });
@@ -131,42 +158,68 @@ export async function POST(req: NextRequest) {
 
   if (action === 'vat') {
     // Operator marked this line as a VAT payment to HMRC.
-    const vatPayableRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '2210'
-    `) as Array<{ id: string }>;
-    if (!vatPayableRows.length) {
+    //
+    // The account is resolved through the one chart-of-accounts lookup, so a
+    // missing account is reported by name instead of being an undefined
+    // `[0].id` — and a tenant's own account wins over the global one.
+    const vatPayableId = await findAccountId(sql, '2210', ctx.tenantId);
+    if (!vatPayableId) {
       return NextResponse.json({ error: 'VAT Payable account missing' }, { status: 500 });
     }
     const result = postVatPaymentJournal({
       bankTxId,
       amount: magnitude,
-      vatPayableAccountId: vatPayableRows[0].id,
+      vatPayableAccountId: vatPayableId,
       bankGlAccountId: bankGlId,
     });
-    await commitJournalForBankTransaction(ctx, result, bankTxId);
-    await categorise(sql, ctx.tenantId, bankTxId, 'manually_matched', null);
+    // The posting and the categorisation are ONE transaction.
+    //
+    // The posting has to be inside a transaction at all. The ledger's balance
+    // trigger is deferred and fires at COMMIT, so on a pooled connection the
+    // FIRST line of the entry is checked on its own, rejected as unbalanced
+    // ("journal <id> unbalanced: debits=120 credits=0"), and left behind as an
+    // orphan entry with no lines — and the categorisation below never ran.
+    // That is what this button did for every operator who pressed it.
+    try {
+      await withJournalTx(async (tx) => {
+        await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+        await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+      });
+    } catch (err) {
+      // A closed or locked period is a conflict the operator can act on, not
+      // a broken button: it says which period, and who closed it.
+      const refusal = periodRefusalResponse(err);
+      if (refusal) return refusal;
+      throw err;
+    }
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
   if (action === 'fee') {
     // Operator marked this line as a bank charge.
-    const chargesRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '5910'
-    `) as Array<{ id: string }>;
-    const arRows = (await sql`
-      select id from accounting.chart_of_accounts where code = '1100'
-    `) as Array<{ id: string }>;
-    if (!chargesRows.length || !arRows.length) {
+    const chargesId = await findAccountId(sql, '5910', ctx.tenantId);
+    const arId = await findAccountId(sql, '1100', ctx.tenantId);
+    if (!chargesId || !arId) {
       return NextResponse.json({ error: 'Bank Charges / Trade Debtors missing' }, { status: 500 });
     }
     const result = postBankFeeJournal({
       bankTxId,
       feeAmount: magnitude,
-      bankChargesAccountId: chargesRows[0].id,
-      arAccountId: arRows[0].id,
+      bankChargesAccountId: chargesId,
+      arAccountId: arId,
     });
-    await commitJournalForBankTransaction(ctx, result, bankTxId);
-    await categorise(sql, ctx.tenantId, bankTxId, 'manually_matched', null);
+    // One transaction, for the same reason as the VAT payment above: a
+    // posting outside a transaction is an orphan entry plus a failed button.
+    try {
+      await withJournalTx(async (tx) => {
+        await commitJournalForBankTransaction(tx, ctx, result, bankTxId);
+        await categorise(tx, ctx.tenantId, bankTxId, 'manually_matched', null);
+      });
+    } catch (err) {
+      const refusal = periodRefusalResponse(err);
+      if (refusal) return refusal;
+      throw err;
+    }
     return NextResponse.redirect(new URL(returnTo, req.url), 303);
   }
 
@@ -190,14 +243,10 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // The trade-debtors account is global reference data — one row, shared by
-  // every tenant — so it is read outside the transaction.
-  const arRows = (await sql`
-    select id from accounting.chart_of_accounts where code = '1100'
-  `) as Array<{ id: string }>;
-  if (!arRows.length) {
-    return NextResponse.json({ error: 'Trade Debtors account missing' }, { status: 500 });
-  }
+  // The trade-debtors account is resolved inside the transaction, by the same
+  // chart-of-accounts lookup the other posting paths use, so a missing
+  // account is named by its code instead of crashing on an undefined id.
+  // The lookup prefers this tenant's own account over the global one.
 
   const idempotencyKey = `bank-match-${bankTxId}`;
   // The handle that ties an operator's "it said it failed" to the detail on
@@ -218,10 +267,12 @@ export async function POST(req: NextRequest) {
         select i.id, i.gross_pence, i.agreement_id, i.status::text as status,
                (select a.driver_id
                   from public.agreements a
-                 where a.id = i.agreement_id) as driver_id,
+                 where a.id = i.agreement_id
+                   and a.tenant_id = ${ctx.tenantId}::uuid) as driver_id,
                coalesce((select sum(pa.amount_pence)
                            from public.payment_allocations pa
-                          where pa.invoice_id = i.id), 0)::bigint as allocated_pence
+                          where pa.invoice_id = i.id
+                            and pa.tenant_id = ${ctx.tenantId}::uuid), 0)::bigint as allocated_pence
           from public.invoices i
          where i.id = ${invoiceId}::uuid
            and i.tenant_id = ${ctx.tenantId}::uuid
@@ -263,7 +314,7 @@ export async function POST(req: NextRequest) {
            received_on, status, external_ref, tenant_id)
         values (${inv.driver_id}::uuid, ${inv.agreement_id}::uuid, 'bank_transfer',
                 ${idempotencyKey}, ${amountPence.toString()},
-                ${row.posted_at.slice(0, 10)}::date, 'confirmed',
+                ${row.posted_on}::date, 'confirmed',
                 ${bankTxId}, ${ctx.tenantId}::uuid)
         on conflict (source, idempotency_key) do nothing
         returning id
@@ -294,14 +345,26 @@ export async function POST(req: NextRequest) {
       `;
 
       // 4. Post the receipt: Dr Bank / Cr Trade Debtors, for the money that
-      //    arrived.
-      const result = postPaymentJournal({
-        paymentId,
-        gross: amountPence,
-        bankAccountGlId: bankGlId,
-        arAccountId: arRows[0].id,
-      });
-      const journalId = await commitJournalForPayment(ctx, result, paymentId, tx);
+      //    arrived — into the month the BANK posted it, which is the month the
+      //    payment's `received_on` names.
+      //
+      //    The shared poster resolves the accounts from the chart of accounts
+      //    and refuses a posting into a closed period, so this route and the
+      //    rent cron and the payment ingest cannot drift apart on where a
+      //    receipt lands.
+      const journalId = await postPaymentToLedger(
+        tx,
+        ctx,
+        {
+          id: paymentId,
+          amountPence,
+          receivedOn: row.posted_on,
+        },
+        { bankAccountGlId: bankGlId },
+      );
+      if (!journalId) {
+        throw new Error('The payment was not posted to the ledger.');
+      }
 
       // 5. Point the bank line at the invoice it was matched to and at the
       //    journal it produced.
@@ -321,6 +384,21 @@ export async function POST(req: NextRequest) {
     // A refusal the operator can act on: say what is wrong, and nothing more.
     if (err instanceof MatchRejected) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // A closed or locked period is a conflict too, and it has to say WHICH
+    // period. The generic message below would have hidden the only fact the
+    // operator needs.
+    const refusal = periodRefusalResponse(err);
+    if (refusal) return refusal;
+    // A missing account is the installation's problem, not the operator's, and
+    // it is named by its code so whoever fixes it knows which one. The account
+    // code is a chart-of-accounts constant, not a secret and not a detail of
+    // the request, so it is safe to say.
+    if (err instanceof MissingChartOfAccountsError) {
+      return NextResponse.json(
+        { error: `Chart of accounts: no account with code ${err.code}.`, requestId },
+        { status: 500 },
+      );
     }
     // Anything else is unexpected. The detail stays on the server — it can
     // name a column, a constraint or a file path, none of which belong in a
@@ -344,7 +422,7 @@ export async function POST(req: NextRequest) {
  * references public.invoices(id), so it must never be given a payment id.
  */
 async function categorise(
-  sql: Awaited<ReturnType<typeof localDb>>,
+  sql: ISql,
   tenantId: string,
   bankTxId: string,
   status: 'manually_matched' | 'ignored',

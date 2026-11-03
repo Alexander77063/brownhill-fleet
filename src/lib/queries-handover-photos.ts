@@ -12,12 +12,20 @@ export interface HandoverPhotoRow {
   uploadedAt: string;
 }
 
-export async function listHandoverPhotos(agreementId: string): Promise<HandoverPhotoRow[]> {
+export async function listHandoverPhotos(
+  agreementId: string,
+  tenantId: string,
+): Promise<HandoverPhotoRow[]> {
   const sql = await localDb();
+  // The tenant is in the SQL, not implied by the agreement id: this runs on
+  // the direct Postgres connection, which is the table owner and bypasses RLS
+  // entirely. A handover photo is a customer's vehicle — another tenant's
+  // must never be reachable from this page.
   const rows = (await sql`
     select id, kind, storage_path, uploaded_at
       from agreement_handover_photos
      where agreement_id = ${agreementId}::uuid
+       and tenant_id = ${tenantId}::uuid
      order by uploaded_at asc
   `) as Array<{ id: string; kind: string; storage_path: string; uploaded_at: string }>;
   return rows.map((r) => ({

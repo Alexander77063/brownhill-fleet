@@ -57,6 +57,16 @@ export interface SqlStatement {
   file: string;
   /** 1-based line of the tagged template the statement came from. */
   line: number;
+  /**
+   * The tag the template was invoked through — `sql`, `tx`, and so on.
+   *
+   * This matters because the two clients in this application behave very
+   * differently with respect to tenancy. The PostgREST client is scoped by
+   * the session's JWT, so its reads are already filtered; the direct
+   * Postgres client connects as a superuser and bypasses RLS entirely, so
+   * its statements have to name the tenant themselves.
+   */
+  tag: string;
   /** The statement, with `${...}` interpolations replaced by a space. */
   text: string;
 }
@@ -542,6 +552,7 @@ export function extractSqlStatements(srcDir: string, repoRoot: string): SqlState
       if (ts.isTaggedTemplateExpression(node)) {
         const raw = templateText(node.template);
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+        const tag = ts.isIdentifier(node.tag) ? node.tag.text : '?';
         for (const stmt of splitStatements(raw)) {
           const s = stmt.trim();
           if (!s) continue;
@@ -549,6 +560,7 @@ export function extractSqlStatements(srcDir: string, repoRoot: string): SqlState
           out.push({
             file: path.relative(repoRoot, file).split(path.sep).join('/'),
             line: line + 1,
+            tag,
             text: s,
           });
         }
@@ -635,6 +647,32 @@ export function extractInsertTarget(statement: string): TableRef | null {
   const clean = m[1].replace(/"/g, '');
   const [schema, name] = clean.includes('.') ? clean.split('.') : [null, clean];
   return { schema: schema ? schema.toLowerCase() : null, name: name.toLowerCase(), raw: m[1] };
+}
+
+/**
+ * The column list of an `insert into` statement, if it names one.
+ *
+ * `insert into invoices (tenant_id, number, …) values (…)` names its columns;
+ * `insert into invoices values (…)` does not, and returns null.
+ */
+export function extractInsertColumns(statement: string): string[] | null {
+  const m = new RegExp(`\\binsert\\s+into\\s+(${QUALIFIED})\\s*\\(`, 'i').exec(statement);
+  if (!m) return null;
+  const open = m.index + m[0].length - 1;
+  let depth = 0;
+  for (let i = open; i < statement.length; i++) {
+    const ch = statement[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        return splitTopLevel(statement.slice(open + 1, i))
+          .map((c) => c.trim().toLowerCase().replace(/^"|"$/g, ''))
+          .filter(Boolean);
+      }
+    }
+  }
+  return null;
 }
 
 /* ──────────────────── Aliases and column references ──────────────────── */

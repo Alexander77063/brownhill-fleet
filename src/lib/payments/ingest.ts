@@ -10,10 +10,32 @@
  * or overdue. A voided invoice is never one of them: it has been cancelled,
  * so nothing is owed on it. Re-allocating on a retry would re-bill the same
  * cash, so allocation runs strictly when created === true.
+ *
+ * THE PAYMENT AND ITS LEDGER ENTRY ARE ONE TRANSACTION
+ * -----------------------------------------------------
+ * This used to write the payment through PostgREST and never touched the
+ * ledger at all. `postPaymentJournal` had no call site anywhere in the
+ * product, so money arriving left no trace in the operator's trial balance:
+ * the accounts showed the handful of bank lines somebody had reconciled by
+ * hand, and nothing else.
+ *
+ * The posting and the payment row are now one transaction, which is the only
+ * way both of these can be impossible:
+ *
+ *   * a payment with no ledger entry — money the accounts do not know about;
+ *   * a ledger entry with no payment — money nobody can point at.
+ *
+ * It also means the receipt cannot be recorded into a period the ledger has
+ * shut: the whole write is refused, the provider retries, and the money lands
+ * when the operator reopens the month. A receipt that exists without its
+ * ledger entry is worse than a receipt that has not arrived yet.
  */
 
-import { createServiceClient } from '@/lib/supabase/server';
-import { ALLOCATABLE_INVOICE_STATUSES } from '@/lib/accounting/invoice-eligibility';
+import { localDb } from '@/lib/auth/local-store';
+import { allocatePaymentToInvoices } from '@/lib/accounting/allocation';
+import { postPaymentToLedger } from '@/lib/accounting/gl-posting';
+import { withJournalTx } from '@/lib/accounting/journal-bridge';
+import type { ISql } from 'postgres';
 
 export type PaymentSource = 'manual' | 'bank_transfer' | 'gocardless' | 'stripe' | 'cash';
 
@@ -42,35 +64,95 @@ export interface IngestResult {
   allocatedPence: number;
 }
 
+/**
+ * A value that can be written to a jsonb column.
+ *
+ * postgres.js's `json()` helper is typed against its own `JSONValue`, which
+ * the package does not export from its root. The provider payload is
+ * provider-shaped — anything JSON can carry — so the cast is made once, here,
+ * rather than at every call site.
+ */
+type JsonPayload = Parameters<ISql['json']>[0];
+
+/**
+ * The tenant that owns this payment, resolved from the record it is attached
+ * to.
+ *
+ * The agreement is preferred (the primary association), then the driver. When
+ * neither is given there is nothing to derive a tenant from, and the caller
+ * has to say which tenant the money belongs to — a receipt filed against the
+ * wrong tenant is worse than a receipt that was refused.
+ */
+async function resolveTenant(sql: ISql, opts: IngestOpts): Promise<string | null> {
+  if (opts.agreementId) {
+    const rows = (await sql`
+      select tenant_id from public.agreements where id = ${opts.agreementId}::uuid
+    `) as Array<{ tenant_id: string }>;
+    return rows[0]?.tenant_id ?? null;
+  }
+  if (opts.driverId) {
+    const rows = (await sql`
+      select tenant_id from public.drivers where id = ${opts.driverId}::uuid
+    `) as Array<{ tenant_id: string }>;
+    return rows[0]?.tenant_id ?? null;
+  }
+  return null;
+}
+
+/**
+ * The driver a payment belongs to, when it is attached to an agreement.
+ *
+ * The payment row is driver-linked so the driver's portal can show what they
+ * have paid; an agreement with no driver (a vehicle-let, before it is signed)
+ * contributes no driver rather than a broken link.
+ *
+ * A driver that belongs to ANOTHER tenant is refused rather than linked. The
+ * driver's portal reads their own payments, so linking a payment to a foreign
+ * driver would show one tenant's money on another tenant's customer record —
+ * and the agreement the payment was raised for would say something different
+ * from the driver it was attached to.
+ */
+async function resolveDriverId(
+  sql: ISql,
+  agreementId: string | undefined,
+  driverId: string | undefined,
+  tenantId: string,
+): Promise<string | null> {
+  if (driverId) {
+    const owned = (await sql`
+      select id from public.drivers
+       where id = ${driverId}::uuid
+         and tenant_id = ${tenantId}::uuid
+    `) as Array<{ id: string }>;
+    if (!owned.length) {
+      throw new Error('payment ingest rejected: driver belongs to a different tenant');
+    }
+    return driverId;
+  }
+  if (!agreementId) return null;
+  const rows = (await sql`
+    select driver_id from public.agreements
+     where id = ${agreementId}::uuid
+       and tenant_id = ${tenantId}::uuid
+  `) as Array<{ driver_id: string | null }>;
+  return rows[0]?.driver_id ?? null;
+}
+
 export async function ingestPayment(opts: IngestOpts): Promise<IngestResult> {
   if (!opts.amountPence || opts.amountPence <= 0) {
     // Nothing collectable (e.g. a £0 / failed provider event) — record nothing.
     return { created: false, paymentId: null, allocatedPence: 0 };
   }
+  if (!Number.isInteger(opts.amountPence)) {
+    throw new Error('payment ingest failed: amountPence must be a whole number of pence.');
+  }
 
-  // Service-role client: webhooks/cron run without a user session and must
-  // bypass RLS to write into payments.
-  const sb = createServiceClient();
+  const sql = await localDb();
 
   // Derive the owning tenant from the associated record so the payment (and any
   // allocations) land under the correct tenant rather than the transitional
-  // default. Prefer the agreement (the primary association), then the driver.
-  let tenantId: string | null = null;
-  if (opts.agreementId) {
-    const { data: agreement } = await sb
-      .from('agreements')
-      .select('tenant_id')
-      .eq('id', opts.agreementId)
-      .maybeSingle();
-    tenantId = (agreement as { tenant_id: string } | null)?.tenant_id ?? null;
-  } else if (opts.driverId) {
-    const { data: driver } = await sb
-      .from('drivers')
-      .select('tenant_id')
-      .eq('id', opts.driverId)
-      .maybeSingle();
-    tenantId = (driver as { tenant_id: string } | null)?.tenant_id ?? null;
-  }
+  // default.
+  const tenantId = await resolveTenant(sql, opts);
   if (!tenantId) {
     throw new Error('payment ingest failed: could not resolve tenant for payment');
   }
@@ -80,110 +162,78 @@ export async function ingestPayment(opts: IngestOpts): Promise<IngestResult> {
     throw new Error('payment ingest rejected: agreement/driver belongs to a different tenant');
   }
 
-  const insertRow: Record<string, unknown> = {
-    source: opts.source,
-    idempotency_key: opts.idempotencyKey,
-    amount_pence: opts.amountPence,
-    status: 'confirmed',
-    tenant_id: tenantId,
-  };
-  if (opts.agreementId) insertRow.agreement_id = opts.agreementId;
-  if (opts.driverId) insertRow.driver_id = opts.driverId;
-  if (opts.externalRef) insertRow.external_ref = opts.externalRef;
-  if (opts.receivedOn) insertRow.received_on = opts.receivedOn;
-  if (opts.raw !== undefined) insertRow.raw = opts.raw;
+  const driverId = await resolveDriverId(sql, opts.agreementId, opts.driverId, tenantId);
+  const amountPence = BigInt(opts.amountPence);
+  const receivedOn = opts.receivedOn ?? null;
 
-  // Try a plain insert. A duplicate (source, idempotency_key) surfaces as a
-  // unique-violation (Postgres 23505) rather than a throw — that's our guard.
-  const { data: inserted, error } = await sb
-    .from('payments')
-    .insert(insertRow as never)
-    .select('id')
-    .single();
+  return withJournalTx(async (tx) => {
+    // 1. The payment row. Idempotent on (source, idempotency_key): a replay
+    //    of the same provider event finds the row it already made rather than
+    //    counting the money twice.
+    const inserted = (await tx`
+      insert into public.payments
+        (source, idempotency_key, amount_pence, status, received_on,
+         agreement_id, driver_id, external_ref, raw, tenant_id)
+      values (${opts.source}::public.payment_source,
+              ${opts.idempotencyKey},
+              ${amountPence.toString()},
+              'confirmed'::public.payment_status,
+              coalesce(${receivedOn}::date, current_date),
+              ${opts.agreementId ?? null}::uuid,
+              ${driverId ?? null}::uuid,
+              ${opts.externalRef ?? null}::text,
+              ${opts.raw === undefined ? null : tx.json(opts.raw as JsonPayload)}::jsonb,
+              ${tenantId}::uuid)
+      on conflict (source, idempotency_key) do nothing
+      returning id, received_on::text as received_on
+    `) as Array<{ id: string; received_on: string }>;
 
-  if (error) {
-    if (error.code === '23505') {
-      // Already ingested. Return the existing id; DO NOT allocate again.
-      const { data: existing } = await sb
-        .from('payments')
-        .select('id')
-        .eq('source', opts.source)
-        .eq('idempotency_key', opts.idempotencyKey)
-        .maybeSingle();
-      return {
-        created: false,
-        paymentId: (existing as { id: string } | null)?.id ?? null,
-        allocatedPence: 0,
-      };
+    if (!inserted.length) {
+      // Already ingested. Return the existing id; DO NOT allocate again and DO
+      // NOT post again — the journal's own idempotency key would return the
+      // same entry, but going no further means a retry cannot even take the
+      // period lock, so a retry never fails because a month was closed after
+      // the original posting.
+      const existing = (await tx`
+        select id from public.payments
+         where source = ${opts.source}::public.payment_source
+           and idempotency_key = ${opts.idempotencyKey}
+           and tenant_id = ${tenantId}::uuid
+      `) as Array<{ id: string }>;
+      return { created: false, paymentId: existing[0]?.id ?? null, allocatedPence: 0 };
     }
-    throw new Error(`payment ingest failed: ${error.message}`);
-  }
 
-  const paymentId = (inserted as { id: string }).id;
+    const payment = inserted[0];
 
-  // Newly inserted — auto-allocate to the agreement's oldest unpaid invoices.
-  let allocatedPence = 0;
-  if (opts.agreementId) {
-    allocatedPence = await allocateToInvoices(
-      sb,
-      paymentId,
-      opts.agreementId,
-      opts.amountPence,
-      tenantId,
+    // 2. Allocate the receipt to the agreement's oldest outstanding invoices.
+    let allocatedPence = 0n;
+    if (opts.agreementId) {
+      const allocation = await allocatePaymentToInvoices(tx, {
+        paymentId: payment.id,
+        agreementId: opts.agreementId,
+        amountPence,
+        tenantId,
+      });
+      allocatedPence = allocation.allocatedPence;
+    }
+
+    // 3. The ledger entry: Dr Bank / Cr Trade Debtors, in the month the money
+    //    was received. Same transaction, so the receipt and its entry cannot
+    //    come apart.
+    await postPaymentToLedger(
+      tx,
+      { userId: null, tenantId },
+      {
+        id: payment.id,
+        amountPence,
+        receivedOn: payment.received_on,
+      },
     );
-  }
 
-  return { created: true, paymentId, allocatedPence };
-}
-
-/**
- * FIFO-allocate `amountPence` of a payment across an agreement's outstanding
- * invoices (oldest first). `v_invoice_balance` exposes per-invoice
- * `balance_pence`; the DB `check_allocation` + `sync_invoice_status` triggers
- * enforce limits and roll up invoice.status. Returns total pence allocated.
- */
-async function allocateToInvoices(
-  sb: ReturnType<typeof createServiceClient>,
-  paymentId: string,
-  agreementId: string,
-  amountPence: number,
-  tenantId: string,
-): Promise<number> {
-  const { data: invoices } = await sb
-    .from('v_invoice_balance')
-    .select('id, balance_pence, issued_on, status')
-    .eq('agreement_id', agreementId)
-    .in('status', [...ALLOCATABLE_INVOICE_STATUSES])
-    .gt('balance_pence', 0)
-    .order('issued_on', { ascending: true });
-
-  const rows = (invoices ?? []) as Array<{
-    id: string;
-    balance_pence: number;
-    status: string;
-  }>;
-
-  let remaining = amountPence;
-  let allocated = 0;
-  for (const inv of rows) {
-    if (remaining <= 0) break;
-    const take = Math.min(remaining, inv.balance_pence);
-    if (take <= 0) continue; // amount_pence > 0 is enforced by the DB check
-    const { error } = await sb
-      .from('payment_allocations')
-      .insert({
-        payment_id: paymentId,
-        invoice_id: inv.id,
-        amount_pence: take,
-        tenant_id: tenantId,
-      } as never);
-    if (error) {
-      // A concurrent allocation may have consumed the balance; skip and move on
-      // rather than failing the whole ingest (the payment row already exists).
-      continue;
-    }
-    remaining -= take;
-    allocated += take;
-  }
-  return allocated;
+    return {
+      created: true,
+      paymentId: payment.id,
+      allocatedPence: Number(allocatedPence),
+    };
+  });
 }

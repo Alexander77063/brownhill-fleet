@@ -15,17 +15,35 @@ export interface OpsIncidentRow {
   severity: DamageSeverity;
   description: string;
   status: DamageReportStatus;
-  createdAt: string;
-  reviewedAt: string | null;
+  /**
+   * When the report was raised.
+   *
+   * A `Date`, because that is what the column is: `driver_damage_reports.
+   * created_at` is a timestamptz and postgres.js parses it. It was declared
+   * a string, which the code got away with only because `formatDate` copies
+   * whatever it is given — the declaration was a lie, and a lie in a type is
+   * a trap for whoever writes the next line.
+   */
+  createdAt: Date;
+  /** When ops reviewed it. A timestamptz too, so a Date — or null. */
+  reviewedAt: Date | null;
   resolutionNotes: string | null;
   photoPath: string | null;
 }
 
-export async function listOpenIncidents(): Promise<OpsIncidentRow[]> {
+export async function listOpenIncidents(tenantId: string): Promise<OpsIncidentRow[]> {
   const sql = await localDb();
   // "Open" here means everything not in a terminal state — ops wants to
   // see the queue in one view including the reviewed/in_repair work in
   // progress, not just the unread items.
+  //
+  // TENANT SCOPE
+  // ------------
+  // This reads through the direct Postgres connection, which is the table
+  // owner, so RLS does not apply to it: the tenant has to be in the SQL.
+  // The report, the vehicle and the driver are each filtered by it — the
+  // driver because a report names a person, and the name is what the
+  // operator reads.
   const rows = (await sql`
     select r.id, r.vehicle_id, r.severity, r.description, r.status,
            r.created_at, r.reviewed_at, r.resolution_notes, r.photo_path,
@@ -33,14 +51,17 @@ export async function listOpenIncidents(): Promise<OpsIncidentRow[]> {
            d.full_name as driver_name
       from driver_damage_reports r
       join vehicles v on v.id = r.vehicle_id
+                     and v.tenant_id = ${tenantId}::uuid
       join drivers  d on d.id = r.driver_id
-     where r.status in ('open','reviewed','in_repair')
+                     and d.tenant_id = ${tenantId}::uuid
+     where r.tenant_id = ${tenantId}::uuid
+       and r.status in ('open','reviewed','in_repair')
      order by
        case r.severity when 'major' then 0 when 'moderate' then 1 else 2 end,
        r.created_at desc
   `) as Array<{
     id: string; vehicle_id: string; severity: string; description: string;
-    status: string; created_at: string; reviewed_at: string | null;
+    status: string; created_at: Date; reviewed_at: Date | null;
     resolution_notes: string | null; photo_path: string | null;
     vehicle_reg: string; driver_name: string;
   }>;
@@ -59,7 +80,7 @@ export async function listOpenIncidents(): Promise<OpsIncidentRow[]> {
   }));
 }
 
-export async function listRecentIncidents(limit = 50): Promise<OpsIncidentRow[]> {
+export async function listRecentIncidents(tenantId: string, limit = 50): Promise<OpsIncidentRow[]> {
   const sql = await localDb();
   const rows = (await sql`
     select r.id, r.vehicle_id, r.severity, r.description, r.status,
@@ -68,12 +89,15 @@ export async function listRecentIncidents(limit = 50): Promise<OpsIncidentRow[]>
            d.full_name as driver_name
       from driver_damage_reports r
       join vehicles v on v.id = r.vehicle_id
+                     and v.tenant_id = ${tenantId}::uuid
       join drivers  d on d.id = r.driver_id
+                     and d.tenant_id = ${tenantId}::uuid
+     where r.tenant_id = ${tenantId}::uuid
      order by r.created_at desc
      limit ${limit}
   `) as Array<{
     id: string; vehicle_id: string; severity: string; description: string;
-    status: string; created_at: string; reviewed_at: string | null;
+    status: string; created_at: Date; reviewed_at: Date | null;
     resolution_notes: string | null; photo_path: string | null;
     vehicle_reg: string; driver_name: string;
   }>;
@@ -92,12 +116,13 @@ export async function listRecentIncidents(limit = 50): Promise<OpsIncidentRow[]>
   }));
 }
 
-export async function countOpenIncidents(): Promise<number> {
+export async function countOpenIncidents(tenantId: string): Promise<number> {
   const sql = await localDb();
   const rows = (await sql`
     select count(*)::int as n
       from driver_damage_reports
-     where status in ('open','reviewed','in_repair')
+     where tenant_id = ${tenantId}::uuid
+       and status in ('open','reviewed','in_repair')
   `) as Array<{ n: number }>;
   return rows[0]?.n ?? 0;
 }

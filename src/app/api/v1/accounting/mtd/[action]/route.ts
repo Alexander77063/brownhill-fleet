@@ -1,5 +1,5 @@
 // src/app/api/v1/accounting/mtd/[action]/route.ts
-// GET for connect/callback, POST for submit/disconnect.
+// GET for connect/callback/vrn, POST for submit/vrn/disconnect.
 //
 // Permission-gated to tenant.settings — MTD credentials are the tenant's
 // HMRC integration, and the submit handler writes to `accounting.audit_log`
@@ -18,17 +18,50 @@
 // The destination is carried in the signed OAuth `state` and validated with
 // `safeNextPath` against the prefixes the MTD screens live under, so it can
 // only ever be one of those two screens.
+//
+// TWO SHAPES OF ANSWER
+// ---------------------
+// The `submit` action is called by the page's own client component, and it
+// answers JSON: what HMRC said, whether it was accepted, and the reference
+// to quote. The `vrn` action is a plain HTML form on the settings page, and
+// it answers a redirect back to that page with a status it can render — a
+// browser that lands on a JSON body is a browser that has been told
+// something it cannot use.
+//
+// THE STATUSES
+// ------------
+//   200  HMRC accepted the return. The body carries HMRC's correlation id.
+//   409  The period is closed, the return has already been filed, or another
+//        filing of the same period is in hand. Nothing was sent to HMRC.
+//   422  HMRC refused the return. The body carries HMRC's own words.
+//   428  The tenant cannot file: no connection, no VAT registration number,
+//        or a token that could not be refreshed. The body says which.
+//   502  HMRC could not be reached. Nothing was sent; the filing is worth
+//        retrying.
+//   403  The caller does not have permission to do this at all.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { localDb } from '@/lib/auth/local-store';
 import { requirePermission } from '@/lib/auth/context';
 import { resolveJwtSecret } from '@/lib/auth/secret';
 import { safeNextPath } from '@/lib/safe-next';
+import { periodRefusal } from '@/lib/accounting/periods';
 import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
+  loadVrnStatus,
+  MtdAlreadyFiledError,
+  MtdFilingInProgressError,
+  MtdNotConnectedError,
+  MtdRejectedError,
+  MtdSupersededError,
+  MtdUnauthorizedError,
+  MtdUnreachableError,
+  MtdVrnInUseError,
+  parseVrn,
   persistCredentials,
   readMtdConfig,
+  setVrn,
   signCallbackState,
   submitVatReturn,
   verifyCallbackState,
@@ -69,8 +102,17 @@ function mtdRedirect(req: NextRequest, path: string, status: string): NextRespon
 
 export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ action: string }> }) {
   const { action } = await ctxRoute.params;
-  // GET for connect/callback: gated on tenant.settings.
-  const ctx = await requirePermission('tenant.settings');
+  // GET for connect/callback/vrn: gated on tenant.settings.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('tenant.settings');
+  } catch (e) {
+    // A caller without the permission is refused, not crashed into.
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
 
   if (action === 'connect') {
     const config = readMtdConfig();
@@ -91,7 +133,14 @@ export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ action
       600,
       returnTo,
     );
-    return NextResponse.redirect(buildAuthorizeUrl(config.clientId, config.redirectUri, state), 303);
+    // The endpoint comes from the same configuration the submission uses.
+    // They used to be different — the OAuth path used a constant while the
+    // filing used HMRC_MTD_BASE_URL — so a box pointed at a stub (or a
+    // proxy) would connect to one host and file with another.
+    return NextResponse.redirect(
+      buildAuthorizeUrl(config.clientId, config.redirectUri, state, config.baseUrl),
+      303,
+    );
   }
 
   if (action === 'callback') {
@@ -127,6 +176,7 @@ export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ action
         config.clientId,
         config.clientSecret,
         config.redirectUri,
+        config.baseUrl,
       );
       await persistCredentials({
         tenantId: ctx.tenantId,
@@ -144,13 +194,34 @@ export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ action
     }
   }
 
+  if (action === 'vrn') {
+    // The VAT registration number the return is filed against. It lives on
+    // the connection row, and it is the TENANT'S OWN.
+    //
+    // The installation-wide HMRC_MTD_VRN is a default one tenant adopts when
+    // it connects — it is not a fallback at filing time, and it is not
+    // available once another tenant holds it. Reporting it as the tenant's
+    // number would tell the operator their return is going out under a
+    // number it will not go out under.
+    const status = await loadVrnStatus(ctx.tenantId);
+    return NextResponse.json(status);
+  }
+
   return NextResponse.json({ error: `unknown mtd action: ${action}` }, { status: 404 });
 }
 
 export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ action: string }> }) {
   const { action } = await ctxRoute.params;
-  // POST for submit/disconnect: same gate.
-  const ctx = await requirePermission('tenant.settings');
+  // POST for submit/vrn/disconnect: same gate.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('tenant.settings');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
 
   if (action === 'submit') {
     const url = new URL(req.url);
@@ -158,21 +229,154 @@ export async function POST(req: NextRequest, ctxRoute: { params: Promise<{ actio
     const [yearStr, monthStr] = period.split('-');
     const year  = parseInt(yearStr, 10);
     const month = parseInt(monthStr, 10);
-    if (!year || !month) return NextResponse.json({ error: 'period required' }, { status: 400 });
+    if (!year || !month || month < 1 || month > 12) {
+      return NextResponse.json({ error: 'period must be YYYY-MM.' }, { status: 400 });
+    }
 
     try {
       // C2 fix: real session user/tenant. Previously `'placeholder'` strings
       // failed FK on accounting.journal_entries.posted_by_user_id and rolled
       // back every submit.
-      await submitVatReturn({ year, month, userId: ctx.userId, tenantId: ctx.tenantId });
-      // I1: land on the /accounts/* tree.
-      return NextResponse.redirect(
-        new URL(`/accounts/accounting/reports/vat-return?period=${period}&status=submitted`, req.url),
-        303,
-      );
+      //
+      // `force` is only ever present when the operator asked for it. It
+      // takes over a filing that started and never finished — never one that
+      // HMRC has accepted, and never one that is still running.
+      const force = url.searchParams.get('force') === '1';
+      const outcome = await submitVatReturn({
+        year,
+        month,
+        userId: ctx.userId,
+        tenantId: ctx.tenantId,
+        ...(force ? { force: true } : {}),
+      });
+      return NextResponse.json({
+        ok: true,
+        status: outcome.status,
+        correlationId: outcome.correlationId,
+        period,
+      });
     } catch (e) {
-      return NextResponse.json({ error: e instanceof Error ? e.message : 'unknown' }, { status: 500 });
+      // A closed or locked period is a conflict the operator can act on —
+      // reopen the period and file again — and nothing has been sent to HMRC.
+      // It is not a failure, and it must not be reported as one.
+      const refusal = periodRefusal(e);
+      if (refusal) {
+        return NextResponse.json(refusal.body, { status: refusal.status });
+      }
+      // The return has already been filed. HMRC takes one return per period,
+      // so a second one would be a duplicate return and a second posting.
+      // The reference HMRC gave is carried with the refusal: it is the one
+      // thing the operator needs to talk to HMRC about.
+      //
+      // `ledger` says where the books stand. A return HMRC took whose ledger
+      // entry never landed is completed here — the posting is idempotent —
+      // so `outstanding` means the books are still behind the return and an
+      // administrator has to finish it.
+      if (e instanceof MtdAlreadyFiledError) {
+        return NextResponse.json(
+          {
+            error: e.message,
+            code: 'already_filed',
+            correlationId: e.correlationId,
+            ledger: e.ledger,
+          },
+          { status: 409 },
+        );
+      }
+      // This filing attempt lost the period to a later one. Nothing was
+      // written — and HMRC may have received this attempt's return, so the
+      // operator has to check HMRC's filing history.
+      if (e instanceof MtdSupersededError) {
+        return NextResponse.json(
+          { error: e.message, code: 'superseded', correlationId: e.correlationId },
+          { status: 409 },
+        );
+      }
+      // Another filing of this period is in hand. `canForce` says whether
+      // the operator can take it over — which they can only do once it has
+      // died, not while it is still working.
+      if (e instanceof MtdFilingInProgressError) {
+        return NextResponse.json(
+          { error: e.message, code: 'filing_in_progress', canForce: e.canForce },
+          { status: 409 },
+        );
+      }
+      // The tenant cannot file: no connection, no VAT registration number,
+      // or a token HMRC would not take. The body says which, because the
+      // operator's next move is different for each.
+      if (e instanceof MtdNotConnectedError || e instanceof MtdUnauthorizedError) {
+        return NextResponse.json(
+          { error: e.message, code: 'not_connected' },
+          { status: 428 },
+        );
+      }
+      // HMRC refused the return. Its own words are the answer, and they are
+      // the operator's to read.
+      if (e instanceof MtdRejectedError) {
+        return NextResponse.json(
+          {
+            error: e.message,
+            code: 'hmrc_rejected',
+            reason: e.detail,
+            responseBody: e.responseBody,
+            correlationId: e.correlationId,
+          },
+          { status: 422 },
+        );
+      }
+      // HMRC was not there. Nothing was sent, and the filing is worth
+      // retrying.
+      if (e instanceof MtdUnreachableError) {
+        return NextResponse.json(
+          { error: e.message, code: 'hmrc_unreachable' },
+          { status: 502 },
+        );
+      }
+      const requestId = crypto.randomUUID();
+      console.error(`[mtd/submit] submission failed (request ${requestId})`, e);
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : 'unknown', requestId },
+        { status: 500 },
+      );
     }
+  }
+
+  if (action === 'vrn') {
+    // The form on the settings page. The body is read once, here: the
+    // return path is in the same body, and a request can only be read once.
+    const form = await req.formData().catch(() => null);
+    const raw = form?.get('vrn');
+    const value = typeof raw === 'string' ? raw : '';
+    const returnTo = safeNextPath(form?.get('returnTo'), MTD_FALLBACK, MTD_RETURN_PREFIXES);
+
+    const parsed = parseVrn(value);
+    if (!parsed.ok) {
+      return mtdRedirect(req, returnTo, 'vrn-invalid');
+    }
+
+    // The VRN lives on the connection row. A tenant that has never
+    // connected has nothing to attach it to, and saying "saved" for a write
+    // that changed nothing would be a lie.
+    //
+    // A number another tenant already holds is refused: a VAT registration
+    // number belongs to one organisation, and two tenants filing under it
+    // would be a duplicate return at HMRC.
+    let saved = false;
+    try {
+      saved = await setVrn(ctx.tenantId, parsed.vrn);
+    } catch (e) {
+      if (e instanceof MtdVrnInUseError) {
+        console.warn(
+          `[mtd/vrn] tenant ${ctx.tenantId} tried to take a VAT registration number held by tenant ${e.holderTenantId}`,
+        );
+        return mtdRedirect(req, returnTo, 'vrn-in-use');
+      }
+      throw e;
+    }
+    if (!saved) {
+      return mtdRedirect(req, returnTo, 'vrn-not-connected');
+    }
+    return mtdRedirect(req, returnTo, 'vrn-set');
   }
 
   if (action === 'disconnect') {

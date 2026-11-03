@@ -74,15 +74,21 @@ ok()  { echo "  ok: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 # Values that are placeholders, with the reason each is allowed. A value is
-# only as safe as its reason: "anon" and "local-proof-secret" describe
-# themselves, and the fixture password exists only inside a test.
+# only as safe as its reason: "anon" describes itself, and the fixture
+# password exists only inside a test.
+#
+# There used to be a third: "local-proof-secret", the stand-in the test-token
+# minter fell back to when no secret was in the environment. That fallback is
+# gone — the minter now refuses to sign without a secret from the environment
+# — so the allowance is gone with it. An allowance for a value that is no
+# longer in the tree is a hole that a future edit could walk straight back
+# through.
 ALLOWED_URL_PASSWORDS=(
   "postgres"          # the stock Postgres password, in .env.example
   "fixture-pg-pw"     # the fixture password in hosted/tests/test-install-postgrest-conf.sh
   "aaaabbbbcccc"      # the fixture password in hosted/tests/mtd-env-wiring.sh
 )
 ALLOWED_FALLBACKS=(
-  "local-proof-secret"  # the proof's own stand-in, in hosted/tests/auth/mint-test-jwt.mjs
   "anon"                # the Supabase client's anonymous key, in src/lib/supabase/middleware.ts
 )
 
