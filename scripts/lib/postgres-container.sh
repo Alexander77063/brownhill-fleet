@@ -68,10 +68,17 @@
 # POSTGRES_HOST_AUTH_METHOD=trust. It is passed rather than assumed, so the
 # probe works whatever pg_hba.conf says: a server that asks for a password
 # gets it, and a server that does not ask is not troubled by one.
+#
+# It is passed as an argument and NOT read from the environment. An
+# environment variable that nothing provides is a setting the deployment does
+# not have, and hosted/tests/env-var-names.sh refuses to let one in: every
+# BROWNHILL_* the code reads has to be provided by something, or to have a
+# documented fallback. This one has neither — every caller that needs a
+# password passes it.
 container_postgres_probe() {
   local cid="$1"
   local port="${2:-5432}"
-  local password="${3:-${BROWNHILL_PG_PROBE_PASSWORD:-}}"
+  local password="${3:-}"
   local -a pg_env=(-e PGHOST=127.0.0.1 -e "PGPORT=$port")
   if [ -n "$password" ]; then
     pg_env+=(-e "PGPASSWORD=$password")
@@ -93,7 +100,7 @@ container_postgres_probe() {
 wait_for_container_postgres() {
   local cid="$1"
   local budget_seconds="${2:-60}"
-  local password="${3:-${BROWNHILL_PG_PROBE_PASSWORD:-}}"
+  local password="${3:-}"
   local attempt=0
   local attempts=$((budget_seconds * 2))
 
