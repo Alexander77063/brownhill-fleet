@@ -81,21 +81,6 @@ export function vatCodeFor(vatPence: bigint): 'T0' | 'T1' {
 }
 
 /**
- * The id of the VAT code an invoice carrying this much VAT belongs to.
- *
- * Returns null when the seeded codes are missing — the caller decides
- * whether that is fatal. It is fatal for a posting (the invoice has to carry
- * a code or the VAT return cannot see it) and it is not fatal for a read.
- */
-export async function inferVatCodeId(
-  sql: ISql,
-  vatPence: bigint,
-  tenantId?: string | null,
-): Promise<string | null> {
-  return findVatCodeId(sql, vatCodeFor(vatPence), tenantId);
-}
-
-/**
  * The VAT code an invoice carrying this much VAT belongs to, or a typed error.
  *
  * For a write path. An invoice without a VAT code is an invoice the VAT
