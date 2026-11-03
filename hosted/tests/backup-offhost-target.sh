@@ -35,13 +35,27 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # A stub b2 that records what it was asked to sync.
-cat > "$TMP/b2" <<'STUB'
+#
+# The copy is made by node, and node cannot spawn a shell script on Windows
+# at all — there is no shebang there, and node refuses to run a batch file
+# directly. So on Windows the stub is a batch file, and on a POSIX box it is
+# a script. Both write the same thing, to the same file.
+#
+# The file is written by RELATIVE name, because the path of a temporary
+# directory is a POSIX path on a POSIX box and a Windows path on a Windows
+# one, and a batch file cannot be given the first kind. The scenarios run
+# with the temporary directory as their working directory, so "b2-args"
+# means the same file to the stub and to the test.
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "${OS:-}" == "Windows_NT" ]]; then
+  printf '@echo off\r\necho %%* > b2-args\r\n' > "$TMP/b2.cmd"
+else
+  cat > "$TMP/b2" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" > "$B2_ARGS_FILE"
+printf '%s\n' "$*" > b2-args
 STUB
-chmod +x "$TMP/b2"
+  chmod +x "$TMP/b2"
+fi
 export PATH="$TMP:$PATH"
-export B2_ARGS_FILE="$TMP/b2-args"
 
 export DUMP_DIR="$TMP/backups"
 export BACKBLAZE_B2_KEY_ID="test-key-id"
@@ -63,6 +77,7 @@ LEGACY_FQDN="BROWN""ILL_FQDN"
 scenario() {
   local name="$1" value="$2"
   (
+    cd "$TMP"
     unset "$CANON_FQDN" "$LEGACY_FQDN"
     if [ -n "$name" ]; then
       export "$name=$value"
@@ -76,13 +91,13 @@ scenario() {
   ) 2>&1
 }
 
-target_of() { grep -o 'b2://[^ ]*' "$B2_ARGS_FILE" 2>/dev/null || true; }
+target_of() { grep -o 'b2://[^ ]*' "$TMP/b2-args" 2>/dev/null || true; }
 
 # ── 1. the canonical name ───────────────────────────────────────────────────
 
 echo "== 1: the deployment's hostname is the path prefix =="
 
-rm -f "$B2_ARGS_FILE"
+rm -f "$TMP/b2-args"
 out=$(scenario "$CANON_FQDN" "their.host")
 
 if [ "$(target_of)" = "b2://test-bucket/brownhill/their.host/" ]; then
@@ -102,7 +117,7 @@ fi
 
 echo "== 2: a box provisioned before the rename still copies off-host =="
 
-rm -f "$B2_ARGS_FILE"
+rm -f "$TMP/b2-args"
 out=$(scenario "$LEGACY_FQDN" "their.host")
 
 if [ "$(target_of)" = "b2://test-bucket/brownhill/their.host/" ]; then
@@ -123,7 +138,7 @@ fi
 
 echo "== 3: no hostname at all refuses rather than filing under a placeholder =="
 
-rm -f "$B2_ARGS_FILE"
+rm -f "$TMP/b2-args"
 out=$(scenario "" "")
 
 if echo "$out" | grep -q 'EXIT=1'; then
@@ -133,7 +148,7 @@ else
   echo "$out" | sed 's/^/      /'
 fi
 
-if [ ! -f "$B2_ARGS_FILE" ]; then
+if [ ! -f "$TMP/b2-args" ]; then
   ok "b2 was never called — nothing was filed under a placeholder"
 else
   bad "b2 was called with '$(target_of)' even though no hostname was set"

@@ -148,7 +148,7 @@ the VAT return reported nothing and the receivables never aged.
 | PostgREST | `src/lib/supabase/*` | Required; loopback only |
 | Resend (email) | `src/lib/email/*` | Platform send, `NOTIFY_FROM_EMAIL` |
 | Tenant BYO email | `src/lib/email/*` | `sendTenantEmail`; **silently skips when unconfigured** |
-| Backblaze B2 | `src/lib/backup/*` | Nightly 02:00; local retention 7 days, off-host 90 |
+| Backblaze B2 | `hosted/scripts/off-host-copy.mjs`, `hosted/bootstrap/brownhill-backup.sh` | Nightly 02:00; local retention 7 days, off-host 90. The destination is either B2 or a directory (`BROWNHILL_OFFHOST_DIR`), and a directory copy is compared file-by-file with the dump |
 | HMRC MTD | `src/lib/accounting/mtd.ts` | VAT return submission; tokens AES-GCM at rest. Opt-in: reads `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI` and `HMRC_ENV` — see decision D13 |
 | DVLA | `src/lib/lookups/*` | Fails soft: the UI says "temporarily unavailable" |
 | Web Push | `src/lib/push.ts` | `web-push` is a `serverExternalPackage` |

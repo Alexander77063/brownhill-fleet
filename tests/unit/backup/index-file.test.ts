@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKUP_STALE_AFTER_SECONDS,
   backupAgeSeconds,
+  describeSyncState,
   formatAge,
   formatBytes,
   formatTimestamp,
@@ -207,6 +208,8 @@ describe('parseBackupSyncState', () => {
       ok: true,
       at: '2026-09-25T02:05:00Z',
       target: 'b2://bucket/brownhill/fqdn',
+      targetKind: null,
+      verified: null,
       detail: null,
     });
   });
@@ -223,6 +226,111 @@ describe('parseBackupSyncState', () => {
 
   it('returns null for unreadable JSON', () => {
     expect(parseBackupSyncState('{oops')).toBeNull();
+  });
+
+  it('reads which kind of destination the copy went to', () => {
+    const sync = parseBackupSyncState(
+      '{"ok":true,"at":"2026-09-25T02:05:00Z","target":"/mnt/offsite/brownhill/fqdn","targetKind":"directory","verified":true}',
+    );
+    expect(sync?.targetKind).toBe('directory');
+    expect(sync?.verified).toBe(true);
+  });
+
+  it('reads a copy that was made but not verified', () => {
+    const sync = parseBackupSyncState(
+      '{"ok":false,"at":"2026-09-25T02:05:00Z","target":"/mnt/offsite/brownhill/fqdn","targetKind":"directory","verified":false,"detail":"the copy did not verify: 2026-09-25.dump — the file did not arrive"}',
+    );
+    expect(sync?.targetKind).toBe('directory');
+    expect(sync?.verified).toBe(false);
+    expect(sync?.detail).toContain('the file did not arrive');
+  });
+
+  it('says "not recorded" rather than "not verified" for a state written before the field existed', () => {
+    // A box that has not yet run the current job has a state file with no
+    // `verified` key in it. That is not the same as a copy that was checked
+    // and failed, and the two must not read the same.
+    const sync = parseBackupSyncState(
+      '{"ok":true,"at":"2026-09-25T02:05:00Z","target":"b2://bucket/brownhill/fqdn"}',
+    );
+    expect(sync?.verified).toBeNull();
+  });
+});
+
+describe('describeSyncState', () => {
+  it('says nothing has been recorded when there is no state', () => {
+    const described = describeSyncState(null);
+    expect(described.value).toBe('Not yet');
+    expect(described.tone).toBe('default');
+    expect(described.hint).toContain('No off-host copy');
+  });
+
+  it('calls a failed copy a failure', () => {
+    const described = describeSyncState({
+      ok: false,
+      at: '2026-09-25T02:05:00Z',
+      target: null,
+      targetKind: null,
+      verified: false,
+      detail: 'the b2 sync failed',
+    });
+    expect(described.value).toBe('Failed');
+    expect(described.tone).toBe('loss');
+    expect(described.hint).toContain('the b2 sync failed');
+  });
+
+  it('says a verified copy was verified', () => {
+    const described = describeSyncState({
+      ok: true,
+      at: '2026-09-25T02:05:00Z',
+      target: 'b2://bucket/brownhill/fqdn',
+      targetKind: 'b2',
+      verified: true,
+      detail: null,
+    });
+    expect(described.value).toBe('Copied');
+    expect(described.tone).toBe('profit');
+    expect(described.hint).toContain('b2://bucket/brownhill/fqdn');
+    expect(described.hint).toContain('verified');
+  });
+
+  it('says a directory copy was compared with the dump', () => {
+    const described = describeSyncState({
+      ok: true,
+      at: '2026-09-25T02:05:00Z',
+      target: '/mnt/offsite/brownhill/fqdn',
+      targetKind: 'directory',
+      verified: true,
+      detail: null,
+    });
+    expect(described.hint).toContain('/mnt/offsite/brownhill/fqdn');
+    expect(described.hint).toContain('compared');
+  });
+
+  it('does not call an unverified copy a clean success', () => {
+    const described = describeSyncState({
+      ok: true,
+      at: '2026-09-25T02:05:00Z',
+      target: 'b2://bucket/brownhill/fqdn',
+      targetKind: 'b2',
+      verified: false,
+      detail: null,
+    });
+    expect(described.value).toBe('Copied, not verified');
+    expect(described.tone).toBe('warn');
+  });
+
+  it('does not alarm over a state that never recorded a verification', () => {
+    const described = describeSyncState({
+      ok: true,
+      at: '2026-09-25T02:05:00Z',
+      target: 'b2://bucket/brownhill/fqdn',
+      targetKind: null,
+      verified: null,
+      detail: null,
+    });
+    expect(described.value).toBe('Copied');
+    expect(described.tone).toBe('profit');
+    expect(described.hint).toContain('not recorded');
   });
 });
 

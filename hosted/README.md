@@ -75,9 +75,11 @@ Secrets live on the VM at `/etc/brownhill/secrets/`, mode `0640`, owned `root:br
 - `pg.env` — `PG_SUPERUSER_PASSWORD`
 - `jwt.env` — `JWT_SHARED_SECRET` (used by both PostgREST and Next.js)
 - `bootstrap.env` — `BOOTSTRAP_TOKEN` (HMAC key for the first-run `/api/v1/bootstrap` endpoint)
-- `backup.env` — `BACKBLAZE_B2_*` (off-host backup credentials) and
+- `backup.env` — `BACKBLAZE_B2_*` (off-host backup credentials),
   `BROWNHILL_FQDN` (the path prefix inside the bucket — the deployment's
-  hostname, and the source of `NEXT_PUBLIC_APP_URL`)
+  hostname, and the source of `NEXT_PUBLIC_APP_URL`) and
+  `BROWNHILL_OFFHOST_TARGET` / `BROWNHILL_OFFHOST_DIR` (where the dump is
+  copied to; both empty means Backblaze B2)
 - `app.env` — the application's own run-time environment (`DATABASE_URL`,
   `BOOTSTRAP_TOKEN`, `POSTGREST_URL`, `NEXT_PUBLIC_APP_URL`). Written by
   `hosted/bootstrap/write-app-env.sh`, which `install.sh` and
@@ -374,15 +376,13 @@ test directories.
 
 ## Backup adapter
 
-Off-host backups default to Backblaze B2 (S3-compatible, ~$0.005/GB/month, no egress fees within NA/EU). The adapter interface lives at `src/lib/backup/managed.ts`:
+Off-host backups go to Backblaze B2 (S3-compatible, ~$0.005/GB/month, no egress fees within NA/EU), unless the operator points them at a mounted drive, a NAS share or a second disk.
 
-```ts
-interface OffHostTarget {
-  push(localPath: string, remotePrefix: string): Promise<void>;
-}
-```
+The copy is made by `hosted/scripts/off-host-copy.mjs` — plain node with no dependencies. It has to be: the nightly job is a systemd oneshot that runs as `postgres`, and it cannot import the Next.js application, because a standalone build hashes its chunks, so any path into `.next/server/chunks` is a path that cannot exist. That is exactly how the off-host copy died the first time — the job imported a chunk that was never there, the import rejected, and the line after it swallowed the error.
 
-The default implementation is `backblazeB2`. Switching to another target is one file — implement `OffHostTarget` and swap the binding in `hosted/bootstrap/install.sh`.
+Switching targets is one file, and it is that one. `resolveOffHostPlan()` decides where the dump goes, from `BROWNHILL_OFFHOST_TARGET` (`b2` or `directory`) and `BROWNHILL_OFFHOST_DIR`. It refuses by name — the refusal says which variable to set — rather than filing the copy under a placeholder nobody will ever restore from. A directory copy is then compared with the dump file by file: a copy that lost a file on the way is reported as a failure, not as a success.
+
+There used to be an `OffHostTarget` interface at `src/lib/backup/managed.ts` that described this seam. Nothing implemented it, nothing imported it, and the copy it described was the one that never ran — so it has been removed rather than left in place as a promise the code does not keep.
 
 ## Update (v1)
 

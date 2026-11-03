@@ -28,7 +28,7 @@ If your user can't sudo, run `sudo bash -c '...'` for the rest of these commands
 
 ## 3. (Optional but recommended) Pre-fill your secrets
 
-`install.sh` will auto-generate `pg.env`, `jwt.env`, and `bootstrap.env` if absent. It does **not** generate `backup.env` — you must provide your Backblaze B2 credentials.
+`install.sh` will auto-generate `pg.env`, `jwt.env`, and `bootstrap.env` if absent. It also creates `backup.env` if absent, but only with placeholder values — you must replace them with your own Backblaze B2 credentials before the nightly backup can copy anything off the box.
 
 Create the four files at `/etc/brownhill/secrets/` (mode `0640`) yourself:
 
@@ -48,12 +48,20 @@ sudo chmod 0640 /etc/brownhill/secrets/jwt.env
 echo 'BOOTSTRAP_TOKEN=<openssl-rand-hex-32>' | sudo tee /etc/brownhill/secrets/bootstrap.env
 sudo chmod 0640 /etc/brownhill/secrets/bootstrap.env
 
-# backup.env — you provide these (not auto-generated).
+# backup.env — the B2 credentials and the off-host destination.
+# install.sh creates this file with placeholder values if it is missing;
+# replace the placeholders before the first nightly run.
 sudo tee /etc/brownhill/secrets/backup.env > /dev/null <<'EOF'
 BACKBLAZE_B2_KEY_ID=<your-b2-key-id>
 BACKBLAZE_B2_APPLICATION_KEY=<your-b2-application-key>
 BACKBLAZE_B2_BUCKET=brownhill-fleet-prod
 BROWNHILL_FQDN=brownhill.example.co.uk
+# Where the nightly dump is copied. Leave both empty for Backblaze B2.
+# Set BROWNHILL_OFFHOST_DIR to a mounted drive, a NAS share or a second
+# disk to copy the dump there instead; every file is compared with the
+# dump afterwards, and the result is shown on /admin/status.
+BROWNHILL_OFFHOST_TARGET=
+BROWNHILL_OFFHOST_DIR=
 EOF
 sudo chmod 0640 /etc/brownhill/secrets/backup.env
 ```

@@ -117,7 +117,7 @@ If a URL you expected gives a 404 with "does not serve" in the body, it is one o
 | A Namecheap Business VPS Pulsar (or any 2 vCPU / 4 GB / 80 GB Ubuntu 24.04 LTS box). 4 GB RAM is sized for "a few dozen vehicles"; resize to 6 GB if the dataset grows. | The runtime is sized for that. |
 | A registered **FQDN** (e.g. `brownhill.example.co.uk`) whose A/AAAA records already point at the Pulsar's public IP. The Let's Encrypt cert is issued against this name. | TLS issuance; the owner-facing URL. |
 | An e-mail inbox the certbot registration can receive mail at. We use `ops@<your-fqdn>` for Let's Encrypt's terms-of-service mail; supply your own. | LE registration. |
-| A Backblaze B2 bucket + application key with **list / read / write / delete** on that bucket. Recommended: a single-bucket setup named e.g. `brownhill-fleet-prod`. We'll create the application key in their web UI. | Off-host backup target. The default is B2; switching targets later is one file (`src/lib/backup/managed.ts`). |
+| A Backblaze B2 bucket + application key with **list / read / write / delete** on that bucket. Recommended: a single-bucket setup named e.g. `brownhill-fleet-prod`. We'll create the application key in their web UI. | Off-host backup target. B2 is the default; to copy to a mounted drive or a NAS share instead, set `BROWNHILL_OFFHOST_DIR` in `/etc/brownhill/secrets/backup.env` — the two settings that choose the destination are read by `hosted/scripts/off-host-copy.mjs`, the one file that decides where a dump is filed. |
 | Root SSH access to the Pulsar box. | The install scripts all run as root because they touch `/etc/`, `/var/`, and `/usr/local/bin/`. |
 | `curl`, `psql`, `openssl`, `certbot`, `nginx`, `systemd` are present on a typical Ubuntu 24.04 — the scripts assume they are, do not install them yourself. | Tools used by the bootstrap. |
 | Someone to **own and operate** the deployed instance. | Restores, certificate renewal alerts, chaos drills — there is a recurring monthly checklist. |
@@ -135,6 +135,7 @@ These are generated on the box by `hosted/bootstrap/install.sh` if you don't pre
 | `bootstrap.env` | `BOOTSTRAP_TOKEN` | HMAC key for the `/api/v1/bootstrap` first-run endpoint. Only used **once**, on the day the owner account is created. After that the row in `app_state` flips and the token is no longer accepted. |
 | `backup.env` | `BACKBLAZE_B2_KEY_ID`, `BACKBLAZE_B2_APPLICATION_KEY`, `BACKBLAZE_B2_BUCKET` | B2 credential for nightly off-host backups. |
 | `backup.env` (continued) | `BROWNHILL_FQDN` | The FQDN above; used as the B2 path prefix, and the source of the deployment's own address (see `app.env` below). |
+| `backup.env` (continued) | `BROWNHILL_OFFHOST_TARGET`, `BROWNHILL_OFFHOST_DIR` | Where the nightly dump is copied to. **Both empty means Backblaze B2.** Set `BROWNHILL_OFFHOST_DIR` to a mounted drive, a NAS share or a second disk and the dump is copied there instead, under `brownhill/<hostname>/`, and every file is compared with the dump afterwards — a copy that lost a file on the way is reported as a failure, not a success. `BROWNHILL_OFFHOST_TARGET` (`b2` or `directory`) chooses outright. |
 
 Two more files live in the same directory. They are not yours to seed — one is
 written for you, one is optional:

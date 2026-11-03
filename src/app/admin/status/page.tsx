@@ -16,7 +16,7 @@ import { LastRestore } from '@/components/LastRestore';
 import { readSessionClaims } from '@/lib/auth/local-session';
 import { deploymentProfile } from '@/lib/deployment/profile';
 import { STATUS_ALERT_TEXT, collectBoxStatus } from '@/lib/backup/status';
-import { formatAge, formatBytes, formatTimestamp } from '@/lib/backup/index-file';
+import { formatAge, formatBytes, formatTimestamp, describeSyncState } from '@/lib/backup/index-file';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +44,9 @@ export default async function StatusPage() {
   }
 
   const status = await collectBoxStatus();
+  // The wording for the off-host copy lives beside the parser, so this page
+  // and the JSON an operator curls cannot disagree about what a state means.
+  const sync = describeSyncState(status.sync);
 
   return (
     <Wrap>
@@ -104,21 +107,9 @@ export default async function StatusPage() {
         />
         <Stat
           label="Off-host copy"
-          value={
-            !status.sync ? 'Not yet' : status.sync.ok ? 'Copied' : 'Failed'
-          }
-          tone={status.sync ? (status.sync.ok ? 'profit' : 'loss') : 'default'}
-          hint={
-            !status.sync
-              ? 'No off-host copy has been recorded yet.'
-              : status.sync.ok
-                ? `Copied ${status.sync.at ? formatTimestamp(status.sync.at) : ''}${
-                    status.sync.target ? ` to ${status.sync.target}` : ''
-                  }`
-                : `Last tried ${status.sync.at ? formatTimestamp(status.sync.at) : 'unknown'}${
-                    status.sync.detail ? ` — ${status.sync.detail}` : ''
-                  }`
-          }
+          value={sync.value}
+          tone={sync.tone}
+          hint={sync.hint}
         />
         <Stat
           label="Application"

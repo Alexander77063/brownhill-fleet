@@ -291,12 +291,21 @@ fi
 # If they are missing the nightly job still runs and still writes a local
 # dump; only the off-host copy is skipped. The placeholders make that an
 # obvious, greppable failure rather than a silent one.
+#
+# The two off-host settings are written empty on purpose. Left empty, the
+# nightly job copies to Backblaze B2 — where every box has always copied. Set
+# BROWNHILL_OFFHOST_DIR to a mounted drive, a NAS share or a second disk and
+# the dump is copied there instead, under brownhill/<hostname>/, and every
+# file is compared with the dump afterwards. The operator's template says so
+# in the same place as the settings themselves.
 if [[ ! -f /etc/brownhill/secrets/backup.env ]]; then
   write_secret /etc/brownhill/secrets/backup.env \
     "BACKBLAZE_B2_KEY_ID=REPLACE_WITH_B2_KEY_ID" \
     "BACKBLAZE_B2_APPLICATION_KEY=REPLACE_WITH_B2_APPLICATION_KEY" \
     "BACKBLAZE_B2_BUCKET=brownhill-fleet-prod" \
-    "BROWNHILL_FQDN=brownhill.example.co.uk"
+    "BROWNHILL_FQDN=brownhill.example.co.uk" \
+    "BROWNHILL_OFFHOST_TARGET=" \
+    "BROWNHILL_OFFHOST_DIR="
   echo "WARNING: /etc/brownhill/secrets/backup.env was created with placeholder" >&2
   echo "         values. The nightly dump will stay on the box until you fill" >&2
   echo "         in the Backblaze B2 credentials and restart the timer." >&2
@@ -384,6 +393,11 @@ install -m 0644 standalone/scripts/schema-ledger.sh /usr/local/lib/brownhill/sch
 # because the runtime is pinned and already on the box (the app runs on it),
 # while curl is not something the installer puts there.
 install -m 0755 hosted/scripts/brownhill-cron.mjs /usr/local/lib/brownhill/brownhill-cron.mjs
+
+# The copy that leaves the box. The nightly job runs it, so it has to be on
+# the box — a job that cannot find it says so and raises the alert marker,
+# rather than leaving the dump on the machine it was supposed to protect.
+install -m 0755 hosted/scripts/off-host-copy.mjs /usr/local/lib/brownhill/off-host-copy.mjs
 
 # restore.sh is NOT called by a unit — it is spawned by absolute path from the
 # restore console (src/app/admin/restore/route.ts), and exercised by
