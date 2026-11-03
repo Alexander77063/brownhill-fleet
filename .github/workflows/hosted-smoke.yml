@@ -227,6 +227,45 @@ jobs:
         # own log, and waits for one that is still running. It needs only
         # docker, so it runs before the build.
         run: bash hosted/tests/bootstrap-wait.sh
+      - name: Every wait for a postgres goes over TCP
+        # The postgres image does not start one server. It starts a
+        # TEMPORARY one to run initdb, shuts it down, and only then starts
+        # the real one — and the temporary one is started with
+        # `listen_addresses=''`, so it answers on the unix socket and on
+        # nothing else.
+        #
+        # psql connects over the socket unless told otherwise. So a
+        # readiness probe that runs `psql -c 'SELECT 1'` is answered YES by
+        # a server that is about to be shut down under it: the gate declares
+        # the database ready, the next command arrives, and the server has
+        # gone. The failure says nothing about the thing under test —
+        # "the throwaway postgres never came up" — and it loses at random.
+        # Between 2026-11-01 and 2026-11-03 this job failed at three
+        # DIFFERENT steps on three different days, and the seed gate failed
+        # twice at the same second with the same message.
+        #
+        # The rule is written once, in scripts/lib/postgres-container.sh, and
+        # this gate holds every caller to it: the shared rule asks for
+        # 127.0.0.1 (the real server is the first to listen there and the
+        # temporary one never does), every script that starts a postgres
+        # waits with that rule, no script carries a probe of its own, and
+        # every compose readiness probe names a TCP host.
+        #
+        # Static: no docker, no database, a few seconds.
+        run: bash hosted/tests/postgres-readiness-probe.sh
+      - name: The readiness gate can fail
+        # A gate that cannot fail is not a gate. This one breaks the rule on
+        # purpose, in a copy of the tree, and requires the gate to notice:
+        # the compose healthcheck back on the socket, a gate that stops
+        # using the shared rule, a gate that stops using the shared wait, a
+        # gate that probes postgres itself, and the shared rule itself losing
+        # its TCP host. Each defect goes into a FRESH copy, and the gate is
+        # first required to PASS against an unmodified copy — without that,
+        # a gate that failed for any reason at all would satisfy every one
+        # of these checks.
+        #
+        # Static: no docker, no database, a few seconds.
+        run: bash hosted/tests/postgres-readiness-probe-negative.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4

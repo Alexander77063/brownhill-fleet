@@ -24,6 +24,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# The one rule for waiting on a containerised postgres. See the file for why
+# the socket is a trap and TCP is not.
+# shellcheck source=scripts/lib/postgres-container.sh
+source "$ROOT/scripts/lib/postgres-container.sh"
+
 # Git Bash on Windows rewrites a container path like /tmp/migrations into a
 # Windows path before it reaches docker, so `mkdir -p /tmp/migrations` inside
 # the container becomes `mkdir -p C:/Users/.../Temp/migrations` and fails with
@@ -39,10 +44,19 @@ fi
 cid=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 trap "docker rm -f $cid >/dev/null 2>&1 || true" EXIT
 sleep 2
-for _ in $(seq 1 30); do
-  docker exec -u postgres "$cid" psql -c 'SELECT 1' >/dev/null 2>&1 && break
-  sleep 0.5
-done
+# Wait for the REAL server, over TCP.
+#
+# This used to be a socket probe — `psql -c 'SELECT 1'` — and it was a race:
+# the postgres image answers a socket probe from the TEMPORARY server it
+# starts to run initdb, then shuts that server down. The gate would declare
+# the database ready and the next command would find the server gone. The
+# old loop had no final assert either, so a database that never came up was
+# reported as a MIGRATION failure, which is a different defect entirely.
+if ! wait_for_container_postgres "$cid" 60; then
+  echo "FAIL: the throwaway postgres never came up"
+  docker logs --tail 30 "$cid" 2>&1 || true
+  exit 1
+fi
 
 docker cp standalone/sql/0000_supabase_shim.sql "$cid":/tmp/
 # The migrations go straight from the working tree into the container — the

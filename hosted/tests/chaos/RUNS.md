@@ -143,3 +143,22 @@ on being true.
       it in nine places, and putting the old unguarded drill in front of
       it fails it — and the gate **refuses to run an unguarded drill at
       all**, because running one would put a stub in `/usr/local/bin`.
+- [x] **hosted/tests/postgres-readiness-probe.sh** — PASS, 14 assertions.
+      Every wait for a containerised postgres goes over TCP. The postgres
+      image starts a **temporary** server to run initdb, shuts it down and
+      only then starts the real one, and the temporary one listens on the
+      unix socket and on nothing else — so a `psql -c 'SELECT 1'` probe is
+      answered by a server that is about to be shut down under it. The
+      gate holds five callers to the one rule in
+      `scripts/lib/postgres-container.sh`: the seed gate, the
+      migrations-regression gate, the bootstrap-idempotency gate, the
+      portability proof and the compose healthcheck.
+- [x] **hosted/tests/postgres-readiness-probe-negative.sh** — PASS, 6
+      assertions. Because a gate that cannot fail is not a gate. Five
+      defects were injected into fresh copies of the tree — the compose
+      healthcheck back on the socket, a gate that stops using the shared
+      rule, a gate that stops using the shared wait, a gate that probes
+      postgres itself, and the shared rule losing its TCP host — and each
+      one makes the gate fail. The gate is required to pass against an
+      unmodified copy first, so that a gate broken for any other reason
+      cannot satisfy the negative gate.

@@ -48,6 +48,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
+# The one rule for waiting on a containerised postgres. See the file for why
+# the socket is a trap and TCP is not.
+# shellcheck source=scripts/lib/postgres-container.sh
+source "$ROOT/scripts/lib/postgres-container.sh"
+
 export MSYS_NO_PATHCONV=1
 
 PASS=0
@@ -71,12 +76,34 @@ trap 'rm -rf "$WORK"; [[ -n "$cid" ]] && docker rm -f "$cid" >/dev/null 2>&1 || 
 # ── the throwaway postgres ──────────────────────────────────────────────────
 cid=$(docker run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16) \
   || fail "could not start a throwaway postgres"
-for _ in $(seq 1 60); do
-  docker exec -u postgres "$cid" psql -c 'SELECT 1' >/dev/null 2>&1 && break
-  sleep 0.5
-done
-docker exec -u postgres "$cid" psql -c 'SELECT 1' >/dev/null 2>&1 \
-  || fail "the throwaway postgres never came up"
+
+# Wait for the REAL server, over TCP.
+#
+# This used to be a socket probe — `psql -c 'SELECT 1'` — and it was a race:
+# the postgres image answers a socket probe from the TEMPORARY server it
+# starts to run initdb, then shuts that server down. The gate would declare
+# the database ready, and the very next command would find the server gone
+# and report "the throwaway postgres never came up" — a failure with nothing
+# to do with the seed. It failed on 2026-11-03, twice, at the same second,
+# and it had been failing at other steps on other days.
+if ! wait_for_container_postgres "$cid" 60; then
+  fail "the throwaway postgres never came up"
+fi
+
+# ── 0: the readiness probe can fail ─────────────────────────────────────────
+#
+# Everything below runs only if this wait said "ready". So the wait has to be
+# able to say no — otherwise it is a formality that decides nothing.
+#
+# The proof is the same probe, asked about a port where nothing is listening.
+# It must say no.
+echo
+echo "== 0: the readiness probe can fail =="
+if container_postgres_probe "$cid" 5433; then
+  bad "the readiness probe reported a database on a port with nothing listening — it cannot fail, so a pass would prove nothing"
+else
+  ok "the readiness probe fails when there is no server to talk to — so a pass means something"
+fi
 
 # ── the schema, from the shipped migrations ─────────────────────────────────
 #

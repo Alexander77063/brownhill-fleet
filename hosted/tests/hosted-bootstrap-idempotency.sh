@@ -61,6 +61,16 @@ fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# The one rule for waiting on a containerised postgres. See the file for why
+# the socket is a trap and TCP is not.
+#
+# This gate used to carry its own wait: a TCP probe of its own, which was
+# correct, but it was a COPY of the rule. Two copies of a rule is one copy
+# too many, and the copy that rots is always the one nobody is looking at.
+# It waits through the shared helper now, like every other gate.
+# shellcheck source=scripts/lib/postgres-container.sh
+source "$REPO/scripts/lib/postgres-container.sh"
+
 # Docker's daemon on Windows is a Linux VM: it cannot mount a Git Bash
 # /c/Users/... path. `pwd -W` prints the path the daemon understands.
 case "$(uname -s)" in
@@ -103,16 +113,12 @@ start_pg() {
     -v "$REPO_MOUNT:/repo:ro" postgres:16)
   cids+=("$cid")
   PG_CID="$cid"
-  for _ in $(seq 1 60); do
-    if docker exec -e PGHOST=127.0.0.1 -e PGPORT=5432 "$cid" \
-         psql -U postgres -d postgres -tAc 'SELECT 1' >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 1
-  done
-  echo "postgres did not come up" >&2
-  docker logs --tail 30 "$cid" >&2 || true
-  return 1
+  if ! wait_for_container_postgres "$cid" 60; then
+    echo "postgres did not come up" >&2
+    docker logs --tail 30 "$cid" >&2 || true
+    return 1
+  fi
+  return 0
 }
 
 # The real bootstrap script, run inside the container against the real
