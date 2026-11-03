@@ -30,36 +30,47 @@ on:
   pull_request:
     paths:
       - 'supabase/migrations/**'
-      - 'standalone/sql/**'
-      - 'standalone/scripts/**'
+      - 'standalone/**'
       - 'hosted/**'
-      - 'package.json'
-      - '.github/workflows/hosted-smoke.yml'
-      # The accounting module and the tests that need a real postgres.
+      # The repository's own scripts.
       #
-      # The filter used to name the schema, the scripts and the hosted box —
-      # and nothing under src/. So a change to the ledger's own code never
-      # brought this job up, and the database-backed tests never ran in CI at
-      # all. The accounting module is where the money is, so it is the last
-      # thing that should be left out of a job that exists to prove the
-      # deployment works.
-      - 'src/lib/accounting/**'
-      - 'src/app/api/v1/accounting/**'
-      - 'src/lib/db/**'
-      - 'src/lib/auth/local-store.ts'
+      # `scripts/` holds the build steps (clean-dist-dir.mjs), the seed and the
+      # a11y audit. The hosted job builds the application, so a change in
+      # there can break the job without ever bringing it up.
+      - 'scripts/**'
+      # Everything under src/.
+      #
+      # This used to name src/app, src/lib and src/components separately —
+      # and so missed `src/middleware.ts`, which carries the deployment gate,
+      # and `src/instrumentation.ts`, which runs at application start. A gate
+      # that only runs for some of the application's own files is a gate with
+      # a hole in it shaped like the files it forgot.
+      - 'src/**'
+      # The tests this job runs, and the helpers they share.
+      #
+      # `tests/helpers/**` was missing, and it is not decoration: every
+      # integration test resolves its environment through
+      # `tests/helpers/integration-env.ts`, so a change to that one file
+      # decides whether fifteen database-backed files run or silently skip —
+      # and the hosted job would not have come up to find out.
       - 'tests/integration/**'
       - 'tests/rls/**'
-      # Every page and every library the operator touches.
+      - 'tests/unit/**'
+      - 'tests/helpers/**'
+      # The configuration the job reads.
       #
-      # The journey below fetches every operator page with a real session and
-      # looks for a 500 in the answer, because that is the fault class a
-      # status-code assertion cannot see: `/ops` and `/ops/series` both went
-      # 500 as soon as a booking series existed, and nothing in the suite
-      # could see it. A gate that only runs when the DATABASE changes cannot
-      # catch a page that breaks.
-      - 'src/app/**'
-      - 'src/lib/**'
-      - 'src/components/**'
+      # `vercel.json` is not decoration either: it is where the SaaS's cron
+      # schedules are declared, and `hosted/tests/cron-timers.sh` compares
+      # them against the timers on the box. A change to it changes the
+      # contract the gate checks.
+      - 'vercel.json'
+      - 'vitest.config.ts'
+      - 'next.config.ts'
+      - 'tsconfig.json'
+      - 'postcss.config.mjs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/hosted-smoke.yml'
   workflow_dispatch:
     inputs:
       production:

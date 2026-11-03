@@ -51,15 +51,19 @@ import type { AddressInfo } from 'node:net';
 import { localDb } from '@/lib/auth/local-store';
 import { openPeriod } from '@/lib/accounting/periods';
 import { decryptToken, loadVrnStatus, persistCredentials, setVrn, submitVatReturn } from '@/lib/accounting/mtd';
+import { integrationEnv } from '../../helpers/integration-env';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  console.warn(
-    '[integration] DATABASE_URL is not set — the MTD submission tests are being SKIPPED.\n' +
-      '            They need a real postgres with the migrations applied. See hosted/README.md.',
-  );
-}
+// This file talks straight to postgres and never through the service
+// client, so it asks for the database alone.
+//
+// `integrationEnv` is the repository's rule for this, and it is the rule that
+// matters: it SKIPS, out loud, when the job has not asked for the
+// integration tests, and it FAILS when the job has set REQUIRE_INTEGRATION=1
+// and the database is not there. The hand-rolled guard this replaced skipped
+// in BOTH cases — so a build with REQUIRE_INTEGRATION=1 could report this
+// file's tests as skipped and still be green. A test that did not run is not
+// a test that passed.
+const env = integrationEnv({ app: false });
 
 const YEAR = 2026;
 /** The year after the first — the cases that need a period of their own. */
@@ -235,7 +239,7 @@ function freshState(): StubState {
   };
 }
 
-describe.skipIf(!DATABASE_URL)('filing a VAT return with HMRC', () => {
+describe.skipIf(!env)('filing a VAT return with HMRC', () => {
   let sql: Awaited<ReturnType<typeof localDb>>;
   let server: Server;
   let stubUrl: string;
