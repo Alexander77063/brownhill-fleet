@@ -14,6 +14,7 @@
 import { hashPassword, needsRehash, verifyPassword } from './password';
 import { closeBootstrapWindow, isBootstrapPending } from '@/lib/app-state';
 import { LEGACY_SESSION_ISSUED_KEY, lockAccountRows, SESSION_ISSUED_KEY } from './account-usage';
+import { takeFirstRunLock } from './first-run-lock';
 import type { PortalRole } from '@/lib/iam';
 
 export interface LocalUser {
@@ -584,6 +585,25 @@ export async function createFirstUserAndTenant(args: {
   const db = await localDb();
 
   const created = await db.begin(async (tx): Promise<FirstRunResult> => {
+    // THE FIRST-RUN LOCK.
+    //
+    // The transaction makes the account and the window land together. It does
+    // NOT make two CONCURRENT setups take turns: both could open a
+    // transaction, both read `auth.users`, both see nothing, and both insert
+    // an owner — and the serialisation on the `app_state` upsert comes at the
+    // END, long after both owners exist. Two owners and two tenants on an
+    // install that is single-tenant by contract.
+    //
+    // The lock is taken FIRST, before the check it guards. The second setup
+    // waits for the first to commit, and when it gets the lock its `auth.users`
+    // read sees the account that was just committed, so it refuses.
+    //
+    // `pg_advisory_xact_lock` is released when the transaction ends — commit
+    // or rollback — so a setup that fails leaves nothing held, and there is
+    // nothing to clean up. The same primitive the period close uses for the
+    // same reason: two writers that must not interleave.
+    await takeFirstRunLock(tx);
+
     if (await hasAnyUser(tx)) {
       throw new Error('Setup has already been completed on this installation.');
     }

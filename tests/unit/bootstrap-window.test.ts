@@ -245,6 +245,64 @@ describe('the first-run window', () => {
     expect(writes[0].inTransaction, 'the window was closed in that same transaction').toBe(true);
   });
 
+  it('takes the first-run lock before it checks whether an account exists', async () => {
+    // WHY THIS TEST EXISTS
+    // --------------------
+    // The window closing in the same transaction as the account is NOT the
+    // same thing as two setups not racing each other. The transaction makes
+    // the account and the flag land together; it does not make two CONCURRENT
+    // setups take turns.
+    //
+    // Two setups with different emails can both open a transaction, both read
+    // `auth.users`, both see nothing, and both insert an owner. The only
+    // serialisation point was the `app_state` upsert at the END of the
+    // transaction — by which time BOTH owners existed, and the install had two
+    // tenants and two owners on a product that is single-tenant by contract.
+    //
+    // The fix is an advisory lock taken at the TOP of the transaction, before
+    // the account check: the second setup waits, and when it gets the lock it
+    // sees the first setup's committed account and refuses. So the lock has
+    // to be (a) an xact lock, so the transaction holds it, (b) taken inside
+    // the transaction, so it is released by commit or rollback, and (c)
+    // taken BEFORE the check, so the check it guards is the one that matters.
+    //
+    // The fake records the ORDER and the transaction-ness of every statement,
+    // which is exactly the property under test. The concurrency itself is
+    // proved against a real database by
+    // `tests/integration/auth/first-run-race.test.ts`.
+    const mod = await load<typeof import('@/app/api/auth/local/setup/route')>(
+      '@/app/api/auth/local/setup/route',
+      'hosted',
+    );
+    await mod.POST(jsonRequest(SETUP_BODY));
+
+    const lock = fake.state.statements.findIndex((s) => s.text.includes('pg_advisory_xact_lock'));
+
+    // The check that matters is the one INSIDE the transaction — the one that
+    // decides whether to insert an owner. The route's own read happens
+    // earlier, outside any transaction: it is the advisory "is the door still
+    // open?" read that decides whether to offer first-run setup at all, and it
+    // is allowed to be stale, because the authoritative check is the one the
+    // lock guards.
+    const guardedChecks = fake.state.statements
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.text.includes('from auth.users limit 1') && s.inTransaction);
+
+    expect(lock, 'the first-run lock was never taken').toBeGreaterThanOrEqual(0);
+    expect(
+      fake.state.statements[lock].inTransaction,
+      'the lock must be held by the transaction, not by the statement that took it',
+    ).toBe(true);
+    expect(
+      guardedChecks.length,
+      'the account check did not run inside the transaction at all',
+    ).toBeGreaterThan(0);
+    expect(
+      lock,
+      'the lock must be taken BEFORE the account check, or two setups can both see zero accounts',
+    ).toBeLessThan(guardedChecks[0].i);
+  });
+
   it('does not report success when the window cannot be closed', async () => {
     fake.state.failAppStateWrite = true;
     const mod = await load<typeof import('@/app/api/auth/local/setup/route')>(
