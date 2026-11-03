@@ -20,10 +20,10 @@
 //      the second one blocks on the lock and, when it is let go, it sees the
 //      first one's COMMITTED row.
 //
-//   2. The second one is blocked on an ADVISORY lock specifically — observed
-//      in `pg_stat_activity`, not inferred. If it were blocked on the
-//      connection pool, or on a row, the mechanism would be a different one
-//      and the fix would not be the fix.
+//   2. The second one is blocked on THAT advisory lock — observed in
+//      `pg_locks` against the first-run key, not inferred. If it were blocked
+//      on the connection pool, or on a row, or on some other lock, the
+//      mechanism would be a different one and the fix would not be the fix.
 //
 //   3. THE CONTROL. The same two transactions WITHOUT the lock do NOT
 //      serialise: the second one reads while the first one's write is still
@@ -49,7 +49,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createFirstUserAndTenant } from '@/lib/auth/local-store';
-import { takeFirstRunLock } from '@/lib/auth/first-run-lock';
+import { FIRST_RUN_LOCK_KEY, takeFirstRunLock } from '@/lib/auth/first-run-lock';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -107,11 +107,12 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
     if (!url) throw new Error('DATABASE_URL is not set');
 
     const { default: postgres } = await import('postgres');
-    pool = postgres(url, { max: 3, idle_timeout: 30 }) as unknown as Sql;
+    pool = postgres(url, { max: 2, idle_timeout: 30 }) as unknown as Sql;
 
     // The observer needs a connection of its own: while two transactions hold
     // the pool's connections, only a third connection can report what the
-    // blocked one is waiting for.
+    // blocked one is waiting for. Without it, the diagnostic query would
+    // deadlock against itself.
     observer = postgres(url, { max: 1, idle_timeout: 30 }) as unknown as Sql;
   });
 
@@ -140,7 +141,6 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
       // A now holds the lock and has an uncommitted write.
       aHasTheLock.resolve();
       await releaseA.promise;
-      return 'a';
     });
     // Nothing is awaiting `a` yet; if it rejected, the test would hang rather
     // than explain itself, so the rejection is caught here and re-thrown at
@@ -150,15 +150,13 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
       (e: unknown) => e as Error,
     );
 
+    // Deterministic: the lock IS held when this resolves.
     await aHasTheLock.promise;
 
     // B: takes the SAME production lock. It must wait for A.
-    let bPid = 0;
     let bSettled = false;
     const b = pool
       .begin(async (tx) => {
-        const pid = (await tx`select pg_backend_pid() as pid`) as Array<{ pid: number }>;
-        bPid = Number(pid[0]?.pid ?? 0);
         // This is where B stops. The lock is held by A.
         await takeFirstRunLock(tx);
         const rows = (await tx`select value from app_state where key = ${key}`) as Array<{
@@ -177,29 +175,24 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
         },
       );
 
-    // What is B actually waiting for? MEASURE it, do not infer it: a
-    // connection-pool wait and a row wait would both look like "it has not
-    // finished yet", and neither is the lock.
-    const waitedOnALock = await waitFor(async () => {
+    // Is B waiting on OUR advisory lock? That is the question, and `pg_locks`
+    // answers it precisely: an UNGRANTED advisory lock request on the
+    // first-run key means B reached the lock and is blocked on it — as
+    // opposed to being queued for a connection, which would look identical
+    // from the outside.
+    const waiting = await waitFor(async () => {
       const rows = (await observer`
-        select wait_event_type, wait_event
-          from pg_stat_activity
-         where pid = ${bPid}
-      `) as Array<{ wait_event_type: string | null; wait_event: string | null }>;
-      return rows[0]?.wait_event_type === 'Lock';
+        select count(*)::int as waiting
+          from pg_locks
+         where locktype = 'advisory'
+           and not granted
+           and classid = ((hashtextextended(${FIRST_RUN_LOCK_KEY}, 0) >> 32) & 4294967295)::oid
+           and objid = (hashtextextended(${FIRST_RUN_LOCK_KEY}, 0) & 4294967295)::oid
+      `) as Array<{ waiting: number }>;
+      return (rows[0]?.waiting ?? 0) > 0;
     });
 
-    const blocked = (await observer`
-      select wait_event_type, wait_event
-        from pg_stat_activity
-       where pid = ${bPid}
-    `) as Array<{ wait_event_type: string | null; wait_event: string | null }>;
-
-    expect(waitedOnALock, 'the second setup never blocked on a lock').toBe(true);
-    expect(
-      blocked[0]?.wait_event,
-      'the second setup was blocked on something that is not the advisory lock',
-    ).toBe('advisory');
+    expect(waiting, 'the second setup never reached the first-run lock').toBe(true);
     expect(
       bSettled,
       'the second setup finished while the first one still held the lock',
@@ -238,7 +231,6 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
       await tx`insert into app_state (key, value) values (${key}, 'written-by-a')`;
       aHasWritten.resolve();
       await releaseA.promise;
-      return 'a';
     });
     const aFailed = a.then(
       () => null,
@@ -270,8 +262,14 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
   it('lets only one of two concurrent first runs create an owner', async () => {
     // The end-to-end statement of the fix, through the production function.
     //
-    // Two first runs, started together, with different email addresses. The
-    // installation may already have accounts — `createFirstUserAndTenant`
+    // Two first runs, started together, with different email addresses AND
+    // different business names — so that if the lock were not doing its job,
+    // the two would differ in every respect and the second one really would
+    // create a second owner and a second tenant. (With the same business name
+    // they would collide on the tenant's unique slug, and the collision would
+    // hide the very thing this test is looking for.)
+    //
+    // The installation may already have accounts — `createFirstUserAndTenant`
     // refuses once it does — and the rest of the integration suite creates
     // and removes accounts of its own, so the installation's state at this
     // moment is not this file's to assume. So the test asserts the
@@ -280,11 +278,13 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
     const before = (await pool`select count(*)::int as n from auth.users`) as Array<{ n: number }>;
     const accountsBefore = Number(before[0]?.n ?? 0);
 
-    const emailA = `first-run-race-a-${randomUUID()}@example.invalid`;
-    const emailB = `first-run-race-b-${randomUUID()}@example.invalid`;
-    const businessName = `First-run race ${randomUUID()}`;
+    const tag = randomUUID();
+    const emailA = `first-run-race-a-${tag}@example.invalid`;
+    const emailB = `first-run-race-b-${tag}@example.invalid`;
+    const nameA = `First-run race ${tag} A`;
+    const nameB = `First-run race ${tag} B`;
 
-    const attempt = (email: string) =>
+    const attempt = (email: string, businessName: string) =>
       createFirstUserAndTenant({
         email,
         password: 'a-password-of-twelve',
@@ -295,7 +295,10 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
         (e: unknown) => ({ ok: false as const, e: e as Error }),
       );
 
-    const [resultA, resultB] = await Promise.all([attempt(emailA), attempt(emailB)]);
+    const [resultA, resultB] = await Promise.all([
+      attempt(emailA, nameA),
+      attempt(emailB, nameB),
+    ]);
 
     const succeeded = [resultA, resultB].filter((r) => r.ok);
     expect(
@@ -312,6 +315,13 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
 
     // When the installation really was empty, the count is not "at most one"
     // — it is exactly one, and the loser says so.
+    //
+    // When it was NOT empty — another suite in this run left an account
+    // behind — both runs must refuse, and that is the correct behaviour. That
+    // branch ASSERTS rather than passing in silence: a test that quietly
+    // proves nothing reads green in a CI log, and the next person cannot
+    // tell which of the two things happened. So the branch states its reason
+    // out loud, in the log and in the assertion message.
     if (accountsBefore === 0) {
       expect(succeeded.length, 'an empty installation produced no owner at all').toBe(1);
       const loser = [resultA, resultB].find((r) => !r.ok);
@@ -319,12 +329,29 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
         loser && !loser.ok ? loser.e.message : '',
         'the loser was not told the installation already had an owner',
       ).toMatch(/already been completed/i);
+    } else {
+      console.warn(
+        `[integration] the installation already had ${accountsBefore} account(s) before this test, ` +
+          'so BOTH first runs refused and the "exactly one owner" assertion did not run. ' +
+          "That is the correct behaviour for an installation that already has an owner, but it " +
+          'proves nothing about the lock — the lock is proved by the two tests above.',
+      );
+      expect(
+        succeeded.length,
+        'a first run created an owner on an installation that already had one',
+      ).toBe(0);
+      for (const r of [resultA, resultB]) {
+        expect(
+          r.ok ? '' : r.e.message,
+          'the refusal did not say the installation already had an owner',
+        ).toMatch(/already been completed/i);
+      }
     }
 
     // Clean up what this test created, and put the first-run window back the
     // way it was found: `createFirstUserAndTenant` closes it, and the rest of
     // the suite may still need it open.
-    await pool`delete from tenants where name = ${businessName}`;
+    await pool`delete from tenants where name like ${`First-run race ${tag}%`}`;
     await pool`delete from auth.users where email in (${emailA}, ${emailB})`;
     await pool`delete from app_state where key = 'bootstrap_pending'`;
     await pool`insert into app_state (key, value) values ('bootstrap_pending', '1')
