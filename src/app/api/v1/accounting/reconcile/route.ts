@@ -86,7 +86,21 @@ export async function POST(req: NextRequest) {
   // C1: gate. C2: read the real session — the userId/tenantId written by
   // commitJournalForPayment must reference real auth.users rows; FK violations
   // would otherwise roll back every reconcile and every MTD submit.
-  const ctx = await requirePermission('billing.write');
+  //
+  // The gate is wrapped because a bare call lets its refusal escape as an
+  // unhandled error — a 500 with an empty body. This route is a form POST
+  // from the accounting console, so that 500 is what a user with the wrong
+  // role sees when they press the button. The other four accounting routes
+  // answer 403 here; this one now answers the same way.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('billing.write');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
 
   const form = await req.formData();
   const bankTxId = String(form.get('bankTxId') ?? '');

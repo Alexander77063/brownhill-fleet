@@ -228,15 +228,59 @@ function problemsForStatement(stmt: SqlStatement, schemaModel: SchemaModel): str
   return problems;
 }
 
+/**
+ * The floor on what this file examines.
+ *
+ * The gate below iterates `statements` and asserts that it found no problems.
+ * If the extractor ever returns NOTHING, it passes while having examined
+ * nothing at all — and the controls below are fed hand-written statements, so
+ * they would still be green. The extractor can return nothing without
+ * complaining: it swallows a `readdirSync` error and a `statSync` error, and
+ * it only keeps statements whose text begins with select/insert/update/
+ * delete/with. So the floor is the difference between "the gate found no
+ * problems" and "the gate looked at nothing".
+ *
+ * A sanity floor, not an exact count: the count moves as the product grows,
+ * and a gate that fails whenever a statement is added is a gate people start
+ * skipping.
+ */
+const STATEMENT_FLOOR = 50;
+
+/**
+ * The gate, applied to a whole list of statements.
+ *
+ * This is the loop the gate above runs — exemptions and all — extracted so
+ * that a control can drive IT, and not just the rule inside it. A control
+ * that only exercises the rule would still be green if the loop stopped
+ * calling it, or if the exemption lookup began swallowing everything.
+ */
+function problemsForStatements(list: readonly SqlStatement[]): string[] {
+  const problems: string[] = [];
+  for (const stmt of list) {
+    const exemption = exemptionFor(stmt.file, stmt.text);
+    if (exemption) continue;
+    problems.push(...problemsForStatement(stmt, model));
+  }
+  return problems;
+}
+
+describe('the gate is looking at the application', () => {
+  it('finds the statements the application sends', () => {
+    expect(
+      statements.length,
+      'the statement extractor found nothing — the tenant gate would pass while ' +
+        'examining no application SQL at all',
+    ).toBeGreaterThan(STATEMENT_FLOOR);
+    expect(
+      statements.some((s) => s.file.startsWith('src/')),
+      'the extractor found no statement from src/ — it is not reading the application',
+    ).toBe(true);
+  });
+});
+
 describe('every tenant-scoped table a direct-Postgres statement touches is filtered by tenant', () => {
   it('never reads or writes a tenant row without that table being filtered', () => {
-    const problems: string[] = [];
-
-    for (const stmt of statements) {
-      const exemption = exemptionFor(stmt.file, stmt.text);
-      if (exemption) continue;
-      problems.push(...problemsForStatement(stmt, model));
-    }
+    const problems = problemsForStatements(statements);
 
     expect(problems, problems.join('\n')).toEqual([]);
   });
@@ -262,6 +306,59 @@ describe('every tenant-scoped table a direct-Postgres statement touches is filte
     const leaked = problemsForStatement(leaky, model);
     expect(leaked.length, 'the gate did not report the leaky join').toBeGreaterThan(0);
     expect(leaked.join('\n')).toMatch(/drivers/);
+  });
+
+  it('reports a leaky statement through the loop the gate actually runs', () => {
+    // The control for the LOOP, not just the rule.
+    //
+    // The control above feeds the rule directly. That leaves the loop
+    // untested: if the loop stopped calling the rule, or if the exemption
+    // lookup began swallowing every statement, the rule control would stay
+    // green and the gate would pass while examining nothing. This control
+    // drives the same `problemsForStatements` the gate runs.
+    const leaky: SqlStatement = {
+      file: 'src/lib/example-leak.ts',
+      line: 1,
+      tag: 'sql',
+      text: [
+        'select a.id, d.full_name, d.phone',
+        '  from public.agreements a',
+        '  join public.drivers d on d.id = a.driver_id',
+        ' where a.tenant_id = $1::uuid',
+      ].join('\n'),
+    };
+    const problems = problemsForStatements([leaky]);
+    expect(
+      problems.length,
+      'the gate loop did not report the leaky join — the loop is not calling the rule',
+    ).toBeGreaterThan(0);
+    expect(problems.join('\n')).toMatch(/drivers/);
+  });
+
+  it('does not let an exemption silence a statement it does not cover', () => {
+    // An exemption is scoped to a FILE and a MATCHER, not to a file alone.
+    // `src/lib/auth/local-store.ts` has an exemption — for the membership
+    // query that decides the tenant. A DIFFERENT statement in that same file
+    // must still be judged. If the exemption ever grew to cover the whole
+    // file, this control is what would notice, and nothing else would: the
+    // exemption's own tests would still pass, because the exempted query
+    // still matches.
+    const leaky: SqlStatement = {
+      file: 'src/lib/auth/local-store.ts',
+      line: 1,
+      tag: 'sql',
+      text: [
+        'select a.id, d.full_name, d.phone',
+        '  from public.agreements a',
+        '  join public.drivers d on d.id = a.driver_id',
+        ' where a.tenant_id = $1::uuid',
+      ].join('\n'),
+    };
+    const problems = problemsForStatements([leaky]);
+    expect(
+      problems.length,
+      'an exemption silenced a statement it does not cover — the exemption has grown too wide',
+    ).toBeGreaterThan(0);
   });
 
   it('accepts the same statement once the join is closed', () => {

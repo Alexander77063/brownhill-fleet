@@ -46,15 +46,19 @@ import { preflightPeriodClose } from '@/lib/accounting/close-preflight';
 import { openPeriod } from '@/lib/accounting/periods';
 import { insertBankLines } from '@/lib/accounting/bank-import';
 import { periodLockKey, takePeriodLock } from '@/lib/accounting/period-lock';
+import { integrationEnv } from '../../helpers/integration-env';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  console.warn(
-    '[integration] DATABASE_URL is not set — the close-race tests are being SKIPPED.\n' +
-      '            They need a real postgres with the migrations applied. See hosted/README.md.',
-  );
-}
+// This file talks straight to postgres and never through the service
+// client, so it asks for the database alone.
+//
+// `integrationEnv` is the repository's rule for this, and it is the rule that
+// matters: it SKIPS, out loud, when the job has not asked for the
+// integration tests, and it FAILS when the job has set REQUIRE_INTEGRATION=1
+// and the database is not there. The hand-rolled guard this replaced skipped
+// in BOTH cases — so a build with REQUIRE_INTEGRATION=1 could report this
+// file's tests as skipped and still be green. A test that did not run is not
+// a test that passed.
+const env = integrationEnv({ app: false });
 
 /** Wait for a condition, up to a deadline. Returns whether it happened. */
 async function waitFor(
@@ -69,7 +73,7 @@ async function waitFor(
   return false;
 }
 
-describe.skipIf(!DATABASE_URL)('the close against a bank line that lands mid-dialog', () => {
+describe.skipIf(!env)('the close against a bank line that lands mid-dialog', () => {
   let sql: Awaited<ReturnType<typeof localDb>>;
 
   const tenantId = randomUUID();
@@ -270,7 +274,7 @@ describe.skipIf(!DATABASE_URL)('the close against a bank line that lands mid-dia
     // diagnostic query cannot come out of that pool without deadlocking
     // against itself.
     const { default: postgres } = await import('postgres');
-    const observer = postgres(DATABASE_URL!, { max: 1 });
+    const observer = postgres(env!.DATABASE_URL, { max: 1 });
 
     try {
       // The holder takes the lock and keeps it until the test says so.

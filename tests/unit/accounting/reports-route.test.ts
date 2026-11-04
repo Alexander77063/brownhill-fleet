@@ -197,6 +197,50 @@ describe('the accounting reports route', () => {
     expect(res.status).toBe(404);
   });
 
+  it('answers 403 when the permission is refused, for every report type', async () => {
+    // The gate used to be bare, so its refusal escaped as an unhandled error —
+    // a 500 with an empty body, which says "the server is broken" when the
+    // truth is "you may not read these books". The route's four siblings in
+    // src/app/api/v1/accounting/ all answer 403 here.
+    //
+    // EVERY report type, not just one. A gate that applied to `pnl` and not
+    // to the balance sheet would leave three of the four books open to a
+    // caller with no permission — and a test that only ever asked for `pnl`
+    // would not have noticed.
+    for (const type of ['pnl', 'balance-sheet', 'cashflow', 'ar-aging']) {
+      requirePermission.mockRejectedValueOnce(
+        new Error("You don't have permission to do this (reports.operational)."),
+      );
+
+      const res = await call(type, { from: '2026-01-01', to: '2026-12-31' });
+
+      expect(res.status, `report "${type}" should be refused with 403`).toBe(403);
+      expect((await res.json()).error).toContain('reports.operational');
+    }
+  });
+
+  it('asks for reports.operational, not some other permission', async () => {
+    // The refusal message above comes from the MOCK, so a route that asked for
+    // the wrong permission entirely would still put "reports.operational" in
+    // the body and pass. This is the assertion that ties the gate to the
+    // permission the books are actually supposed to need — without it, a
+    // route demanding a permission nobody holds would ship green.
+    requirePermission.mockRejectedValueOnce(new Error('refused'));
+
+    await call('pnl', { from: '2026-01-01', to: '2026-12-31' });
+
+    expect(requirePermission).toHaveBeenCalledWith('reports.operational');
+  });
+
+  it('refuses before it renders a report', async () => {
+    requirePermission.mockRejectedValueOnce(new Error('refused'));
+
+    await call('pnl', { from: '2026-01-01', to: '2026-12-31' });
+
+    // The books are not read for a caller who may not read them.
+    expect(h.renderProfitAndLoss).not.toHaveBeenCalled();
+  });
+
   it('answers 500 with the message when the report itself fails', async () => {
     // A failure inside the report must not become an unhandled rejection that
     // takes the whole request down with an empty body.

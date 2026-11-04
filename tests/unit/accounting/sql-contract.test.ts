@@ -38,6 +38,7 @@ import {
   extractInsertTarget,
   extractTableBindings,
   extractTables,
+  type SqlStatement,
 } from '../../helpers/schema-model';
 import {
   buildRepoSchemaModel,
@@ -99,66 +100,146 @@ describe('the schema model reflects the migrations', () => {
   });
 });
 
-describe('the application only names relations that exist', () => {
-  it('names no relation that the migrations do not create', () => {
-    const problems: string[] = [];
-    for (const stmt of statements) {
-      for (const ref of extractTables(stmt.text)) {
-        if (ref.schema && !KNOWN_SCHEMAS.has(ref.schema)) continue;
-        const table = resolveTable(model, ref.schema, ref.name);
-        if (!table) {
-          problems.push(`${stmt.file}:${stmt.line} — "${ref.raw}" does not exist in the migrated schema`);
-        }
+/**
+ * The floor on what this file examines.
+ *
+ * Every gate below iterates `statements` and asserts that it found no
+ * problems. If the extractor ever returns NOTHING, every one of them passes
+ * while having examined nothing at all — and this file is, per
+ * `docs/product/06-database-schema.md`, the only active defence for tenant
+ * isolation in the accounting schema, because the application connects as a
+ * superuser and RLS does not apply to these statements.
+ *
+ * The extractor CAN return nothing without complaining: it swallows a
+ * `readdirSync` error and a `statSync` error, and it only keeps statements
+ * whose text begins with select/insert/update/delete/with. So the floor is
+ * not decoration — it is the difference between "the gate found no problems"
+ * and "the gate looked at nothing".
+ *
+ * A sanity floor, not an exact count: the count moves as the product grows,
+ * and a gate that fails whenever a statement is added is a gate people start
+ * skipping.
+ */
+const STATEMENT_FLOOR = 50;
+
+/** The relations a statement names that the migrations do not create. */
+function problemsForRelations(list: SqlStatement[]): string[] {
+  const problems: string[] = [];
+  for (const stmt of list) {
+    for (const ref of extractTables(stmt.text)) {
+      if (ref.schema && !KNOWN_SCHEMAS.has(ref.schema)) continue;
+      const table = resolveTable(model, ref.schema, ref.name);
+      if (!table) {
+        problems.push(`${stmt.file}:${stmt.line} — "${ref.raw}" does not exist in the migrated schema`);
       }
     }
+  }
+  return problems;
+}
+
+/** The ON CONFLICT targets that match no declared unique constraint. */
+function problemsForConflictTargets(list: SqlStatement[]): string[] {
+  const problems: string[] = [];
+  for (const stmt of list) {
+    const target = extractConflictTarget(stmt.text);
+    if (!target) continue;
+    const insert = extractInsertTarget(stmt.text);
+    if (!insert) continue;
+    const table = resolveTable(model, insert.schema, insert.name);
+    if (!table) continue; // the relation test reports this
+    if (!model.hasUniqueOn(table, target)) {
+      const declared = Array.from(table.uniques.values())
+        .map((c) => `(${c.join(', ')})`)
+        .join(', ') || '(none)';
+      problems.push(
+        `${stmt.file}:${stmt.line} — ON CONFLICT (${target.join(', ')}) on ${table.schema}.${table.name} ` +
+        `matches no unique constraint. Declared: ${declared}. ` +
+        `Postgres raises 42P10 at runtime.`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** The accounting rows a statement touches without naming the tenant. */
+function problemsForTenantFilters(list: SqlStatement[]): string[] {
+  const problems: string[] = [];
+  for (const stmt of list) {
+    for (const ref of extractTables(stmt.text)) {
+      if (ref.schema !== 'accounting') continue;
+      if (GLOBAL_ACCOUNTING_TABLES.has(ref.name)) continue;
+      const table = model.get('accounting', ref.name);
+      if (!table) continue; // the relation test reports this
+      if (!table.columns.has('tenant_id')) continue; // not a tenant-scoped table
+      if (!/\btenant_id\b/.test(stmt.text)) {
+        problems.push(
+          `${stmt.file}:${stmt.line} — touches accounting.${ref.name} with no tenant_id predicate. ` +
+          `The accounting schema is not exposed by PostgREST and the app connects as a superuser, ` +
+          `so RLS does not filter this query — the tenant has to be in the SQL.`,
+        );
+      }
+    }
+  }
+  return problems;
+}
+
+/** The qualified column references that name a column the schema does not have. */
+function problemsForColumnRefs(list: SqlStatement[]): string[] {
+  const problems: string[] = [];
+  for (const stmt of list) {
+    const bindings = extractTableBindings(stmt.text);
+    if (!bindings.length) continue;
+    for (const ref of extractColumnRefs(stmt.text)) {
+      if (KNOWN_SCHEMAS.has(ref.alias)) continue; // `accounting.periods` — a relation, not a column
+      const binding = bindings.find((b) => b.alias === ref.alias);
+      if (!binding) continue; // not bound in this statement
+      const table = resolveTable(model, binding.schema, binding.name);
+      if (!table) continue; // the relation test reports this
+      if (!table.columns.has(ref.column)) {
+        problems.push(
+          `${stmt.file}:${stmt.line} — "${ref.alias}.${ref.column}" does not exist: ` +
+          `${table.schema}.${table.name} has no column "${ref.column}". ` +
+          `Postgres raises 42883 ("column does not exist") at runtime.`,
+        );
+      }
+    }
+  }
+  return problems;
+}
+
+describe('the gate is looking at the application', () => {
+  it('finds the statements the application sends', () => {
+    // The floor. Without it, every gate in this file passes on an empty
+    // list, and an empty list is a state the extractor can reach silently.
+    expect(
+      statements.length,
+      'the statement extractor found nothing — every gate in this file would pass while ' +
+        'examining no application SQL at all',
+    ).toBeGreaterThan(STATEMENT_FLOOR);
+    expect(
+      statements.some((s) => s.file.startsWith('src/')),
+      'the extractor found no statement from src/ — it is not reading the application',
+    ).toBe(true);
+  });
+});
+
+describe('the application only names relations that exist', () => {
+  it('names no relation that the migrations do not create', () => {
+    const problems = problemsForRelations(statements);
     expect(problems, problems.join('\n')).toEqual([]);
   });
 });
 
 describe('every ON CONFLICT target matches a real unique constraint', () => {
   it('infers every conflict target from a declared unique index', () => {
-    const problems: string[] = [];
-    for (const stmt of statements) {
-      const target = extractConflictTarget(stmt.text);
-      if (!target) continue;
-      const insert = extractInsertTarget(stmt.text);
-      if (!insert) continue;
-      const table = resolveTable(model, insert.schema, insert.name);
-      if (!table) continue; // the relation test reports this
-      if (!model.hasUniqueOn(table, target)) {
-        const declared = Array.from(table.uniques.values())
-          .map((c) => `(${c.join(', ')})`)
-          .join(', ') || '(none)';
-        problems.push(
-          `${stmt.file}:${stmt.line} — ON CONFLICT (${target.join(', ')}) on ${table.schema}.${table.name} ` +
-          `matches no unique constraint. Declared: ${declared}. ` +
-          `Postgres raises 42P10 at runtime.`,
-        );
-      }
-    }
+    const problems = problemsForConflictTargets(statements);
     expect(problems, problems.join('\n')).toEqual([]);
   });
 });
 
 describe('every tenant-scoped accounting table is filtered by tenant', () => {
   it('never reads or writes an accounting row without naming tenant_id', () => {
-    const problems: string[] = [];
-    for (const stmt of statements) {
-      for (const ref of extractTables(stmt.text)) {
-        if (ref.schema !== 'accounting') continue;
-        if (GLOBAL_ACCOUNTING_TABLES.has(ref.name)) continue;
-        const table = model.get('accounting', ref.name);
-        if (!table) continue; // the relation test reports this
-        if (!table.columns.has('tenant_id')) continue; // not a tenant-scoped table
-        if (!/\btenant_id\b/.test(stmt.text)) {
-          problems.push(
-            `${stmt.file}:${stmt.line} — touches accounting.${ref.name} with no tenant_id predicate. ` +
-            `The accounting schema is not exposed by PostgREST and the app connects as a superuser, ` +
-            `so RLS does not filter this query — the tenant has to be in the SQL.`,
-          );
-        }
-      }
-    }
+    const problems = problemsForTenantFilters(statements);
     expect(problems, problems.join('\n')).toEqual([]);
   });
 });
@@ -175,25 +256,58 @@ describe('every qualified column reference names a column that exists', () => {
     // so `p.amount_pence` is checked against the table `p` stands for. A
     // reference to an alias the statement does not bind (a CTE column, a
     // JavaScript value interpolated into the template) is not checked at all.
-    const problems: string[] = [];
-    for (const stmt of statements) {
-      const bindings = extractTableBindings(stmt.text);
-      if (!bindings.length) continue;
-      for (const ref of extractColumnRefs(stmt.text)) {
-        if (KNOWN_SCHEMAS.has(ref.alias)) continue; // `accounting.periods` — a relation, not a column
-        const binding = bindings.find((b) => b.alias === ref.alias);
-        if (!binding) continue; // not bound in this statement
-        const table = resolveTable(model, binding.schema, binding.name);
-        if (!table) continue; // the relation test reports this
-        if (!table.columns.has(ref.column)) {
-          problems.push(
-            `${stmt.file}:${stmt.line} — "${ref.alias}.${ref.column}" does not exist: ` +
-            `${table.schema}.${table.name} has no column "${ref.column}". ` +
-            `Postgres raises 42883 ("column does not exist") at runtime.`,
-          );
-        }
-      }
-    }
+    const problems = problemsForColumnRefs(statements);
     expect(problems, problems.join('\n')).toEqual([]);
+  });
+});
+
+describe('the gates can fail', () => {
+  // The negative controls.
+  //
+  // Each of these runs the SAME function the gate above runs, against a
+  // statement that is broken on purpose. Without them, "the gate found no
+  // problems" and "the gate examined nothing" look identical — and a gate
+  // that cannot fail is not a gate. These are the proof that the four gates
+  // above are actually looking at the statements they are given.
+  const statement = (text: string): SqlStatement => ({
+    file: 'src/lib/example-broken.ts',
+    line: 1,
+    tag: 'sql',
+    text,
+  });
+
+  it('catches a relation the migrations do not create', () => {
+    const problems = problemsForRelations([
+      statement('select * from public.a_table_that_was_never_migrated'),
+    ]);
+    expect(problems.length, 'the relation gate did not report the unknown relation').toBeGreaterThan(0);
+    expect(problems.join('\n')).toMatch(/does not exist in the migrated schema/);
+  });
+
+  it('catches an ON CONFLICT target that matches no unique constraint', () => {
+    const problems = problemsForConflictTargets([
+      statement(
+        'insert into public.payments (id, amount_pence) values ($1, $2) ' +
+          'on conflict (id, amount_pence) do nothing',
+      ),
+    ]);
+    expect(problems.length, 'the ON CONFLICT gate did not report the unmatched target').toBeGreaterThan(0);
+    expect(problems.join('\n')).toMatch(/matches no unique constraint/);
+  });
+
+  it('catches an accounting statement that does not name the tenant', () => {
+    const problems = problemsForTenantFilters([
+      statement('select id, amount_pence from accounting.journal_entries'),
+    ]);
+    expect(problems.length, 'the tenant gate did not report the unfiltered statement').toBeGreaterThan(0);
+    expect(problems.join('\n')).toMatch(/no tenant_id predicate/);
+  });
+
+  it('catches a column reference that names a column the schema does not have', () => {
+    const problems = problemsForColumnRefs([
+      statement('select p.a_column_that_is_not_there from public.payments p'),
+    ]);
+    expect(problems.length, 'the column gate did not report the unknown column').toBeGreaterThan(0);
+    expect(problems.join('\n')).toMatch(/does not exist/);
   });
 });
