@@ -47,15 +47,16 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import {
   copyFileSync,
-  existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
-  statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative as relativePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -232,20 +233,34 @@ export function resolveOffHostPlan(env) {
 }
 
 /**
- * Everything under `root`, as a flat list.
+ * Everything under `root`, as a flat list — and every symlink in it.
  *
  * The state file is skipped: it describes the copy, so it is not part of the
  * dump, and copying it would make the next run compare a fresh state file
  * with the one it just wrote and call the copy a mismatch.
+ *
+ * A symlink is NOT followed. A symlink is a pointer, and a dump is made of
+ * bytes: following one would copy whatever it points at — a file elsewhere
+ * on the box, or a whole directory tree the dump has no business containing
+ * — and the result would be recorded as a copy of the dump. So symlinks are
+ * reported separately, and the caller refuses them by name.
  */
 function walk(root) {
   const entries = [];
+  const symlinks = [];
   const visit = (directory, prefix) => {
     for (const item of readdirSync(directory, { withFileTypes: true })) {
       if (prefix === '' && item.name === STATE_FILE) continue;
       const relative = prefix === '' ? item.name : `${prefix}/${item.name}`;
       const full = join(directory, item.name);
-      const stats = statSync(full);
+      const stats = lstatOrNull(full);
+      if (!stats) {
+        throw new Error(`${relative} disappeared while the dump was being read`);
+      }
+      if (stats.isSymbolicLink()) {
+        symlinks.push(relative);
+        continue;
+      }
       if (stats.isDirectory()) {
         entries.push({ relative, isDirectory: true, size: 0 });
         visit(full, relative);
@@ -255,7 +270,22 @@ function walk(root) {
     }
   };
   visit(root, '');
-  return entries;
+  return { entries, symlinks };
+}
+
+/** The stats of a path, or null when it is not there. */
+function lstatOrNull(path) {
+  try {
+    return lstatSync(path);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** A path as the operator would name it: relative to the off-host directory. */
+function named(root, path) {
+  return relativePath(root, path) || path;
 }
 
 /** The path of an entry, built from its slash-separated relative name. */
@@ -264,33 +294,149 @@ function at(root, relative) {
 }
 
 /**
+ * The path an entry is written to, with the path made safe first.
+ *
+ * Two things can go wrong at the destination:
+ *
+ *   * A symlink where the file goes. Copying into it would write THROUGH it
+ *     — the bytes would land wherever it points, which may be nowhere near
+ *     the backup drive. The link is removed and the real file written in its
+ *     place. Removing a link does not touch what it points at, so whatever
+ *     is on the other end of it is left exactly as it was.
+ *
+ *   * A symlinked directory in the middle of the path — `wal` could be a
+ *     link to a directory somewhere else entirely. It is replaced with a
+ *     real directory, for the same reason.
+ *
+ * Every replacement is reported. A symlink appearing inside a backup
+ * directory does not happen by accident, and the operator is told which path
+ * it was.
+ *
+ * `isDirectory` says what the dump holds at that path. A file cannot be
+ * written where a directory already is, so that is refused; a directory
+ * written where a file already is has to give way, because the copy cannot
+ * have both, and the replacement is reported.
+ *
+ * On Windows a directory junction is a reparse point rather than a symbolic
+ * link, but Node's `lstat` reports both the same way — as a link — so one
+ * check covers both. A junction is removed by `unlink` without touching the
+ * directory it pointed at.
+ */
+function prepareDestination(realRoot, relativeName, isDirectory) {
+  const segments = relativeName.split('/');
+  const name = segments.pop();
+  const replaced = [];
+  let current = realRoot;
+
+  for (const segment of segments) {
+    current = join(current, segment);
+    const stats = lstatOrNull(current);
+    if (stats && stats.isSymbolicLink()) {
+      unlinkSync(current);
+      replaced.push(named(realRoot, current));
+      mkdirSync(current);
+      continue;
+    }
+    if (stats && !stats.isDirectory()) {
+      // A plain file where a directory belongs. The copy has nowhere else to
+      // put the files that belong under it, so it is replaced too.
+      unlinkSync(current);
+      replaced.push(named(realRoot, current));
+      mkdirSync(current);
+      continue;
+    }
+    if (!stats) mkdirSync(current);
+  }
+
+  const path = join(current, name);
+  const stats = lstatOrNull(path);
+  if (stats && stats.isSymbolicLink()) {
+    unlinkSync(path);
+    replaced.push(named(realRoot, path));
+  } else if (stats && isDirectory && !stats.isDirectory()) {
+    // A plain file where the dump holds a directory. The copy cannot have
+    // both, so the file gives way and the replacement is reported.
+    unlinkSync(path);
+    replaced.push(named(realRoot, path));
+  } else if (stats && !isDirectory && stats.isDirectory()) {
+    throw new Error(
+      `${named(realRoot, path)} is a directory, so the file cannot be copied there`,
+    );
+  }
+
+  // The write must land inside the off-host directory, whatever the path
+  // looked like when it was built. The check is made against the real path
+  // rather than the spelling of it, so a link that somehow survived the
+  // replacements above is still caught here.
+  const parent = realpathSync(dirname(path));
+  const inside = relativePath(realRoot, parent);
+  if (isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`)) {
+    throw new Error(
+      `${named(realRoot, path)} is outside the off-host directory, so the copy was refused`,
+    );
+  }
+
+  return { path, replaced };
+}
+
+/**
  * Copy the dump tree to a directory.
  *
  * `files` counts every entry copied — the dump files and the directories
  * that hold them — because that is the number of things that had to arrive
  * for the copy to be complete. `bytes` counts only the file contents.
+ * `replaced` names the paths at the destination that held a link and were
+ * replaced, so the operator is told about them rather than finding out by
+ * accident.
+ *
+ * A dump that holds a link is refused outright. Following it would copy
+ * whatever it points at — a file elsewhere on the box, or a whole directory
+ * tree the dump has no business containing — and record the result as a copy
+ * of the dump.
  *
  * An older copy is left alone: the destination accumulates, so the copy of
  * tonight's dump sits beside last week's rather than replacing it.
  */
 export function copyToDirectory(source, destination) {
-  const entries = walk(source);
+  const { entries, symlinks } = walk(source);
+  if (symlinks.length > 0) {
+    throw new Error(
+      `the dump holds ${symlinks.length === 1 ? 'a symlink' : 'symlinks'}, and a symlink is not a dump: ` +
+        `${symlinks.join(', ')}. Refusing to copy, because following it would copy whatever it points at.`,
+    );
+  }
+
+  mkdirSync(destination, { recursive: true });
+  // The destination root is resolved once. It may itself be a link — a
+  // mounted drive or a NAS share is often exactly that — and every write is
+  // checked against where it really points.
+  const realRoot = realpathSync(destination);
+
+  const replaced = [];
   let files = 0;
   let bytes = 0;
-  mkdirSync(destination, { recursive: true });
+
   for (const entry of entries) {
-    const to = at(destination, entry.relative);
+    const prepared = prepareDestination(realRoot, entry.relative, entry.isDirectory);
+    replaced.push(...prepared.replaced);
     if (entry.isDirectory) {
-      mkdirSync(to, { recursive: true });
+      mkdirSync(prepared.path, { recursive: true });
       files += 1;
       continue;
     }
-    mkdirSync(dirname(to), { recursive: true });
-    copyFileSync(at(source, entry.relative), to);
+    copyFileSync(at(source, entry.relative), prepared.path);
+    // The file just written must be a real file. If it is a link,
+    // something put one there between the check and the copy, and the bytes
+    // may have gone somewhere else entirely.
+    if (lstatSync(prepared.path).isSymbolicLink()) {
+      throw new Error(
+        `the copy to ${named(realRoot, prepared.path)} landed on a symlink, so the bytes went somewhere else`,
+      );
+    }
     files += 1;
     bytes += entry.size;
   }
-  return { files, bytes };
+  return { files, bytes, replaced };
 }
 
 /** The SHA-256 of a file, read in pieces so a big dump does not sit in memory. */
@@ -309,22 +455,45 @@ function hashFile(path) {
  *
  * Extra files in the destination are not failures — an off-host copy keeps
  * the dumps it has already made.
+ *
+ * A link is a failure on both sides. In the dump it means the copy would
+ * have read something that is not the dump. At the destination it means
+ * what arrived is a pointer to somewhere else rather than the file that was
+ * sent — and the bytes behind it may not be there tomorrow.
  */
 export function verifyDirectory(source, destination) {
-  const entries = walk(source);
+  const { entries, symlinks } = walk(source);
   const mismatches = [];
   let checked = 0;
+
+  for (const link of symlinks) {
+    mismatches.push(`${link} — the dump holds a symlink, and a symlink is not a dump`);
+  }
+
   for (const entry of entries) {
     const to = at(destination, entry.relative);
     checked += 1;
+    const stats = lstatOrNull(to);
+    if (stats && stats.isSymbolicLink()) {
+      mismatches.push(`${entry.relative} — what arrived is a symlink, not the file that was sent`);
+      continue;
+    }
     if (entry.isDirectory) {
-      if (!existsSync(to) || !statSync(to).isDirectory()) {
+      if (!stats || !stats.isDirectory()) {
         mismatches.push(`${entry.relative}/ — the directory did not arrive`);
       }
       continue;
     }
-    if (!existsSync(to)) {
+    if (!stats) {
       mismatches.push(`${entry.relative} — the file did not arrive`);
+      continue;
+    }
+    if (stats.isDirectory()) {
+      // A directory where the dump holds a file. Reported rather than
+      // hashed: reading a directory is not a comparison, and a verifier that
+      // throws takes the nightly job down with it instead of saying what is
+      // wrong.
+      mismatches.push(`${entry.relative} — a directory is there, not the file that was sent`);
       continue;
     }
     if (hashFile(at(source, entry.relative)) !== hashFile(to)) {
@@ -425,7 +594,7 @@ export async function runOffHostCopy(options = {}) {
   }
 
   if (plan.kind === 'directory') {
-    let copied = { files: 0, bytes: 0 };
+    let copied = { files: 0, bytes: 0, replaced: [] };
     try {
       copied = await copy(sourceDir, plan.destination);
     } catch (err) {
@@ -445,6 +614,14 @@ export async function runOffHostCopy(options = {}) {
     // comparison says what arrived. A copy that lost a file on the way still
     // reports that it copied the file.
     const checked = await verify(sourceDir, plan.destination);
+    // A link found at the destination is reported, not hidden: the copy is
+    // still correct, but something else had a hand in the backup directory
+    // and the operator is the one who needs to know about it.
+    const replaced = copied.replaced ?? [];
+    const replacementNote =
+      replaced.length > 0
+        ? ` (${replaced.length} symlink${replaced.length === 1 ? '' : 's'} at the destination replaced: ${replaced.join(', ')})`
+        : '';
     const state = {
       ok: checked.ok,
       at,
@@ -452,7 +629,7 @@ export async function runOffHostCopy(options = {}) {
       targetKind: 'directory',
       verified: checked.ok,
       detail: checked.ok
-        ? `${copied.files} entries copied to the off-host directory and compared with the dump`
+        ? `${copied.files} entries copied to the off-host directory and compared with the dump${replacementNote}`
         : `the copy did not verify: ${checked.mismatches.join('; ')}`,
     };
     await writeState(state);

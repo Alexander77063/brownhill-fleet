@@ -40,7 +40,15 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -226,6 +234,21 @@ describe('verifyDirectory', () => {
     expect(result.ok).toBe(false);
     expect(result.mismatches.join(' ')).toContain('_index.json');
   });
+
+  it('rejects a copy where a directory stands where a file should be', () => {
+    // A verifier that THROWS takes the nightly job down with it instead of
+    // saying what is wrong — and the operator gets a stack trace where they
+    // needed a sentence. This is the failure the nightly job cannot survive.
+    const source = dumpDir();
+    const destination = join(scratch(), 'offsite');
+    copyToDirectory(source, destination);
+    rmSync(join(destination, '_index.json'));
+    mkdirSync(join(destination, '_index.json'));
+
+    const result = verifyDirectory(source, destination);
+    expect(result.ok).toBe(false);
+    expect(result.mismatches.join(' ')).toContain('_index.json');
+  });
 });
 
 describe('runOffHostCopy', () => {
@@ -349,5 +372,111 @@ describe('runOffHostCopy', () => {
 
     expect(result.ok).toBe(false);
     expect(result.state.detail).toBeTruthy();
+  });
+});
+
+/**
+ * A symlink is a pointer, and a backup must not follow one.
+ *
+ * The dump tree is written by the nightly job and the destination is written
+ * by it too, but neither of them is the only thing on the box with a hand in
+ * them. A symlink planted in the dump tree would have the copy read whatever
+ * it points at — a file elsewhere on the box, or a whole directory tree the
+ * dump has no business containing — and a symlink planted at the destination
+ * would have the copy write THROUGH it, so the bytes would land wherever it
+ * points instead of on the backup drive.
+ *
+ * The rule is the same on both sides: a symlink is not a dump and it is not a
+ * backup. The source is refused outright, loudly, naming the path. The
+ * destination is replaced by the real thing — removing a symlink does not
+ * touch what it points at — and the replacement is reported, because a
+ * symlink appearing inside a backup directory does not happen by accident.
+ */
+describe('a symlink cannot move files in or out of the dump', () => {
+  /**
+   * A symlink of the kind asked for.
+   *
+   * On Windows a link to a directory is a junction, and that is what
+   * `symlinkSync` has to be told; on Linux the type is ignored and an
+   * ordinary symlink is what a directory link is. The rule under test is the
+   * same on both, which is why the test is written once.
+   */
+  function link(target: string, path: string, kind: 'file' | 'directory'): void {
+    if (process.platform === 'win32') {
+      symlinkSync(target, path, kind === 'directory' ? 'junction' : 'file');
+      return;
+    }
+    symlinkSync(target, path);
+  }
+
+  it('refuses a dump that holds a symlink to a file outside it', () => {
+    const outside = scratch();
+    const secret = join(outside, 'secret.txt');
+    writeFileSync(secret, 'SECRET');
+    const source = dumpDir();
+    link(secret, join(source, 'leak.txt'), 'file');
+    const destination = join(scratch(), 'destination');
+
+    expect(() => copyToDirectory(source, destination)).toThrow(/symlink/i);
+    expect(existsSync(join(destination, 'leak.txt'))).toBe(false);
+  });
+
+  it('refuses a dump that holds a symlink to a directory outside it', () => {
+    const outside = scratch();
+    writeFileSync(join(outside, 'hidden.txt'), 'HIDDEN');
+    const source = dumpDir();
+    link(outside, join(source, 'elsewhere'), 'directory');
+    const destination = join(scratch(), 'destination');
+
+    expect(() => copyToDirectory(source, destination)).toThrow(/symlink/i);
+    expect(existsSync(join(destination, 'elsewhere', 'hidden.txt'))).toBe(false);
+  });
+
+  it('does not verify a dump that holds a symlink', () => {
+    const outside = scratch();
+    const secret = join(outside, 'secret.txt');
+    writeFileSync(secret, 'SECRET');
+    const source = dumpDir();
+    const destination = join(scratch(), 'destination');
+    link(secret, join(source, 'leak.txt'), 'file');
+
+    const checked = verifyDirectory(source, destination);
+    expect(checked.ok).toBe(false);
+    expect(checked.mismatches.join(' ')).toMatch(/symlink/i);
+  });
+
+  it('does not write through a symlink that is already at the destination', () => {
+    const outside = scratch();
+    const precious = join(outside, 'precious.txt');
+    writeFileSync(precious, 'PRECIOUS');
+    const source = dumpDir();
+    const destination = join(scratch(), 'destination');
+    mkdirSync(destination, { recursive: true });
+    link(precious, join(destination, '2026-11-03T02-00-00Z.dump'), 'file');
+
+    const copied = copyToDirectory(source, destination);
+
+    // The file elsewhere on the box is untouched: the copy went to the
+    // backup drive, not through the link.
+    expect(readFileSync(precious, 'utf8')).toBe('PRECIOUS');
+    expect(readFileSync(join(destination, '2026-11-03T02-00-00Z.dump'), 'utf8')).toBe('DUMP CONTENTS');
+    // And the replacement is reported rather than done quietly.
+    expect(copied.replaced.join(' ')).toMatch(/2026-11-03T02-00-00Z\.dump/);
+  });
+
+  it('does not write through a symlinked directory in the middle of the destination', () => {
+    const outside = scratch();
+    const source = dumpDir();
+    const destination = join(scratch(), 'destination');
+    mkdirSync(destination, { recursive: true });
+    link(outside, join(destination, 'wal'), 'directory');
+
+    const copied = copyToDirectory(source, destination);
+
+    // Nothing was written into the directory the link pointed at.
+    expect(existsSync(join(outside, '000000010000000000000001'))).toBe(false);
+    // The WAL is on the backup drive instead.
+    expect(readFileSync(join(destination, 'wal', '000000010000000000000001'), 'utf8')).toBe('WAL');
+    expect(copied.replaced.join(' ')).toMatch(/wal/);
   });
 });
