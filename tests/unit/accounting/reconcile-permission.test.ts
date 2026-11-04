@@ -99,4 +99,17 @@ describe('the reconciliation route, when the permission is refused', () => {
     // The gate fires first: no bank line is read, no journal is written.
     expect(h.localDb).not.toHaveBeenCalled();
   });
+
+  it('asks for billing.write, not some other permission', async () => {
+    // The refusal message in the body comes from the MOCK, not from the
+    // route, so a route that asked for the wrong permission entirely would
+    // still put "billing.write" in the error and pass the test above. This
+    // is the assertion that ties the gate to the permission the accounting
+    // console actually needs.
+    requirePermission.mockRejectedValueOnce(new Error('refused'));
+
+    await POST(reconcileRequest('match', { invoiceId: INVOICE_ID }));
+
+    expect(requirePermission).toHaveBeenCalledWith('billing.write');
+  });
 });

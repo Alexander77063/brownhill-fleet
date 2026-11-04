@@ -116,6 +116,18 @@ do $$
 declare
   v_ag uuid := 'a1111111-1111-1111-1111-111111111111';
   v_start date := (current_date - 210);
+  -- ONE set of money figures, used by the rent schedule, the invoice, the
+  -- payment and the VAT code alike.
+  --
+  -- These were three separate literals for the same three numbers, and the
+  -- third was added when the VAT code came: the invoice said one amount, the
+  -- VAT code was derived from another, and the table's own check
+  -- (gross = net + vat) would have caught the drift only at the insert. One
+  -- set of figures cannot drift: the invoice's VAT and the VAT code's VAT
+  -- are now literally the same value.
+  v_gross_pence constant bigint := 102000;
+  v_net_pence   constant bigint := 85000;
+  v_vat_pence   constant bigint := 17000;
   wk int;
   v_ps date; v_pe date;
   inv uuid; pay uuid;
@@ -126,7 +138,7 @@ begin
     insert into rent_schedule (agreement_id, week_no, period_start, period_end,
       gross_due_pence, net_due_pence, vat_due_pence,
       status)
-    values (v_ag, wk, v_ps, v_pe, 102000, 85000, 17000,
+    values (v_ag, wk, v_ps, v_pe, v_gross_pence, v_net_pence, v_vat_pence,
       (case when wk <= 28 then 'paid' else 'due' end)::rent_status);
 
     -- The VAT code, from the same rule the application applies
@@ -144,17 +156,17 @@ begin
     -- The function raises when the VAT codes have not been seeded, so the
     -- seed fails loudly rather than creating invoices the return cannot see.
     insert into invoices (agreement_id, number, issued_on, due_on, gross_pence, net_pence, vat_pence, vat_code_id)
-    values (v_ag, 'BRH-A1-'||lpad(wk::text,4,'0'), v_ps, v_ps, 102000, 85000, 17000,
-            accounting.invoice_vat_code_id(17000, 'b1111111-1111-1111-1111-111111111111'))
+    values (v_ag, 'BRH-A1-'||lpad(wk::text,4,'0'), v_ps, v_ps, v_gross_pence, v_net_pence, v_vat_pence,
+            accounting.invoice_vat_code_id(v_vat_pence, 'b1111111-1111-1111-1111-111111111111'))
     returning id into inv;
 
     if wk <= 28 then
       insert into payments (driver_id, agreement_id, source, idempotency_key, amount_pence, received_on, status)
       values ('d1111111-1111-1111-1111-111111111111', v_ag, 'gocardless',
-        'seed-gc-a1-'||wk, 102000, v_ps + 1, 'confirmed')
+        'seed-gc-a1-'||wk, v_gross_pence, v_ps + 1, 'confirmed')
       returning id into pay;
       insert into payment_allocations (payment_id, invoice_id, amount_pence)
-      values (pay, inv, 102000);
+      values (pay, inv, v_gross_pence);
     end if;
   end loop;
 end $$;

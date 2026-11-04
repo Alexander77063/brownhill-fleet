@@ -19,7 +19,7 @@
 // to box 4 whatever its code, but only sets box 1 from the row whose code IS
 // 'T1' — so box 1, the output VAT DUE to HMRC, was permanently zero while
 // box 4 carried the month's net sales. The return said "you owe no VAT" and
-// "you sold £40,000 of rentals" in the same breath.
+// "you sold £25,500 of rentals" in the same breath.
 //
 // The application was fixed (the rent cron writes the code) and the history
 // was fixed (migration 0086 backfills every invoice that has none). The DEMO
@@ -42,13 +42,32 @@
 // `hosted/tests/seed-fail-closed.sh` is the gate that actually runs the seed
 // against a freshly migrated database; this one says what the seed must
 // contain before anyone gets that far.
+//
+// And it checks the CHAIN the seed depends on, because a gate that only
+// checks the seed's own text is a gate that passes when the migrations move
+// out from under it. The seed calls a function; the function has to exist,
+// has to mean what the seed assumes it means, and has to have a code to find.
+// Those are facts about files that exist in this repository, so they can be
+// checked without a database.
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const SEED = resolve(process.cwd(), 'supabase/seed.sql');
+const ROOT = process.cwd();
+const SEED = resolve(ROOT, 'supabase/seed.sql');
+const MIGRATIONS = resolve(ROOT, 'supabase/migrations');
+
 const seed = readFileSync(SEED, 'utf8');
+
+/** Every migration, in the order they are applied. */
+const migrationNames = readdirSync(MIGRATIONS)
+  .filter((name) => name.endsWith('.sql'))
+  .sort();
+
+const migrationText = migrationNames
+  .map((name) => readFileSync(resolve(MIGRATIONS, name), 'utf8'))
+  .join('\n');
 
 /** Every `insert into invoices (...)` in the seed, with its column list. */
 function invoiceInserts(source: string): Array<{ columns: string[]; body: string }> {
@@ -64,6 +83,101 @@ function invoiceInserts(source: string): Array<{ columns: string[]; body: string
     });
   }
   return found;
+}
+
+/**
+ * Split SQL on the commas that separate VALUES, ignoring the commas inside
+ * parentheses, function calls and string literals.
+ */
+function splitTopLevel(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) {
+        // '' inside a literal is an escaped quote, not the end of it.
+        if (text[i + 1] === quote) {
+          current += text[++i];
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/** The contents of the first balanced `(...)` after `marker`. */
+function balancedGroupAfter(text: string, marker: string): string | null {
+  const at = text.toLowerCase().indexOf(marker.toLowerCase());
+  if (at === -1) return null;
+  const open = text.indexOf('(', at + marker.length);
+  if (open === -1) return null;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) {
+        if (text[i + 1] === quote) {
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return text.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
+/** The values an insert supplies, in column order. */
+function insertValues(body: string): string[] {
+  const tuple = balancedGroupAfter(body, 'values');
+  if (tuple === null) return [];
+  return splitTopLevel(tuple);
+}
+
+/** The first argument the seed passes to `accounting.invoice_vat_code_id`. */
+function vatCodeArgument(value: string): string | null {
+  const match = value.match(/accounting\.invoice_vat_code_id\s*\(([^,)]*)/i);
+  return match ? match[1].trim() : null;
 }
 
 describe('the demo seed', () => {
@@ -92,5 +206,78 @@ describe('the demo seed', () => {
         'the seeded vat_code_id must come from accounting.invoice_vat_code_id',
       ).toContain('accounting.invoice_vat_code_id');
     }
+  });
+
+  it('derives the VAT code from the invoice\'s own VAT amount', () => {
+    // The failure this guards against is drift, not a missing column: the
+    // invoice could say one thing and the VAT code could be derived from
+    // another, and the VAT return would then group an invoice under a code
+    // that does not match its own arithmetic.
+    //
+    // So the invoice's vat_pence must not be a bare literal (a literal is a
+    // second copy of the fact, and a second copy is what drifts), and the
+    // argument the VAT code is derived from must be that very value.
+    for (const insert of invoiceInserts(seed)) {
+      const vatIndex = insert.columns.indexOf('vat_pence');
+      const codeIndex = insert.columns.indexOf('vat_code_id');
+      expect(vatIndex, 'the seeded invoice must carry a vat_pence column').toBeGreaterThanOrEqual(0);
+      expect(codeIndex).toBe(vatIndex + 1);
+
+      const values = insertValues(insert.body);
+      expect(
+        values.length,
+        'the seeded invoice must supply one value per column',
+      ).toBe(insert.columns.length);
+
+      const vatValue = values[vatIndex];
+      const codeValue = values[codeIndex];
+
+      expect(
+        vatValue,
+        "the invoice's VAT amount must not be a bare literal — it and the VAT code's VAT amount must be the same value, not two copies of it",
+      ).not.toMatch(/^\d+$/);
+
+      expect(
+        vatCodeArgument(codeValue),
+        'the VAT code must be derived from the invoice\'s own VAT amount',
+      ).toBe(vatValue);
+    }
+  });
+});
+
+describe('the chain the seed depends on', () => {
+  it('is created by a migration', () => {
+    // If the function is renamed, the seed raises at run time — but only in
+    // the docker-backed gate, which is not the only thing that reads this
+    // repository. The seed calls a name; the name has to exist.
+    expect(migrationText).toMatch(
+      /create\s+or\s+replace\s+function\s+accounting\.invoice_vat_code_id\s*\(\s*p_vat_pence\s+bigint\s*,\s*p_tenant\s+uuid\s*\)/i,
+    );
+  });
+
+  it('sends an invoice that carries VAT to T1', () => {
+    // The rule the seed relies on: VAT on the invoice means standard-rated
+    // (T1), no VAT means zero-rated (T0). The VAT return groups on the code
+    // and only T1 contributes to box 1, so a seeded invoice whose VAT were
+    // mapped to anything else would still be invisible to the return.
+    expect(migrationText).toMatch(/p_vat_pence\s*=\s*0\s+then\s+'T0'\s+else\s+'T1'/i);
+  });
+
+  it('has a T1 code for the function to find', () => {
+    // The function raises when it finds nothing, which is the right
+    // behaviour — the seed fails loudly rather than creating invoices the
+    // return cannot see. But that only holds if a T1 code exists.
+    expect(migrationText).toMatch(
+      /insert\s+into\s+(accounting\.)?vat_codes\b[^;]*'T1'/is,
+    );
+  });
+
+  it('keeps the code the tenant gets from being the global one by accident', () => {
+    // The function prefers a tenant's own code over the global one. The
+    // seeded global code (tenant_id null) is the fallback and is correct
+    // for the demo tenant; what would NOT be correct is a function that
+    // ignored the tenant entirely, because a real tenant's own code would
+    // then never win.
+    expect(migrationText).toMatch(/vc\.tenant_id\s+is\s+null\s+or\s+vc\.tenant_id\s*=\s*p_tenant/i);
   });
 });
