@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { deploymentProfile } from '@/lib/deployment/profile';
 import { deploymentBrand } from '@/lib/deployment/brand';
 import { issueLoginCode } from '@/lib/auth/otp-store';
+import { clientIpFrom } from '@/lib/auth/client-ip';
 import { normalisePhone } from '@/lib/phone';
 import { platformSms } from '@/lib/sms/platform-sms';
 
@@ -26,7 +27,12 @@ export async function POST(request: Request) {
   const phone = normalisePhone(raw);
   if (!phone) return NextResponse.json({ error: 'Enter a valid mobile number.' }, { status: 400 });
 
-  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
+  // The address the code is COUNTED against has to be one the caller cannot
+  // choose, or the per-address limit is a counter with a reset button: nginx
+  // APPENDS the address it saw to whatever the caller sent, so the first
+  // element of the list is the caller's own claim. `clientIpFrom` takes the
+  // address nginx saw.
+  const ip = clientIpFrom(request.headers);
   const issued = await issueLoginCode(phone, ip);
   if ('throttled' in issued) {
     return NextResponse.json(

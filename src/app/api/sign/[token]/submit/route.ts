@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { submitDriverSignature } from '@/lib/signing';
+import { clientIpFrom } from '@/lib/auth/client-ip';
 
 export const runtime = 'nodejs';
 
@@ -19,7 +20,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tok
   if (!driverName) return NextResponse.json({ error: 'Please type your full name.' }, { status: 400 });
   if (!signatureDataUrl) return NextResponse.json({ error: 'Please add your signature.' }, { status: 400 });
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
+  // The address in the audit trail has to be the one nginx saw, not the one
+  // the signer put in the header: nginx APPENDS the address it saw to
+  // whatever the caller sent, so the first element of the list is the
+  // caller's own claim. `clientIpFrom` takes the truth.
+  const ip = clientIpFrom(req.headers);
 
   try {
     // Only the signature image crosses the wire; the signed document is built
