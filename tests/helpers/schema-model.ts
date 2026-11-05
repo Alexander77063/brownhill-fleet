@@ -162,6 +162,60 @@ export function stripNoise(sql: string): { code: string; bodies: string[] } {
   return { code: withoutLineComments, bodies };
 }
 
+/**
+ * Removes SQL comments, leaving dollar-quoted bodies alone.
+ *
+ * `stripNoise` removes comments AND bodies, which is right for a caller that
+ * wants to look at the top-level statements only. A caller that wants to look
+ * INSIDE a body — to see whether a DO block creates a table, say — needs the
+ * opposite: the body kept, the comments out, because a comment that says
+ * "create table password_reset_requests" is a sentence, not a table.
+ *
+ * Quoted strings are respected, so a `--` inside a literal does not start a
+ * comment.
+ */
+export function stripComments(sql: string): string {
+  let out = '';
+  let i = 0;
+  let quote: string | null = null;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (quote) {
+      out += ch;
+      if (ch === quote) {
+        // A doubled quote is an escaped quote, not the end of the literal.
+        if (sql[i + 1] === quote) {
+          out += sql[++i];
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i);
+      i = nl === -1 ? sql.length : nl;
+      continue;
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end === -1 ? sql.length : end + 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
 /** Splits `a, b, (c, d)` on top-level commas only. */
 function splitTopLevel(body: string): string[] {
   const out: string[] = [];
@@ -215,6 +269,16 @@ export class SchemaModel {
   readonly tables = new Map<string, TableModel>();
   /** Every unique constraint across every table, for reverse lookups. */
   uniqueIndex = new Map<string, Set<string>>();
+  /**
+   * Every rename the migrations performed.
+   *
+   * A renamed table is in the database under its NEW name, so a gate that
+   * compares the tables the migrations create against the tables the model
+   * holds would report the old name as missing — and would then "fix" it by
+   * adding a table that does not exist. The model records what it renamed so
+   * that a caller can ask it rather than parse the migrations a second time.
+   */
+  readonly renames: Array<{ schema: string; from: string; to: string }> = [];
 
   static key(schema: string, name: string): string {
     return `${schema}.${name}`;
@@ -242,6 +306,7 @@ export class SchemaModel {
     t.name = to;
     t.origin = origin;
     this.tables.set(SchemaModel.key(schema, to), t);
+    this.renames.push({ schema, from, to });
   }
 
   addUnique(table: TableModel, name: string, cols: string[]): void {

@@ -14,12 +14,21 @@
  * missing in production. `tests/unit/schema-contract.test.ts` asserts this list and the
  * migrations agree **in both directions**, so adding a table without listing it, or listing one
  * nothing creates, fails the build.
+ *
+ * That test did not exist until 2026-11-04. The list had drifted from the migrations by six
+ * tables — `agreement_handover_photos`, `app_state`, `booking_series`, `driver_damage_reports`,
+ * `password_reset_requests` and `payment_link_tokens` — and the header here claimed a gate that
+ * was not there. A claim without a gate is not a gate: it is the same failure as the table it
+ * was supposed to protect, wearing the costume of a check.
  */
 export const REQUIRED_TABLES = [
   'addons',
+  'agreement_handover_photos',
   'agreements',
+  'app_state',
   'audit_log',
   'billing_events',
+  'booking_series',
   'bookings',
   'charge_liability_transfers',
   'charge_media',
@@ -27,6 +36,7 @@ export const REQUIRED_TABLES = [
   'deposit_ledger',
   // NG-3: our stock of trackers and relay units.
   'device_units',
+  'driver_damage_reports',
   'driver_documents',
   'drivers',
   'expense_categories',
@@ -56,7 +66,9 @@ export const REQUIRED_TABLES = [
   'notifications',
   'numbering_sequences',
   'obligations',
+  'password_reset_requests',
   'payment_allocations',
+  'payment_link_tokens',
   'payments',
   'permitted_zones',
   'plan_features',
@@ -110,3 +122,33 @@ export const REQUIRED_TABLES = [
 ] as const;
 
 export type RequiredTable = (typeof REQUIRED_TABLES)[number];
+
+/**
+ * The tables the API roles cannot read.
+ *
+ * Migration 0014 grants `service_role` everything in `public`, and that grant
+ * is what lets the application read its own tables through PostgREST. Two
+ * migrations take it back, and both take it back from `service_role` as well
+ * as from `anon` and `authenticated`:
+ *
+ *     0060  revoke all on login_codes from anon, authenticated, service_role;
+ *     0088  revoke all on password_reset_requests from anon, authenticated, service_role;
+ *
+ * Those two tables hold one-time codes and reset throttle rows. They are
+ * reachable only over the application's own direct Postgres connection, which
+ * is where the application reads them from — and so is the preflight.
+ *
+ * A permission error is not a missing table. Probing these two through
+ * PostgREST answers "permission denied" on a database that is perfectly
+ * healthy, and the preflight would report a table that is there as one that
+ * is missing — which is worse than not looking, because it trains the
+ * operator to ignore the answer.
+ *
+ * This list is not a hand-picked subset: `tests/unit/schema-contract.test.ts`
+ * holds it against the migrations' own REVOKE statements, in both directions.
+ * A table that stops being revoked has to leave this list, and a table that
+ * starts being revoked has to join it, or the build fails.
+ */
+export const DIRECT_ONLY_TABLES = ['login_codes', 'password_reset_requests'] as const;
+
+export type DirectOnlyTable = (typeof DIRECT_ONLY_TABLES)[number];
