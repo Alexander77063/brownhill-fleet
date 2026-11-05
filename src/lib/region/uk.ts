@@ -12,6 +12,7 @@ import { intlCurrency, type RegionProvider } from './types';
 export const UK: RegionProvider = {
   id: 'uk',
   label: 'United Kingdom',
+  legalJurisdiction: 'England and Wales',
   timezone: 'Europe/London',
 
   currency: {
@@ -114,4 +115,16 @@ export const UK: RegionProvider = {
   lookups: { key: 'dvla_ves', label: 'DVLA Vehicle Enquiry Service' },
   billing: { defaultPlanKey: 'trial', initialStatus: 'trialing' },
   phone: { countryCode: '+44', trunkPrefix: '0', example: '+44 7700 900000' },
+
+  accessibilityEnforcement: {
+    law: 'Equality Act 2010',
+    body: 'Equality Advisory and Support Service',
+    url: 'https://www.equalityadvisoryservice.com/',
+  },
+  dataProtectionRegulator: {
+    name: "Information Commissioner's Office",
+    url: 'https://ico.org.uk/',
+    law: 'the UK GDPR and the Data Protection Act 2018',
+    processorTerms: 'Article 28 of the UK GDPR',
+  },
 };

@@ -13,6 +13,7 @@
 #   cron.env        the token the scheduled jobs present
 #   mtd.env         the HMRC client id and client secret
 #   backup.env      the off-host backup credentials
+#   legal.env       the operator's own identity, for the legal pages
 #
 # Every one of them was written straight to its final path:
 #
@@ -361,7 +362,7 @@ fi
 echo
 echo "== 6: every credential goes through the writer =="
 
-for name in pg.env jwt.env bootstrap.env cron.env mtd.env backup.env; do
+for name in pg.env jwt.env bootstrap.env cron.env mtd.env backup.env legal.env; do
   if grep -qE "write_secret .*/${name}\b" "$INSTALL"; then
     ok "the installer writes $name through the writer"
   else

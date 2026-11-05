@@ -359,7 +359,10 @@ trigger now translates.
 installer under the exact name the application reads, and the handover
 document quotes those same names. `hosted/tests/mtd-env-wiring.sh` holds
 both halves to that, and `hosted/tests/mtd-env-wiring-negative.sh` proves
-the gate can fail.
+the gate can fail. The same rule governs the operator's **own legal
+identity**, which `hosted/tests/legal-env-wiring.sh` holds to the same
+standard, with `hosted/tests/legal-env-wiring-negative.sh` proving that
+gate can fail too.
 
 Concretely, on the hosted box:
 
@@ -372,6 +375,49 @@ Concretely, on the hosted box:
 | `HMRC_MTD_VRN` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (the installation's default: the first tenant to connect adopts it, and the tenant's own `accounting.firs_credentials.vrn` is what a return is filed against) |
 | `HMRC_MTD_BASE_URL` | `src/lib/accounting/hmrc.ts` | `install.sh` | `mtd.env` (empty → HMRC's own sandbox/production address; the chaos drills point it at a stub) |
 | `NEXT_PUBLIC_APP_URL` | `src/lib/requests.ts`, `src/lib/accounting/mtd.ts` | `write-app-env.sh` | `app.env` |
+
+The operator's **own legal identity** is carried the same way, in eight
+variables that only the operator can fill in:
+
+| Setting | Read by | Provided by | Lives in | What it publishes |
+| --- | --- | --- | --- | --- |
+| `LEGAL_OPERATOR_ENTITY` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the legal entity that operates the service |
+| `LEGAL_OPERATOR_PRODUCT` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the product it operates |
+| `LEGAL_OPERATOR_JURISDICTION` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the jurisdiction whose law governs |
+| `LEGAL_OPERATOR_COMPANY_NUMBER` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the company registration number |
+| `LEGAL_OPERATOR_REGISTERED_ADDRESS` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the registered office address |
+| `LEGAL_OPERATOR_CONTACT_EMAIL` | `src/lib/legal.ts` | `install.sh` | `legal.env` | where general enquiries go |
+| `LEGAL_OPERATOR_PRIVACY_EMAIL` | `src/lib/legal.ts` | `install.sh` | `legal.env` | where privacy enquiries go |
+| `LEGAL_OPERATOR_WEBSITE` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the operator's own website |
+
+**Why the legal identity is settings and not a table.** The legal pages used
+to name one company — the upstream's — and published its registration number
+and registered office as if they were the box's own. On a box the **customer**
+operates, the privacy policy told the customer to write to a company that had
+nothing to do with them. The identity cannot be generated and cannot be
+guessed: it is the operator's own, so it is written **empty once** and never
+overwritten — a re-run of the installer leaves it alone — and the pages
+**omit** a clause whose value is missing rather than printing a bracketed
+placeholder. A half-filled file therefore produces a shorter document, not a
+false one.
+
+**Why four files have to agree.** The names are read in `src/lib/legal.ts`,
+written in `hosted/bootstrap/install.sh`, shown in
+`hosted/bootstrap/operator-secrets.example`, and loaded by
+`hosted/systemd/brownhill-next.service`. A name that is read but never
+written is a setting that does nothing; a name spelled one way in the
+application and another in the installer is worse, because **nothing fails**:
+the legal page omits the clause, forever, and nobody is told. The page still
+renders. It is just shorter than it should be, and the only symptom is a
+missing company number.
+
+`hosted/tests/legal-env-wiring.sh` holds all four files to that — the
+installer writes exactly the names the application reads, the operator's
+template carries exactly those names, the unit loads the file, and the file
+is **optional** where the unit loads it, so a box that has not been told who
+operates it still starts and its pages omit what they have no value for.
+`hosted/tests/legal-env-wiring-negative.sh` runs the same gate against five
+doctored copies of the tree and requires it to fail on each.
 
 **Why.** A variable that is *set* under one spelling and *read* under
 another does not fail — it is ignored, and the application carries on with

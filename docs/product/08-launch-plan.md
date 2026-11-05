@@ -55,6 +55,7 @@ hosted/tests/acceptance.sh                                  # all gates green
 - `hosted/tests/portability-guards.sh` + `hosted/tests/verify-hosted-portability.sh` + `hosted/tests/tls-assertion-negative.sh` — the proof's own guards, then assertions 0–17 against the live stack, then the negative case: the proof run again with a CA that signed nothing, which must fail on assertion 14
 - `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 - `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
+- `hosted/tests/legal-env-wiring.sh` — the operator's own legal identity reaches the application under the names the application reads: the installer writes them, the operator's template carries them, and the unit loads the file. This one is also a **go-live item** rather than only a health item: the eight `LEGAL_OPERATOR_*` values belong to the operator and cannot be generated, so until they are filled in the legal pages **omit** the clauses they have no value for — a shorter document, not a false one
 - the Sunday `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
 
 ### Stage 1 — The schema is proven from zero

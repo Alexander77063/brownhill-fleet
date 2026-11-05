@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { LEGAL_DOCS, OPERATOR } from '@/lib/legal';
+import { LEGAL_DOCS } from '@/lib/legal';
+import { resolveOperator } from '@/lib/legal-operator';
+import { regionProvider } from '@/lib/region';
 import { deploymentBrand } from '@/lib/deployment/brand';
 
 export const metadata: Metadata = {
@@ -24,7 +26,27 @@ export const metadata: Metadata = {
  */
 const STATEMENT_UPDATED = '4 November 2026';
 
-export default function AccessibilityPage() {
+// The operator's identity is resolved per request: on a box the customer
+// operates it is their own branding, which they can change. A page frozen at
+// build time would publish whoever the operator was when the image was built.
+export const dynamic = 'force-dynamic';
+
+export default async function AccessibilityPage() {
+  // The operator and the enforcement body are resolved per request. Both are
+  // facts about THIS deployment: the operator may be the customer who owns the
+  // box, and the enforcement body is the one with jurisdiction over the market
+  // the box serves. Naming the UK's Equality Advisory and Support Service on a
+  // Nigerian deployment points a reader at a body that cannot help them.
+  const OPERATOR = await resolveOperator();
+  const REGION = regionProvider();
+  const ENFORCEMENT = REGION.accessibilityEnforcement;
+
+  const mailLink = OPERATOR.contactEmail ? (
+    <a href={`mailto:${OPERATOR.contactEmail}`} className="text-gold-bright hover:underline">
+      {OPERATOR.contactEmail}
+    </a>
+  ) : null;
+
   return (
     <main id="main-content" tabIndex={-1} className="mx-auto max-w-3xl px-5 py-12 sm:px-8">
       <Link href="/" className="text-sm text-gold-bright hover:underline">
@@ -107,12 +129,19 @@ export default function AccessibilityPage() {
           <h2 className="font-display text-xl text-cream">Reporting a barrier</h2>
           <p className="mt-2">
             If something on this platform prevents you from completing a task, please tell us — it
-            is treated as a defect, not a feature request. Email{' '}
-            <a href={`mailto:${OPERATOR.contactEmail}`} className="text-gold-bright hover:underline">
-              {OPERATOR.contactEmail}
-            </a>{' '}
-            with the page, what you were trying to do, and the assistive technology you use if
-            relevant. We aim to acknowledge within 5 working days.
+            is treated as a defect, not a feature request.{' '}
+            {mailLink ? (
+              <>
+                Email {mailLink} with the page, what you were trying to do, and the assistive
+                technology you use if relevant.
+              </>
+            ) : (
+              <>
+                Contact the operator of this service with the page, what you were trying to do,
+                and the assistive technology you use if relevant.
+              </>
+            )}{' '}
+            We aim to acknowledge within 5 working days.
           </p>
           <p className="mt-2">
             If you are a driver and cannot complete a signing or payment step, contact your fleet
@@ -124,16 +153,15 @@ export default function AccessibilityPage() {
         <section>
           <h2 className="font-display text-xl text-cream">Enforcement</h2>
           <p className="mt-2">
-            In the United Kingdom, the Equality Act 2010 requires service providers to make
-            reasonable adjustments for disabled people. If you are not satisfied with how we
-            respond, you can contact the{' '}
+            In {REGION.label}, the {ENFORCEMENT.law} requires reasonable adjustments to be made for
+            disabled people. If you are not satisfied with how we respond, you can contact the{' '}
             <a
-              href="https://www.equalityadvisoryservice.com/"
+              href={ENFORCEMENT.url}
               target="_blank"
               rel="noopener noreferrer"
               className="text-gold-bright hover:underline"
             >
-              Equality Advisory and Support Service
+              {ENFORCEMENT.body}
             </a>
             .
           </p>
@@ -143,10 +171,15 @@ export default function AccessibilityPage() {
           <h2 className="font-display text-xl text-cream">For procurement teams</h2>
           <p className="mt-2">
             A detailed Accessibility Conformance Report (VPAT-style, criterion by criterion,
-            including what has not been evaluated) is available on request from{' '}
-            <a href={`mailto:${OPERATOR.contactEmail}`} className="text-gold-bright hover:underline">
-              {OPERATOR.contactEmail}
-            </a>
+            including what has not been evaluated) is available on request
+            {mailLink ? (
+              <>
+                {' '}
+                from {mailLink}
+              </>
+            ) : (
+              ' from the operator of this service'
+            )}
             .
           </p>
         </section>

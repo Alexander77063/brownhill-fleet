@@ -185,6 +185,26 @@ export type PaymentProviderId =
 
 export type SmsProviderId = 'twilio' | 'termii';
 
+/**
+ * How a provider is named in a document a customer reads.
+ *
+ * The ids are machine keys; a privacy policy that lists "gocardless" in a
+ * sentence about who processes personal data is not a document, it is a
+ * dump. These labels are what the legal pages print.
+ */
+export const PAYMENT_PROVIDER_LABELS: Record<PaymentProviderId, string> = {
+  stripe: 'Stripe',
+  gocardless: 'GoCardless',
+  paystack: 'Paystack',
+  flutterwave: 'Flutterwave',
+  bank_transfer: 'bank transfer',
+};
+
+export const SMS_PROVIDER_LABELS: Record<SmsProviderId, string> = {
+  twilio: 'Twilio',
+  termii: 'Termii',
+};
+
 export interface VehicleLookupSpec {
   readonly key: string;
   readonly label: string;
@@ -219,9 +239,50 @@ export interface PhoneSpec {
   readonly example: string;
 }
 
+/**
+ * The body a person who is not satisfied with how a service treats disabled
+ * people can complain to.
+ *
+ * This is a REGIONAL fact, not a branding one: the Equality Act 2010 and the
+ * Equality Advisory and Support Service are the UK's, and a Nigerian
+ * deployment that named them would be pointing its drivers at a body that has
+ * no jurisdiction over it. The accessibility statement reads this.
+ */
+export interface AccessibilityEnforcement {
+  /** The statute that requires reasonable adjustments. */
+  readonly law: string;
+  /** The body a person may complain to. */
+  readonly body: string;
+  /** Where that body lives. */
+  readonly url: string;
+}
+
+/**
+ * The data-protection regulator a privacy policy names.
+ *
+ * Same reasoning as the accessibility body: the ICO has no jurisdiction over
+ * a Nigerian deployment, and a privacy policy naming the wrong regulator is a
+ * privacy policy that tells a person to complain to the wrong desk.
+ *
+ * The LAW travels with the regulator, because a privacy policy that names the
+ * NDPC but says "we comply with the UK GDPR" is wrong in a different way: it
+ * promises compliance with a statute that does not apply here, and says nothing
+ * about the one that does.
+ */
+export interface DataProtectionRegulator {
+  readonly name: string;
+  readonly url: string;
+  /** The data-protection law of this region, named as a document would cite it. */
+  readonly law: string;
+  /** The processor obligations a Data Processing Addendum must reflect. */
+  readonly processorTerms: string;
+}
+
 export interface RegionProvider {
   readonly id: RegionId;
   readonly label: string;
+  /** The jurisdiction whose law governs a contract signed here. */
+  readonly legalJurisdiction: string;
   /** IANA zone for customer-facing times (SMS booking confirmations). */
   readonly timezone: string;
   readonly currency: CurrencySpec;
@@ -238,6 +299,8 @@ export interface RegionProvider {
   readonly lookups: VehicleLookupSpec | null;
   readonly billing: BillingSpec;
   readonly phone: PhoneSpec;
+  readonly accessibilityEnforcement: AccessibilityEnforcement;
+  readonly dataProtectionRegulator: DataProtectionRegulator;
 }
 
 /**
