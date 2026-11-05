@@ -96,12 +96,24 @@ import {
   MtdFilingInProgressError,
   MtdNotConnectedError,
   MtdVrnInUseError,
+  mtdConfigProblem,
+  readMtdConfig,
   signCallbackState,
 } from '@/lib/accounting/mtd';
 import { GET, POST } from '@/app/api/v1/accounting/mtd/[action]/route';
 
 /** The signing secret the OAuth state is signed with. */
 const SECRET = 'unit-test-secret-not-a-real-one';
+
+/**
+ * The address this installation knows itself by.
+ *
+ * `readMtdConfig` refuses to produce a redirect URI without one. It used to
+ * fall back to `http://localhost:3000`, which can never work: HMRC would send
+ * the operator's browser back to their own machine, where nothing is
+ * listening. The failure was silent until somebody pressed the button.
+ */
+const APP_URL = 'https://brownhill.example.co.uk';
 
 function request(
   action: string,
@@ -417,12 +429,16 @@ describe('the MTD route', () => {
     vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
     vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
     vi.stubEnv('HMRC_MTD_BASE_URL', 'https://stub.hmrc.test');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
 
     const res = await GET(request('connect'), params('connect'));
 
     expect(res.status).toBe(303);
     const location = res.headers.get('location') ?? '';
     expect(location.startsWith('https://stub.hmrc.test/oauth/authorize')).toBe(true);
+    // And the redirect URI it sends HMRC is this installation's own address,
+    // so the operator comes back to the box they started from.
+    expect(location).toContain(encodeURIComponent(`${APP_URL}/api/v1/accounting/mtd/callback`));
   });
 
   it('exchanges the authorisation code against the same endpoint', async () => {
@@ -430,6 +446,7 @@ describe('the MTD route', () => {
     vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
     vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
     vi.stubEnv('HMRC_MTD_BASE_URL', 'https://stub.hmrc.test');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
 
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response(JSON.stringify({ access_token: 'a', refresh_token: 'r', expires_in: 3600 }), {
@@ -463,6 +480,7 @@ describe('the MTD route', () => {
     vi.stubEnv('LOCAL_JWT_SECRET', SECRET);
     vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
     vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
 
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -476,5 +494,88 @@ describe('the MTD route', () => {
     expect(res.headers.get('location') ?? '').toContain('status=invalid-state');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(persistCredentials).not.toHaveBeenCalled();
+  });
+
+  // ── the installation's own address ──────────────────────────────────────
+  //
+  // An install that cannot say where it lives cannot finish an OAuth round
+  // trip. It used to fall back to `http://localhost:3000` and produce a
+  // redirect URI that could never work: HMRC would send the operator's
+  // browser to their own machine, where nothing is listening. The failure was
+  // silent right up to the moment somebody pressed "Connect to HMRC".
+  //
+  // These gates hold the refusal. The refusal itself is only worth anything
+  // if the two misconfigurations it covers are told apart, because they are
+  // fixed in different places: one is a missing credential, the other is a
+  // missing address.
+
+  it('refuses the connect when the install has no HMRC application registered', async () => {
+    // There is nothing to connect with. The operator is told so, rather than
+    // being sent to an endpoint that cannot know them.
+    vi.stubEnv('LOCAL_JWT_SECRET', SECRET);
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
+
+    const res = await GET(request('connect'), params('connect'));
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location') ?? '').toContain('status=not-configured');
+  });
+
+  it('refuses the connect when the install does not know its own public address', async () => {
+    // The credentials are all there. What is missing is the address HMRC
+    // would send the operator back to — so the round trip cannot be finished
+    // and the install must say so.
+    vi.stubEnv('LOCAL_JWT_SECRET', SECRET);
+    vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
+    vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
+    vi.stubEnv('HMRC_MTD_BASE_URL', 'https://stub.hmrc.test');
+    // No NEXT_PUBLIC_APP_URL, and no HMRC_MTD_REDIRECT_URI.
+
+    expect(readMtdConfig()).toBeNull();
+
+    const res = await GET(request('connect'), params('connect'));
+
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location') ?? '').toContain('status=not-configured');
+  });
+
+  it('never builds a redirect URI that points at the operator’s own machine', () => {
+    // The gate on the value itself, not only on the route's answer to it: a
+    // redirect URI of `http://localhost:3000/...` is the defect, whatever
+    // the route does with it.
+    vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
+    vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
+
+    expect(readMtdConfig()).toBeNull();
+
+    // With an address, the URI is built from it and points at this box.
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
+    const config = readMtdConfig();
+    expect(config?.redirectUri).toBe(`${APP_URL}/api/v1/accounting/mtd/callback`);
+    expect(config?.redirectUri).not.toMatch(/localhost/);
+
+    // And an explicit redirect URI still wins over the address.
+    vi.stubEnv('HMRC_MTD_REDIRECT_URI', 'https://elsewhere.example/custom-callback');
+    expect(readMtdConfig()?.redirectUri).toBe('https://elsewhere.example/custom-callback');
+  });
+
+  it('says which of the two things is missing', () => {
+    // Two misconfigurations produce the same null from `readMtdConfig`, and
+    // they are fixed in different places. An operator told only "not
+    // configured" sets the credentials, presses the button again, and is
+    // refused again — having learned nothing.
+    vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
+    vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
+    expect(mtdConfigProblem()).toMatch(/NEXT_PUBLIC_APP_URL/);
+
+    vi.stubEnv('HMRC_MTD_CLIENT_ID', '');
+    vi.stubEnv('HMRC_MTD_CLIENT_SECRET', '');
+    expect(mtdConfigProblem()).toMatch(/HMRC_MTD_CLIENT_ID/);
+
+    // And an install that is fully configured has no complaint to make.
+    vi.stubEnv('HMRC_MTD_CLIENT_ID', 'client-1');
+    vi.stubEnv('HMRC_MTD_CLIENT_SECRET', 'secret-1');
+    vi.stubEnv('NEXT_PUBLIC_APP_URL', APP_URL);
+    expect(mtdConfigProblem()).toBeNull();
   });
 });

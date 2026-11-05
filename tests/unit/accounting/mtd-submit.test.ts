@@ -172,11 +172,87 @@ describe('the signed OAuth state', () => {
     expect(await verifyCallbackState(state, 'a-different-secret')).toBeNull();
   });
 
-  it('does not verify a state that was tampered with', async () => {
+  it('does not verify a state whose signature was tampered with', async () => {
     const state = await signCallbackState('user-1', 'tenant-1', SECRET, 600);
-    expect(await verifyCallbackState(`${state.slice(0, -2)}xy`, SECRET)).toBeNull();
+    expect(await verifyCallbackState(tamperSignature(state), SECRET)).toBeNull();
+  });
+
+  it('does not verify a state whose payload was rewritten', async () => {
+    // The attack the state parameter exists to stop: a state that names a
+    // DIFFERENT tenant, carrying the original signature.
+    //
+    // The old test only ever touched the signature, and touched it in the one
+    // place where a change is not guaranteed to change anything — see the
+    // note on `tamperSignature`. Nothing checked the payload at all, which is
+    // the half an attacker actually controls: the signature is a secret
+    // nobody can forge, and the payload is what the browser carries.
+    const state = await signCallbackState('user-1', 'tenant-1', SECRET, 600);
+    const forged = rewritePayload(state, { tenant_id: 'tenant-2' });
+
+    expect(forged).not.toBe(state);
+    expect(await verifyCallbackState(forged, SECRET)).toBeNull();
+  });
+
+  it('verifies the state it minted, so the two refusals above are about tampering', async () => {
+    // The control. A verifier that refused EVERY state would pass both tests
+    // above for the wrong reason, and the OAuth flow would be broken in a way
+    // nobody would notice until an operator tried to connect to HMRC.
+    const state = await signCallbackState('user-1', 'tenant-1', SECRET, 600);
+    expect(await verifyCallbackState(state, SECRET)).toEqual({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+    });
   });
 });
+
+/** The base64url alphabet, without padding — the alphabet a JWT signature is written in. */
+const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/**
+ * Change one character in the MIDDLE of a JWT's signature.
+ *
+ * WHY NOT THE END
+ * ---------------
+ * The old version of this file did `${state.slice(0, -2)}xy`, and it was
+ * wrong in a way that only showed up about one run in a thousand.
+ *
+ * A JWT's signature is 32 bytes of HMAC, written as 43 base64url characters
+ * with no padding. The last character carries only four significant bits —
+ * the other two are the encoding's padding — so REPLACING it can leave the
+ * decoded bytes byte-for-byte identical. Measured over 200,000 random
+ * signatures, the old tamper left the signature unchanged in 200 of them:
+ * 0.100%, one run in a thousand.
+ *
+ * When it did, the tampered token was the same token, the verifier accepted
+ * it, and the test failed with "expected null, received { userId, tenantId }"
+ * — a failure that looks exactly like a broken verifier and is not one. It
+ * fired on 2026-11-04 and cost an afternoon to tell apart from a real
+ * security defect.
+ *
+ * Changing a character in the middle cannot land on a padding bit: every
+ * character but the last is fully significant. Measured over the same 200,000
+ * signatures, this tamper changed the decoded bytes every time.
+ */
+function tamperSignature(state: string): string {
+  const [header, payload, signature] = state.split('.');
+  const at = Math.floor(signature.length / 2);
+  const replacement = B64URL[(B64URL.indexOf(signature[at]) + 1) % B64URL.length];
+  return `${header}.${payload}.${signature.slice(0, at)}${replacement}${signature.slice(at + 1)}`;
+}
+
+/**
+ * Replace a claim in a JWT's payload, keeping the original signature.
+ *
+ * The result is a token that is well formed, correctly signed-looking, and
+ * says something different from what was signed — which is what forgery
+ * looks like from the verifier's side.
+ */
+function rewritePayload(state: string, claims: Record<string, unknown>): string {
+  const [header, payload, signature] = state.split('.');
+  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  const rewritten = Buffer.from(JSON.stringify({ ...decoded, ...claims })).toString('base64url');
+  return `${header}.${rewritten}.${signature}`;
+}
 
 describe('the token encryption', () => {
   // The tokens are encrypted with a key derived from the install's signing
