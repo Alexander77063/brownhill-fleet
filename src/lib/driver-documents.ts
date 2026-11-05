@@ -19,6 +19,7 @@ import { createServiceClient } from '@/lib/supabase/server';
 import { storagePut } from '@/lib/storage';
 import { regionProvider } from '@/lib/region';
 import { storageHome, type ObligationSpec } from '@/lib/region/types';
+import { appendAudit } from '@/lib/audit';
 
 export const DOCUMENT_BUCKET = 'driver-docs';
 
@@ -250,13 +251,13 @@ export async function uploadDriverDocument(
   // anything that gates dispatch.
   if (opts.writeThrough) await applyWriteThrough(tenantId, driverId, input);
 
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'driver_document.uploaded',
-    p_entity_type: 'driver',
-    p_entity_id: driverId,
-    p_detail: { kind: input.kind, expires_on: input.expiresOn ?? null } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'driver_document.uploaded',
+    entityType: 'driver',
+    entityId: driverId,
+    detail: { kind: input.kind, expires_on: input.expiresOn ?? null },
+    actor: actor ?? undefined,
   });
 
   return { id: inserted.id };
@@ -361,13 +362,13 @@ export async function recordDriverReference(
     actor,
   );
 
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'driver_document.recorded',
-    p_entity_type: 'driver',
-    p_entity_id: driverId,
-    p_detail: { kind: input.kind, reference } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'driver_document.recorded',
+    entityType: 'driver',
+    entityId: driverId,
+    detail: { kind: input.kind, reference },
+    actor: actor ?? undefined,
   });
 
   return inserted;
@@ -465,13 +466,13 @@ export async function deleteDriverDocument(tenantId: string, documentId: string,
   const doc = await getDriverDocumentForTenant(tenantId, documentId);
   if (!doc) throw new Error('Document not found in this organisation.');
 
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'driver_document.deleted',
-    p_entity_type: 'driver',
-    p_entity_id: doc.driver_id,
-    p_detail: { kind: doc.kind, doc_path: doc.doc_path } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'driver_document.deleted',
+    entityType: 'driver',
+    entityId: doc.driver_id,
+    detail: { kind: doc.kind, doc_path: doc.doc_path },
+    actor: actor ?? undefined,
   });
 
   const { error } = await sb.from('driver_documents').delete().eq('id', documentId).eq('tenant_id', tenantId);

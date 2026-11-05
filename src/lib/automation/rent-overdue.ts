@@ -16,6 +16,7 @@
 import { formatDate } from '@/lib/display';
 import { sendDriverMessage } from '@/lib/comms';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 /**
  * Local YYYY-MM-DD formatter. Inlined rather than imported from
@@ -226,13 +227,13 @@ export async function runRentOverdueCheck(
 
   // Audit: one row for the whole run, so ops can see "I ran the check
   // at 14:32" in the audit log.
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'automation.rent_overdue_check',
-    p_entity_type: 'tenant',
-    p_entity_id: tenantId,
-    p_detail: { scanned: rows.length, sent, skipped, failed } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'automation.rent_overdue_check',
+    entityType: 'tenant',
+    entityId: tenantId,
+    detail: { scanned: rows.length, sent, skipped, failed },
+    actor: actor ?? undefined,
   });
 
   return {

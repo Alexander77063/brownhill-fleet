@@ -14,6 +14,7 @@ import { resolveEntitlementsForTenant, type FeatureKey } from '@/lib/entitlement
 // without importing this module, which imports the alert delivery step.
 import { haversineMeters } from '@/lib/geo';
 import { raiseOwnerAlerts } from '@/lib/alerts/deliver';
+import { appendAudit } from '@/lib/audit';
 export { haversineMeters } from '@/lib/geo';
 
 type Sb = ReturnType<typeof createServiceClient>;
@@ -379,12 +380,12 @@ async function checkGeofences(sb: Sb, tenantId: string, vehicleId: string, lat: 
       status: driverId ? 'driver_liable' : 'received',
       notes: `Auto: entered ${z.name} geofence`,
     } as never);
-    await sb.rpc('log_audit', {
-      p_tenant: tenantId,
-      p_action: 'gps.geofence_charge',
-      p_entity_type: 'vehicle',
-      p_entity_id: vehicleId,
-      p_detail: { zone: z.name, amount_pence: z.charge_pence } as never,
+    await appendAudit(sb, {
+      tenantId,
+      action: 'gps.geofence_charge',
+      entityType: 'vehicle',
+      entityId: vehicleId,
+      detail: { zone: z.name, amount_pence: z.charge_pence },
     });
     return z.name;
   }

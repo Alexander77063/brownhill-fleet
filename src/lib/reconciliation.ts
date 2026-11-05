@@ -7,6 +7,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 // A charge is "outstanding" (recoverable) until it's been paid or written off.
 const OPEN_STATUSES = ['received', 'driver_notified', 'driver_liable', 'disputed'] as const;
@@ -92,13 +93,13 @@ export async function assignChargeToDriver(tenantId: string, chargeId: string, d
     .select('id');
   if (error) throw new Error(`Could not assign charge: ${error.message}`);
   if (!updated || updated.length === 0) throw new Error('Charge not found in this organisation.');
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'charge.assigned',
-    p_entity_type: 'charge',
-    p_entity_id: chargeId,
-    p_detail: { driver_id: driverId } as never,
-    p_actor: actor,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'charge.assigned',
+    entityType: 'charge',
+    entityId: chargeId,
+    detail: { driver_id: driverId },
+    actor: actor,
   });
 }
 
@@ -118,12 +119,12 @@ export async function reconcileCharge(
     .select('id');
   if (error) throw new Error(`Could not reconcile charge: ${error.message}`);
   if (!updated || updated.length === 0) throw new Error('Charge not found in this organisation.');
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'charge.reconciled',
-    p_entity_type: 'charge',
-    p_entity_id: chargeId,
-    p_detail: { status } as never,
-    p_actor: actor,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'charge.reconciled',
+    entityType: 'charge',
+    entityId: chargeId,
+    detail: { status },
+    actor: actor,
   });
 }

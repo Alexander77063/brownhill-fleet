@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-11-05. Read from `supabase/migrations/` (87 files)
+*Status: current as of 2026-11-05. Read from `supabase/migrations/` (88 files)
 and `supabase/seed.sql`. The most recent migration is
-`0088_password_reset.sql`.*
+`0089_audit_system_actor.sql`.*
 
 ---
 
@@ -1037,7 +1037,7 @@ than failing the whole migration run and skipping every migration after it.
 | `app_state` | Key/value operational flags: `bootstrap_pending`, `app_draining`. Read by the Node server through `localDb()` (a direct connection as the table owner) and by the Edge middleware over HTTP from PostgREST — see §7.1 |
 | `schema_migrations` | The migration ledger: which migrations this database has applied — see §8.1 |
 | `numbering_sequences` | Per-tenant document numbering (agreement numbers, invoice numbers) |
-| `audit_log` | Append-only. Migration 0018 makes it immutable |
+| `audit_log` | Append-only. Migration 0018 makes it immutable. Migration 0089 decides what a **system** action records as its actor — see §7.3 |
 | `void_events` | Void markers on financial records |
 | `notifications` | `status in ('pending','sent','acknowledged','failed')` |
 | `subscriptions` / `tenant_subscription` | The SaaS subscription — **unused in the hosted profile**, where entitlements come from `PROFILE_MODULES` |
@@ -1106,9 +1106,38 @@ Both first-run doors read the flag before they serve — the signed
 it through `localDb()`, as the table owner. The Edge middleware never sees
 it (§7.1), which is why the first-run decision is made server-side.
 
+### 7.3 The audit trail's actor — `audit_log.actor`
+
+`audit_log.actor` is a foreign key to `auth.users(id)`, and `log_audit()`
+defaults it to the user the request was made for.
+
+| The request was made by | The actor recorded |
+| --- | --- |
+| A person | That person |
+| The server — a cron job, an operations tool, the server signing on somebody's behalf | **Nothing.** The service principal is deliberately not a row in `auth.users`: an audit row attributing a cron job to a named employee would be a lie. The audit page renders a missing actor as "system" |
+| A subject that is not a user id at all — the hosted build's service role carries the subject `supabase` | **Nothing**, and no error. A subject that cannot be read as a user id means "not a person", and that is an answer, not a failure |
+
+The rule is that an action is **never lost because its actor could not be
+established**. If the actor turns out not to be a user, the row is written
+without one, and the drop is named in the database's own log. A failure that
+has nothing to do with the actor — a tenant that does not exist, say — still
+fails, loudly.
+
+This is migration 0089, and it fixes a defect that was not visible from the
+schema. `log_audit()` used to default the actor to `current_app_user()`
+unconditionally, so every system write was refused by the foreign key
+(23503) — and the twenty-four of the twenty-eight call sites that wrote
+system actions threw the refusal away. The trail did not fail; it was
+silently never written, and the only symptom was an empty table.
+
+The application now writes every audit row through **one** writer,
+`appendAudit` in `src/lib/audit.ts`, which looks at the error and reports a
+refusal instead of discarding it. A contract test fails the build if any
+module writes an audit row by hand.
+
 ## 8. Migrations
 
-- 87 files, `0001`–`0088` (there is no `0057`; the number was never used).
+- 88 files, `0001`–`0089` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

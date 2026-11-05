@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import { createServiceClient } from '@/lib/supabase/server';
 import { operatorLegalName } from '@/lib/branding';
+import { appendAudit } from '@/lib/audit';
 
 /** Unguessable URL-safe token for a sign link. */
 export function newToken(): string {
@@ -47,13 +48,13 @@ async function audit(
   detail: Record<string, unknown>,
   actor?: string | null,
 ): Promise<void> {
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: action,
-    p_entity_type: 'signing_session',
-    p_entity_id: entityId,
-    p_detail: detail as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action,
+    entityType: 'signing_session',
+    entityId,
+    detail,
+    actor: actor ?? undefined,
   });
 }
 
@@ -382,13 +383,13 @@ export async function transferPcnLiability(
   const { error: updErr } = await sb.from('charges').update({ status: 'driver_liable' }).eq('id', charge.id);
   if (updErr) throw new Error(`could not update charge: ${updErr.message}`);
 
-  await sb.rpc('log_audit', {
-    p_tenant: charge.tenant_id,
-    p_action: 'pcn.liability_transferred',
-    p_entity_type: 'charge',
-    p_entity_id: charge.id,
-    p_detail: { reference, signing_session_id: signingSessionId } as never,
-    p_actor: input.transferredBy ?? undefined,
+  await appendAudit(sb, {
+    tenantId: charge.tenant_id,
+    action: 'pcn.liability_transferred',
+    entityType: 'charge',
+    entityId: charge.id,
+    detail: { reference, signing_session_id: signingSessionId },
+    actor: input.transferredBy ?? undefined,
   });
   return { reference };
 }

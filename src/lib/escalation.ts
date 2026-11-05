@@ -14,6 +14,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { logNotification } from '@/lib/comms';
 import { relativeTime } from '@/lib/display';
+import { appendAudit } from '@/lib/audit';
 
 export const EMERGENCY_KINDS = ['stolen', 'immobilise'] as const;
 export const ROUND_MINUTES = 5;
@@ -294,12 +295,12 @@ export function pgEscalationStore(sb: Sb = createServiceClient()): EscalationSto
       });
     },
     async audit(tenantId, requestId, detail) {
-      await sb.rpc('log_audit', {
-        p_tenant: tenantId,
-        p_action: 'owner_request.escalated',
-        p_entity_type: 'owner_request',
-        p_entity_id: requestId,
-        p_detail: detail as never,
+      await appendAudit(sb, {
+        tenantId,
+        action: 'owner_request.escalated',
+        entityType: 'owner_request',
+        entityId: requestId,
+        detail,
       });
     },
   };

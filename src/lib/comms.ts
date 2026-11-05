@@ -10,6 +10,7 @@
 import { sendTenantEmail } from '@/lib/email/tenant-email';
 import { sendTenantSms } from '@/lib/sms/tenant-sms';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -96,13 +97,13 @@ export async function sendDriverMessage(
     await logNotification(sb, { tenantId, driverId, channel: 'sms', recipient: driver.phone, subject, body, ...statusOf(res) });
     channels++;
   }
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'comms.driver_message',
-    p_entity_type: 'driver',
-    p_entity_id: driverId,
-    p_detail: { subject } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'comms.driver_message',
+    entityType: 'driver',
+    entityId: driverId,
+    detail: { subject },
+    actor: actor ?? undefined,
   });
   return { channels };
 }
@@ -154,13 +155,13 @@ export async function sendOwnerMessage(
     });
     channels++;
   }
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'comms.owner_message',
-    p_entity_type: 'vehicle_owner',
-    p_entity_id: ownerId,
-    p_detail: { subject } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'comms.owner_message',
+    entityType: 'vehicle_owner',
+    entityId: ownerId,
+    detail: { subject },
+    actor: actor ?? undefined,
   });
   return { channels };
 }
@@ -251,13 +252,13 @@ export async function sendStaffMessage(
     body,
     ...statusOf(res),
   });
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'comms.staff_message',
-    p_entity_type: 'staff',
-    p_entity_id: userId,
-    p_detail: { subject } as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'comms.staff_message',
+    entityType: 'staff',
+    entityId: userId,
+    detail: { subject },
+    actor: actor ?? undefined,
   });
   return { channels: 1 };
 }

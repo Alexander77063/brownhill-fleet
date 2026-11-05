@@ -93,15 +93,14 @@ export async function recordAudit(entry: AuditEntry): Promise<void> {
   try {
     const ctx = await requireTenantContext();
     const sb = await createClient();
-    const { error } = await sb.rpc('log_audit', {
-      p_tenant: ctx.tenantId,
-      p_action: entry.action,
-      p_entity_type: entry.entityType,
-      p_entity_id: entry.entityId,
-      p_detail: (entry.detail ?? {}) as never,
-      p_actor: ctx.userId,
+    await appendAudit(sb, {
+      tenantId: ctx.tenantId,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      detail: entry.detail,
+      actor: ctx.userId,
     });
-    if (error) console.error('[audit] failed to record', entry.action, error.message);
   } catch (err) {
     console.error('[audit] failed to record', entry.action, err);
   }

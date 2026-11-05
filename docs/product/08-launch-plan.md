@@ -59,10 +59,10 @@ hosted/tests/acceptance.sh                                  # all gates green
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0088 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0089 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
-**Status: passed 2026-11-01 against 0001–0086; migrations 0087 and 0088
+**Status: passed 2026-11-01 against 0001–0086; migrations 0087, 0088 and 0089
 are verified by the CI harness.** The replay ran against a scratch `postgres:16`
 container, in two steps: a dry run that applied every migration inside one
 transaction and rolled it back — leaving `public_tables=0` behind, so nothing
@@ -70,12 +70,12 @@ survived it — and then a real from-zero apply in production semantics, each
 migration in its own transaction. The result was 85 public tables, 15
 accounting tables and 10 public views. Migration 0088 adds one public table
 (`password_reset_requests`, the self-service reset throttle), so the
-public-table count is now 86.
+public-table count is now 86; migration 0089 adds no table at all.
 
 A third phase runs the **migration runner itself** — not a re-implementation of
 it — against its own database: the first run applies the whole history, the
-second applies 0 migrations, and the ledger holds 88 rows. That count is 88
-and not 87 because the shim is recorded too, under its own name
+second applies 0 migrations, and the ledger holds 89 rows. That count is 89
+and not 88 because the shim is recorded too, under its own name
 (`0000_supabase_shim.sql`); the ledger holds one row per file it applied,
 and the shim is a file. The runner's own idempotency is what the deployment
 depends on — the systemd oneshot runs it on every boot.

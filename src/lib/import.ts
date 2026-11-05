@@ -8,6 +8,7 @@
 import { normalisePhone } from '@/lib/phone';
 import { upsertOwnerByPhone } from '@/lib/owners';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 /** Minimal, correct CSV parser: handles quoted fields, embedded commas/newlines,
  * and "" escapes. Returns objects keyed by the (lower-cased, trimmed) header. */
@@ -196,12 +197,12 @@ async function runImport(
       }
     }
 
-    await sb.rpc('log_audit', {
-      p_tenant: tenantId,
-      p_action: `import.${entity}`,
-      p_entity_type: entity,
-      p_detail: { inserted, errors: errors.length, owners: ownerCounts ?? null } as never,
-      p_actor: actor,
+    await appendAudit(sb, {
+      tenantId,
+      action: `import.${entity}`,
+      entityType: entity,
+      detail: { inserted, errors: errors.length, owners: ownerCounts ?? null },
+      actor: actor,
     });
   }
 
@@ -322,12 +323,12 @@ export async function importPcns(
     const { error } = await sb.from('charges').insert(payload as never);
     if (error) throw new Error(`Import failed: ${error.message}`);
     inserted = valid.length;
-    await sb.rpc('log_audit', {
-      p_tenant: tenantId,
-      p_action: 'import.pcn',
-      p_entity_type: 'charge',
-      p_detail: { inserted, skipped, errors: errors.length } as never,
-      p_actor: actor,
+    await appendAudit(sb, {
+      tenantId,
+      action: 'import.pcn',
+      entityType: 'charge',
+      detail: { inserted, skipped, errors: errors.length },
+      actor: actor,
     });
   }
 

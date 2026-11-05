@@ -17,6 +17,7 @@ import { hardwareEvent } from '@/lib/hardware/events';
 import { type GateResult, gateReasonText, speedGate } from '@/lib/hardware/speed-gate';
 import { type Env, type TraccarClient, traccarClient } from '@/lib/hardware/traccar';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -248,15 +249,14 @@ export async function requestImmobilisation(
     }
   }
 
-  const { error: auditErr } = await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: `vehicle.${action}`,
-    p_entity_type: 'vehicle',
-    p_entity_id: vehicleId,
-    p_detail: { status: result.status, delivered: result.delivered, reason: result.reason ?? null, speedKph: result.speedKph, requestId: ctx.requestId ?? null, commandId: cmd?.id ?? null } as never,
-    ...(ctx.executedBy && UUID.test(ctx.executedBy) ? { p_actor: ctx.executedBy } : {}),
-  } as never);
-  if (auditErr) console.error('[immobilise] audit failed', vehicleId, auditErr.message);
+  await appendAudit(sb, {
+    tenantId,
+    action: `vehicle.${action}`,
+    entityType: 'vehicle',
+    entityId: vehicleId,
+    detail: { status: result.status, delivered: result.delivered, reason: result.reason ?? null, speedKph: result.speedKph, requestId: ctx.requestId ?? null, commandId: cmd?.id ?? null },
+    ...(ctx.executedBy && UUID.test(ctx.executedBy) ? { actor: ctx.executedBy } : {}),
+  });
 
   return { commandId: cmd?.id ?? null, status: result.status, delivered: result.delivered, reason: result.reason, reasonText: result.reasonText, speedKph: result.speedKph };
 }
