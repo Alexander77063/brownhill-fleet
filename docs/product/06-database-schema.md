@@ -182,8 +182,8 @@ assertions **10–12** run the three cases against a real Postgres with the
 migrations applied from zero: a driver sees their own damage report and none
 of the office's records; ops in that tenant still sees all four kinds of row
 (the fix must not close the office out); and ops in another tenant sees none of
-it. The `hosted-smoke` CI job replays that proof on every pull request that
-touches `supabase/migrations/**`.
+it. The `hosted-smoke` CI job replays that proof on every push to `main`, and
+on every pull request that touches `supabase/migrations/**`.
 
 ## 4. The core tables
 

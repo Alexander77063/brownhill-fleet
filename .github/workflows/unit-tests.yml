@@ -93,6 +93,34 @@ jobs:
         # rule reported "no fallback" on a file that had one in plain text.
         # The gate looked green for as long as it existed.
         run: bash hosted/tests/no-committed-credentials-negative.sh
+      - name: Every workflow runs on main
+        # The `hosted-smoke` workflow is the only job in the repository that
+        # runs the database-backed suites — the integration files, the
+        # row-level security proofs and the migration replay — against a real
+        # postgres. It was triggered by a pull request and by a human pressing
+        # the button, and by nothing else: so the branch was proven, and the
+        # thing that ships was not. The deployment is cut from main, and a
+        # push to main brought the job up for nobody.
+        #
+        # It is the same fault this repository has paid for once, one level
+        # down. The pull-request filter used to name the schema and nothing
+        # under src/, so the job did not come up for the ledger's own code
+        # changes either, and the database-backed tests ran nowhere in CI for
+        # weeks.
+        #
+        # The gate also holds the production-shaped job's opt-in guard, which
+        # is load-bearing for every push to main and not only for the manual
+        # dispatch: that job is pinned to a runner that is not registered, so
+        # a job queued against it holds its concurrency group until GitHub
+        # cancels it 24 hours later, and the run never reports green.
+        run: bash hosted/tests/hosted-smoke-on-main.sh
+      - name: The branch-coverage gate can fail
+        # A gate that cannot fail is not a gate. This runs the gate against
+        # four copies of the tree — the push trigger removed, the branch
+        # renamed, the paths filter put back, and the production-shaped job
+        # left unguarded — and requires it to fail on the right check each
+        # time.
+        run: bash hosted/tests/hosted-smoke-on-main-negative.sh
       - name: The deployment's settings reach the application
         # The application reads HMRC_MTD_CLIENT_ID, HMRC_MTD_CLIENT_SECRET,
         # HMRC_MTD_REDIRECT_URI, HMRC_ENV and NEXT_PUBLIC_APP_URL. Nothing

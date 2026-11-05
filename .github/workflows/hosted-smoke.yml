@@ -60,6 +60,27 @@ on:
       - 'src/app/**'
       - 'src/lib/**'
       - 'src/components/**'
+  # A push to main runs this job too.
+  #
+  # This job is the only one in the repository that runs the database-backed
+  # suites — the integration files, the row-level security proofs and the
+  # migration replay — against a real postgres. It was triggered by a pull
+  # request and by a human pressing the button, and by nothing else: so the
+  # branch was proven, and the thing that ships was not. The deployment is
+  # cut from main. A push to main brought the job up for nobody.
+  #
+  # There is no paths filter here, and that is deliberate. The pull-request
+  # filter above names the files this repository owns, because a pull request
+  # that touches none of them does not need the hosted stack. A push to main
+  # is the branch changing, and it is the branch everything is cut from, so
+  # it runs whatever it carries.
+  #
+  # The production-shaped job below stays opt-in. It is pinned to a runner
+  # that is not registered, and a job queued against a runner that does not
+  # exist holds its concurrency group until GitHub cancels it 24 hours
+  # later — so a push must not be able to start it.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       production:

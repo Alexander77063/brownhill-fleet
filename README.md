@@ -37,9 +37,9 @@ script. Read it through before running anything.
 | `docs/product/` | The product foundation set — PRD, TRD, MVP scope, user flow, design system, schema, monetisation, launch, acquisition, growth. Start at [`docs/product/README.md`](./docs/product/README.md) |
 | `docs/accessibility/` | The accessibility programme — the audit, the VPAT, and what the runtime pass covers. Start at [`docs/accessibility/README.md`](./docs/accessibility/README.md) |
 | `tests/a11y/` | The Playwright + axe runtime pass — 97 scans across 85 pages of the hosted build |
-| `.github/workflows/hosted-smoke.yml` | CI for the hosted stack (runs on `ubuntu-latest`; the production-shaped job is opt-in, on the self-hosted `pulsar` runner) |
-| `.github/workflows/unit-tests.yml` | CI for typecheck + unit tests (runs on `ubuntu-latest`) |
-| `.github/workflows/a11y.yml` | CI for the runtime accessibility pass — builds the hosted stack, seeds it and runs axe in Chromium (runs on `ubuntu-latest`) |
+| `.github/workflows/hosted-smoke.yml` | CI for the hosted stack — the database-backed suites, the migration replay and the row-level-security proof (runs on `ubuntu-latest`; on every push to `main`, and on the pull requests that touch the code, the schema, the tests or the hosted box; the production-shaped job is opt-in, on the self-hosted `pulsar` runner) |
+| `.github/workflows/unit-tests.yml` | CI for typecheck + unit tests (runs on `ubuntu-latest`; on every pull request and every push to `main`) |
+| `.github/workflows/a11y.yml` | CI for the runtime accessibility pass — builds the hosted stack, seeds it and runs axe in Chromium (runs on `ubuntu-latest`; on every push to `main`, and on the pull requests that touch the code, the tests, the schema or the hosted box) |
 
 ## What's NOT in this repo (and why)
 
