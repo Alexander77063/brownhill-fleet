@@ -424,6 +424,47 @@ jobs:
         # not: it applied every migration from the top and died on 0001, which
         # creates the `user_role` enum without a guard.
         run: bash hosted/tests/hosted-bootstrap-idempotency.sh
+      - name: The deployment applies the migrations
+        # The documented update path was `git pull origin main &&
+        # ./hosted/scripts/deploy-app.sh`, and it shipped code against a schema
+        # the database did not have: the deploy built the application,
+        # installed it and restarted the service, and never applied a
+        # migration. The first anyone heard of it was the first person to use
+        # the feature migration 0088 belonged to — the self-service password
+        # reset — and the answer they got was
+        #
+        #   ERROR: relation "password_reset_requests" does not exist
+        #
+        # on the one screen that exists so a locked-out person can get back in.
+        #
+        # This runs the REAL deploy script, the real bootstrap, the real
+        # ledger and the real migrations against a real postgres:16. Only the
+        # build (pnpm), the service manager (systemctl) and the psql client
+        # (a forwarder into the container) are stood in for; `node` is real,
+        # so the deploy's self-contained-tree check runs over the real staged
+        # tree.
+        #
+        # It proves four things: the deploy applies the pending migrations, a
+        # second deploy applies nothing, a migration that cannot apply
+        # STOPS the deploy with the previous build still in place — because a
+        # deploy that swapped the build and then failed to migrate would leave
+        # the new code running against the old schema, which is the failure
+        # the step exists to prevent — and a deploy from an OLDER commit
+        # applies nothing new and undoes nothing, so that rolling the code
+        # back does not roll the schema back.
+        run: bash hosted/tests/deploy-applies-migrations.sh
+      - name: The deploy gate can fail
+        # A gate that cannot fail is not a gate. This one takes the migration
+        # step out of the deploy — which is exactly what the deploy did before
+        # it was fixed — in a copy of the tree, and requires the gate to
+        # notice.
+        #
+        # The gate is first required to PASS against an unmodified copy, and
+        # the failure has to be attributed to the check that the schema moved:
+        # a gate that failed for any other reason would otherwise satisfy
+        # every check below, including the ones that are supposed to prove it
+        # detects this particular defect.
+        run: bash hosted/tests/deploy-applies-migrations-negative.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
       - name: Two fixtures cannot share a stamp

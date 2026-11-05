@@ -1144,7 +1144,12 @@ module writes an audit row by hand.
   against a current schema is safe; restoring an old schema against current
   data is not.
 - The hosted deployment applies `standalone/sql/0000_supabase_shim.sql` first,
-  then the migrations.
+  then the migrations — at **boot**, by `brownhill-bootstrap.service`, and again
+  on **every deployment**, by `hosted/scripts/deploy-app.sh`. The deployment
+  applies them through the same runner, because a deploy that ships code
+  without its migrations ships code against a schema the database does not
+  have. It does so **before** the new build is swapped in, so a migration that
+  fails leaves the build that was serving in place, still serving.
 - **What has been applied is recorded**, in `public.schema_migrations` — see
   §8.1. The bootstrap is a systemd oneshot that runs on every boot, so it has
   to be a no-op against a database that is already provisioned, and it can

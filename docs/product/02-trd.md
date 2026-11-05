@@ -738,6 +738,81 @@ passes is not evidence that it can fail.
 works: the account a failed invite stranded is still adopted and still handed
 a working password.
 
+### D19 — The deployment applies the migrations, before it swaps the build
+
+**Decision.** `hosted/scripts/deploy-app.sh` applies the pending migrations
+through the **same** runner that applies them at boot
+(`hosted/bootstrap/brownhill-bootstrap.sh`), and it does so **before** the new
+build is swapped in. A migration that cannot apply stops the deploy.
+
+**Why.** The documented update path was
+
+```
+cd /opt/brownhill/repo && git pull origin main && ./hosted/scripts/deploy-app.sh
+```
+
+and it shipped code against a schema the database did not have. The deploy
+built the application, copied it into place and restarted the service, and
+never applied a migration — so the code and the schema disagreed from the
+moment the deployment finished, and the first anyone heard of it was the
+first person to use the feature the new migration belonged to. Migration 0088
+added `password_reset_requests`, the table the self-service password reset
+writes its throttle to, and the deployment of that feature answered
+
+```
+ERROR: relation "password_reset_requests" does not exist
+```
+
+to the one screen that exists so a locked-out person can get back in.
+
+**Why the same runner.** Two runners for one job are two runners to drift
+apart, and this repository has been bitten by that shape of thing more than
+once. The boot path and the deploy path now call the same script, against the
+same ledger.
+
+**Why the repository's own copy of the ledger.** The deploy applies **this**
+repository's migrations, so the ledger that records them has to be **this**
+repository's ledger. The installed copy at
+`/usr/local/lib/brownhill/schema-ledger.sh` may be from an older release, and
+an older ledger is an older ledger's idea of what to check.
+
+**Why the migrations run before the swap.** The other order is strictly worse:
+a migration that fails *after* the swap leaves the new code running against
+the old schema, which is the very failure this step exists to prevent. Before
+the swap, a failed migration leaves the previous build serving the previous
+schema, and the deploy says why it stopped. After the build has been proved
+good and before the swap, a broken build never changes the database either.
+
+**Why a failed migration is safe.** The ledger applies a migration and records
+it in **one** transaction, so a failure rolls the migration back with its
+ledger row. The database is left exactly as it was, and the ledger does not
+claim a migration that is not there.
+
+**Why the ledger is what makes this safe on every deploy.** A migration is
+applied at most once: a re-deploy applies nothing, a migration applied by hand
+is not applied again, and a migration whose **content** changed after it was
+applied is refused by name — the schema history is content-versioned and
+forward-only.
+
+**Rolling the code back is not rolling the schema back.** A deploy from an
+older commit applies nothing new — every migration in that older tree is
+already recorded — and undoes nothing: there is no down-migration, and the
+table a newer migration created is still there. The ledger also keeps its rows
+for migrations the older tree does not carry, so the history is not lost. §3.1
+of the launch plan says this to an operator, and
+`hosted/tests/deploy-applies-migrations.sh` proves it: its fourth phase
+deploys a tree that does not carry migrations 0088 and 0089 and requires the
+schema fingerprint, the table and the ledger's row count all to be unchanged.
+
+**The gate.** `hosted/tests/deploy-applies-migrations.sh` runs the **real**
+deploy, the **real** bootstrap, the **real** ledger library and the **real**
+migrations against a real `postgres:16`. Only the build, the service manager
+and the database client are stood in for, and the client forwards to the real
+`psql` inside the container. `hosted/tests/deploy-applies-migrations-negative.sh`
+takes the migration step out of a copy of the tree and requires the gate to
+fail on the schema check — with the deploy itself still working, so that the
+gate is not measuring the wrong thing.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)

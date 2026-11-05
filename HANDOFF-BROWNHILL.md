@@ -392,10 +392,11 @@ sudo bash -c 'cd /opt/brownhill/repo && git pull origin main \
 ```
 
 `deploy-app.sh` performs the whole application update: `pnpm install
---frozen-lockfile`, the standalone hosted build, copying the output into
-`/var/lib/brownhill/app`, and restarting `brownhill-next.service`.
+--frozen-lockfile`, the standalone hosted build, **applying the pending
+migrations**, copying the output into `/var/lib/brownhill/app`, and restarting
+`brownhill-next.service`.
 
-Two things it does that a hand-run build does not, and that are why the
+Three things it does that a hand-run build does not, and that are why the
 hand-run sequence deployed nothing:
 
 - **The build must be standalone.** `output: 'standalone'` is what produces
@@ -405,6 +406,16 @@ hand-run sequence deployed nothing:
 - **The output must be copied into `/var/lib/brownhill/app`.** Building in
   the repository and restarting the service leaves the service running the
   *previous* build.
+- **The pending migrations must be applied.** The code being deployed may need
+  a table, a column or a function that a migration creates, and the update path
+  used not to apply them — so the code went out against a schema the database
+  did not have. The first anyone heard of it was the first person to use the
+  feature the new migration belonged to. The deploy now runs the same
+  bootstrap that applies the schema at boot, and it does so **before** the new
+  build is swapped in: if a migration fails, the deploy stops, the failed
+  migration is rolled back with its ledger row, and the previous build stays
+  in place and keeps serving. What has been applied is recorded in the
+  migration ledger, so a re-deploy applies nothing.
 
 It also **checks the staged tree before it installs it**, and refuses if the
 deployed application would depend on the build checkout to resolve its own
@@ -579,9 +590,9 @@ Log results in `hosted/tests/chaos/RUNS.md`. They are the proof the failure-mode
 If a deploy goes wrong:
 
 1. **Stop further failures.** `systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer` — this freezes the running state without disrupting the DB.
-2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, then `./hosted/scripts/deploy-app.sh` — it builds, installs into `/var/lib/brownhill/app` and restarts the service. (The service runs `node server.js` from that directory, so a build without the copy leaves the old build in place.)
+2. **Restore the prior build.** `git log -5` to find the previous commit, `git checkout <sha>`, then `./hosted/scripts/deploy-app.sh` — it builds, applies the pending migrations, installs into `/var/lib/brownhill/app` and restarts the service. (The service runs `node server.js` from that directory, so a build without the copy leaves the old build in place.)
 3. **Only if the database is the problem**, use the UI at `/admin/restore` to replay the most recent good dump onto the live cluster. Take a fresh `pg_dump` first if you can (`pg_dump` through PostgREST works at `127.0.0.1:55430`).
-4. **Don't roll back the schema.** The 53 SQL migrations are content-versioned forward-only. Restoring an old application build against a current schema is safe; restoring an old schema build against the current application data is not.
+4. **Don't roll back the schema.** The 88 SQL migrations are content-versioned forward-only. Restoring an old application build against a current schema is safe; restoring an old schema build against the current application data is not. Rolling the code back does not roll the schema back either: the rollback's deploy applies **nothing** — the older commit's migrations are already in the ledger, and nothing is undone — so the schema stays exactly where the newer deployment left it.
 
 There is no automatic revert button. The paths above are exhaustive on purpose.
 

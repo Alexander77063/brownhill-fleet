@@ -192,13 +192,35 @@ not be reached by accident.
 ```
 1. systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer
 2. git log -5 → git checkout <sha>
-3. ./hosted/scripts/deploy-app.sh   (builds, installs into /var/lib/brownhill/app, restarts)
+3. ./hosted/scripts/deploy-app.sh   (builds, applies the pending migrations, installs into /var/lib/brownhill/app, restarts)
 ```
 
 Rolling the application back is a **build-and-install**, not a build: the unit
 runs `node server.js` from `/var/lib/brownhill/app`, so the standalone output
 has to be copied there. `deploy-app.sh` does both and keeps the build it
 replaced at `/var/lib/brownhill/app.previous`.
+
+**Step 3 also applies the pending migrations, and on a rollback that step
+applies nothing.** The older commit's migrations are already recorded in the
+ledger, so they are not applied again; and the ledger has no "unapply", so
+nothing is undone. The schema is left exactly where the newer deployment left
+it — the table migration 0088 added is still there after the rollback, along
+with everything else the newer deployment applied.
+
+**Rolling the code back does not roll the schema back.** This is the same
+rule as §3.2, and it is what makes the rollback safe: an older build running
+against a newer schema is a supported state, and the reverse is not. If a
+migration's **content** was ever changed after it was applied, the ledger
+refuses the deploy and names the file — the schema history is content-versioned
+and forward-only, so a rewritten migration is corrected by writing a new one,
+not by rewriting the old one.
+
+**The build is swapped in only after the migrations have applied.** If a
+migration fails, the deploy stops and says which one, the failed migration is
+rolled back with its ledger row, and the previous build is still on disk at
+`/var/lib/brownhill/app` — but the service is still **stopped**, because step
+1 stopped it and the deploy never got as far as the restart. Bring it back
+with `systemctl start brownhill-next.service`.
 
 ### 3.2 A bad database change
 

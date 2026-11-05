@@ -398,8 +398,45 @@ git pull origin main
 ```
 
 `deploy-app.sh` does the whole job: `pnpm install --frozen-lockfile`, the
-standalone hosted build, copying the output into `/var/lib/brownhill/app`
-(the systemd unit's `WorkingDirectory`), and restarting the service.
+standalone hosted build, **applying the pending migrations**, copying the
+output into `/var/lib/brownhill/app` (the systemd unit's `WorkingDirectory`),
+and restarting the service.
+
+**The deploy applies the migrations, and it applies them before the new build
+is swapped in.** It runs `hosted/bootstrap/brownhill-bootstrap.sh` — the same
+runner that applies the schema at boot — so there is one runner for one job,
+and it records what it applied in the ledger (`public.schema_migrations`). The
+ledger is what makes this safe to do on every deploy: a migration is applied at
+most once, so a re-deploy applies nothing, and a migration applied by hand is
+not applied again.
+
+This step was missing, and the update path above shipped code against a schema
+the database did not have. Migration 0088 added `password_reset_requests` —
+the table the self-service password reset writes its throttle to — and the
+deployment of that feature answered
+
+```
+ERROR: relation "password_reset_requests" does not exist
+```
+
+to the one screen that exists so a locked-out person can get back in.
+
+The order is deliberate. The migrations run **after** the build has been proved
+good and **before** the new build is in place, so:
+
+- a broken build never changes the database; and
+- a migration that fails leaves the previous build serving the previous
+  schema, rather than the new code running against a schema that does not
+  exist.
+
+A migration that fails is rolled back with its ledger row — the two are one
+transaction — so the database is left exactly as it was. The deploy stops,
+says why, and the build that was serving keeps serving.
+
+**Rolling the code back does not roll the schema back.** A deploy from an
+older commit applies nothing new — the ledger already records those
+migrations — and undoes nothing: there is no down-migration, and the tables
+the newer migrations created are still there.
 
 **Do not hand-run the build and restart the unit instead.** Two things make
 that sequence deploy nothing:
