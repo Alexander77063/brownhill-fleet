@@ -22,6 +22,8 @@
 export const PUBLIC_ROUTES = [
   ['/login', 'sign in'],
   ['/driver/login', 'driver sign in'],
+  ['/forgot-password', 'forgot password'],
+  ['/reset-password', 'reset password'],
   ['/accessibility', 'accessibility statement'],
   ['/terms', 'terms'],
   ['/privacy', 'privacy'],

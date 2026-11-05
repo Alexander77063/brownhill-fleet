@@ -22,7 +22,7 @@ export const metadata: Metadata = {
  * this page and the suite stop agreeing. Do not upgrade the wording to a full
  * conformance claim until the assistive-technology pass has been completed.
  */
-const STATEMENT_UPDATED = '1 November 2026';
+const STATEMENT_UPDATED = '4 November 2026';
 
 export default function AccessibilityPage() {
   return (
@@ -65,7 +65,7 @@ export default function AccessibilityPage() {
           <p className="mt-2">
             We completed a full accessibility review, first on 31 July 2026 and re-verified on{' '}
             {STATEMENT_UPDATED} when the runtime pass was restored to this deployment: both the
-            source code and the running application — 95 automated WCAG scans across 83 pages,
+            source code and the running application — 97 automated WCAG scans across 85 pages,
             in a real browser. The review remediated colour contrast across the light theme,
             added a skip link and proper table semantics throughout, gave every form control an
             accessible name, introduced announced status messages, fixed pages that scrolled

@@ -294,6 +294,19 @@ export default function LoginPage() {
                       {showPassword ? 'Hide' : 'Show'}
                     </button>
                   </div>
+                  {/* The way back, for the builds that have one.
+                      Only where the password is OUR password: under Supabase
+                      Auth the recovery link is Supabase's to send, and this
+                      endpoint is a 404 on that build. So the link appears only
+                      for local auth — and only in password mode, where it
+                      belongs. */}
+                  {LOCAL_AUTH && (
+                    <p className="mt-2 text-xs text-muted">
+                      <Link href="/forgot-password" className="text-gold-bright hover:underline">
+                        Forgotten your password?
+                      </Link>
+                    </p>
+                  )}
                 </div>
               )}
               <Button type="submit" disabled={busy} className="w-full">

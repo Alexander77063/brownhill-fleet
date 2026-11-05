@@ -80,6 +80,7 @@ const THE_HELPER = 'src/lib/auth/client-ip.ts';
  * header.
  */
 const MUST_ASK_THE_HELPER = [
+  'src/app/api/auth/local/forgot-password/route.ts',
   'src/app/api/auth/local/otp/request/route.ts',
   'src/app/api/sign/[token]/submit/route.ts',
   'src/lib/actions/legal.ts',

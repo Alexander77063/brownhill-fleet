@@ -110,22 +110,36 @@ export default function OwnerLoginPage() {
           </Button>
         </div>
 
-        {/* The recovery route, said plainly.
+        {/* The recovery route, and this time it is a real one.
             This used to be a "Forgot password?" link to
             /owner/settings/security — a page behind the owner layout, so an
             owner who had forgotten their password was bounced straight back
             here, in a loop. Owners normally sign in with a code sent to their
-            mobile number, so that is the route that actually works; the
-            operator resets a password for anyone who does use one. */}
+            mobile number, so that route is still offered; and an owner who
+            does use a password can now reset it themselves, without waiting
+            for the operator.
+
+            The links are UNDERLINED, not underlined-on-hover. They sit inside
+            a sentence, so they are links in a block of text, and WCAG 1.4.1
+            (Use of Color) says such a link must be distinguishable without
+            relying on colour. This page is closed on the hosted profile, so
+            the accessibility suite cannot scan it — the same defect on
+            /driver/login WAS caught by that suite on 2026-11-04, and the
+            fix is applied here too rather than waiting for the page to be
+            scanned. */}
         <div className="mt-5 rounded-[var(--radius)] border border-hair-soft bg-[rgba(255,255,255,0.03)] p-3">
           <p className="text-sm text-parchment">Forgotten your password?</p>
           <p className="mt-1 text-xs text-muted">
             Vehicle owners normally sign in with a 6-digit code sent to your mobile number.{' '}
-            <Link href="/login" className="text-gold-bright hover:underline">
+            <Link href="/login" className="text-gold-bright underline">
               Sign in with a code
             </Link>
             . If that number has changed, ask the fleet operator to update it. If you
-            normally sign in with a password, ask them to reset it for you.
+            normally sign in with a password,{' '}
+            <Link href="/forgot-password?audience=owner" className="text-gold-bright underline">
+              reset it here
+            </Link>{' '}
+            and we will email a link to the address on file.
           </p>
         </div>
       </form>

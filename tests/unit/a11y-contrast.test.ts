@@ -19,7 +19,7 @@
 //
 // The script has since been renamed to `pnpm test:a11y:contrast`, because the
 // name `pnpm test:a11y` now belongs to the runtime axe pass — a browser, a
-// running stack and 95 axe scans across 83 pages. This file is the token
+// running stack and 97 axe scans across 85 pages. This file is the token
 // arithmetic underneath it. The design system's wording was corrected to
 // match.
 //

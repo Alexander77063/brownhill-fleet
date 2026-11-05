@@ -3,7 +3,7 @@
 Tokens, components, and voice. One source: `src/app/globals.css` and
 `src/components/ui/index.tsx`. Everything else references them.
 
-*Status: current as of 2026-10-31. Read from `globals.css`,
+*Status: current as of 2026-11-05. Read from `globals.css`,
 `src/components/ui/index.tsx`, and the sign-in and recovery surfaces.*
 
 ---
@@ -275,9 +275,9 @@ expense. It is the voice of a memorandum.
 
 ### 6.2 Credentials and recovery
 
-The sign-in pages and the operator's password reset introduced a new class of
-message — credentials, lockouts and temporary secrets — and they follow four
-rules.
+The sign-in pages, the operator's password reset and the self-service
+password reset introduced a new class of message — credentials, lockouts and
+temporary secrets — and they follow five rules.
 
 - **Never say which half of the pair was wrong.** "Email or password is
   wrong." A message that says "no such account" hands out the customer list.
@@ -297,6 +297,13 @@ rules.
   account. Nothing has changed — try again" — and never claims the person was
   not a member, because a database that could not be reached is not a
   membership that does not exist.
+- **One answer for every account state.** "If that address has an account
+  with a password, a reset link is on its way. It is good for 30 minutes." —
+  the same sentence whether the address is on file, is not on file, or holds
+  an account that signs in with a code instead of a password. A page that says
+  "no such account" hands out the customer list; a page that says "we sent
+  you a link" when it sent nothing is a liar. Both are worse than saying the
+  same true thing every time.
 
 The alphabet of a spoken secret is part of the voice: the temporary password
 avoids `1 i l O o`, because it is read out over the telephone and those are

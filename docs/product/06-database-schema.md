@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-11-01. Read from `supabase/migrations/` (85 files)
+*Status: current as of 2026-11-05. Read from `supabase/migrations/` (87 files)
 and `supabase/seed.sql`. The most recent migration is
-`0086_accounting_gl_backfill.sql`.*
+`0088_password_reset.sql`.*
 
 ---
 
@@ -988,6 +988,48 @@ is a `text` column with a CHECK over `in_stock`, `allocated`, `fitted`,
 exception**: it is free text with no CHECK, and the application writes
 `pending`, `sent`, `skipped` or `failed`.
 
+### 6.1 The self-service password reset's own state (migration 0088)
+
+Two pieces of state, in two different schemas, because they answer two
+different questions.
+
+**In `auth`, on the credential row** — `auth.local_credentials` gains two
+columns:
+
+| Column | What it holds |
+| --- | --- |
+| `reset_token_hash` | The **SHA-256** of the live reset token. Only the hash is stored: the database sits on the customer's own box, and a database that leaks must not hand out live reset links |
+| `reset_expires_at` | When the token stops working. The application refuses a token whose expiry has passed, and a token with **no** expiry is treated as **expired** — a NULL read as "no limit" would be a link that never dies |
+
+A partial index (`local_credentials_reset_token_idx`) covers the lookup, which
+is by hash and never by the token itself. There is **one live token per
+account**: a second request overwrites the first, so a link that was already
+forwarded stops working.
+
+**In `public`, the throttle's own table** — `password_reset_requests` records
+who asked for a reset and from where, so the endpoint can be throttled the way
+the one-time-code endpoint already is. Without it the endpoint is a mail
+cannon: a script can put an unlimited number of reset emails into one
+person's inbox.
+
+Two things about that table are deliberate. **The rows are written only when a
+link actually goes out** — an address that is not on file produces no mail, so
+counting it would let a stranger burn a legitimate user's allowance by
+guessing their address, and would let the throttle itself become an oracle for
+which addresses are real. And the table is **revoked from `anon`,
+`authenticated` and `service_role`**, with row-level security enabled: it is
+reachable only over the application's own direct database connection, never
+through the API.
+
+The columns are added **idempotently**, and the whole block is guarded. The
+shim already declares them, but `create table if not exists` only ever
+CREATES the table — on a box that applied an older shim the columns never
+arrive, and the application then fails with 42703 on the one screen that
+exists so a locked-out person can get back in. And `auth.local_credentials`
+does not exist at all on a Supabase-hosted database — there, Supabase Auth
+owns the passwords — so the block checks first and says so in a notice rather
+than failing the whole migration run and skipping every migration after it.
+
 ## 7. Operational state
 
 | Table | What it is |
@@ -1066,7 +1108,7 @@ it (§7.1), which is why the first-run decision is made server-side.
 
 ## 8. Migrations
 
-- 84 files, `0001`–`0085` (there is no `0057`; the number was never used).
+- 87 files, `0001`–`0088` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build

@@ -22,7 +22,7 @@ with the reasons they were made.
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
 | Tests | Vitest | 2.1.9 | `pnpm test` — 712 passing, 0 skipped, 56 files. The database-backed ones need `DATABASE_URL` |
-| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 95 scans across 83 pages of the hosted build |
+| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 97 scans across 85 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
 | Backups | Backblaze B2 (S3-compatible) via `@aws-sdk/client-s3` | 3.1094.0 | Off-host copy of the nightly dump |
@@ -108,6 +108,50 @@ The split exists so that **the maths and the rendering are testable without a
 server** — and so the on-screen report, the downloaded document and the email
 are literally the same code path. They cannot disagree, because there is only
 one of them.
+
+The **self-service password reset** follows the same discipline, with the
+decision half separated from the database so that every branch is testable
+without one:
+
+| Layer | File | Depends on |
+| --- | --- | --- |
+| **Request half** | `src/lib/auth/password-reset-request.ts` | its store and its delivery function, both injected |
+| **Token half** | `src/lib/auth/password-reset-token.ts` | its store, injected |
+| **Policy** | `src/lib/auth/password-reset-policy.ts` | nothing — and it is browser-safe |
+| **Audit** | `src/lib/auth/password-reset-audit.ts` | its writer, injected |
+| **Local store** | `src/lib/auth/password-reset-local-store.ts` | the direct Postgres connection |
+| **Throttle** | `src/lib/auth/password-reset-throttle.ts` | the same connection |
+| **Delivery** | `src/app/api/auth/local/forgot-password/route.ts`, `src/app/api/auth/local/reset-password/route.ts` | the halves above |
+
+The policy module is deliberately free of Node imports: the token's lifetime,
+the minimum password length, the neutral message and the mapping from a role
+to the sign-in page all live in one place, and the browser reads the same file
+the server does. A second copy of the neutral message is a second copy that can
+drift, and a drifted message is how a page stops answering the same way for
+every account state — which is the one property the whole feature exists to
+hold.
+
+The mapping from a role to a sign-in page is **one function**, and it takes the
+build as a required argument: `resetAudienceOnBuild(role, ownerPortal)`. That
+argument is required on purpose. The email, the reset page and the redemption
+each worked the door out separately once, and they drifted — the email ignored
+the build and pointed an owner at a page that build does not serve, the page
+kept a private copy of the rule, and the redemption answered only "ok" so the
+browser used whatever the link had said. A caller that forgets to say which
+build it is on now fails to compile rather than guess, because a guess is what
+produced the drift.
+
+The **audit** module is separate from the token half for the same reason the
+policy is: the row it writes has to be right on its own terms, and it can be
+proved without a database. It is handed its writer — the route hands it
+`appendAudit`, the one place an audit row is written — so the rule can be
+tested without one, and so a failed write is reported rather than thrown at a
+person whose password has already been changed.
+
+The store speaks **SQL rather than PostgREST**, for the same reason
+`src/lib/auth/local-store.ts` does: `auth.local_credentials` is revoked from
+`anon`, `authenticated` and `service_role`, so no HTTP caller can reach it
+whatever role they claim.
 
 ### 3.3 The scheduled jobs (decision D17)
 
@@ -735,7 +779,7 @@ order, so the board's figure and the investor's figure are the same figure.
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
 | Contrast | `pnpm test:a11y:contrast` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
-| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **95 scans across 83 pages**, including the 320 px reflow pass and the tokenised signing route |
+| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **97 scans across 85 pages**, including the 320 px reflow pass and the tokenised signing route |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 The three accessibility suites — form audit, lint and contrast — all run in the
@@ -750,7 +794,7 @@ in the `hosted-smoke` workflow either — that workflow's trigger paths are the
 schema, and adding `src/**` to them would drag the migration-replay job into
 every interface change. The `a11y` workflow builds the stack from
 `hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
-scans **83 distinct pages of the hosted deployment in 95 analyses** — ten of
+scans **85 distinct pages of the hosted deployment in 97 analyses** — ten of
 those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The
 coverage numbers are computed rather than typed: `tests/a11y/routes.ts` holds
 the route lists and `tests/unit/a11y-coverage.test.ts` counts them, checks that

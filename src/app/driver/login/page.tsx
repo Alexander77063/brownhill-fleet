@@ -117,21 +117,35 @@ export default function DriverLoginPage() {
           </Button>
         </div>
 
-        {/* The recovery route, said plainly.
-            This used to be a "Forgot password?" link to /driver/profile — a
-            page behind the driver layout, so a driver who had forgotten their
-            password was bounced straight back here, in a loop. And the link
+        {/* The recovery route, and this time it is a real one.
+            This used to say "ask your dispatcher to reset it", and the link
             labelled "talk to your dispatcher" pointed at /login, which is not
-            a dispatcher. Both were dead ends wearing the costume of help.
-            The truth is that a driver's password is reset by the operator,
-            from the driver's record in the operations app. */}
+            a dispatcher. Before that it linked "Forgot password?" to
+            /driver/profile — a page behind the driver layout, so a driver who
+            had forgotten their password was bounced straight back here, in a
+            loop.
+            Now the driver can do it themselves: the link goes to a page that
+            is not behind this layout, and the reset link it sends arrives at
+            the address on file.
+
+            The link is UNDERLINED, not underlined-on-hover. It sits inside a
+            sentence, so it is a link in a block of text, and WCAG 1.4.1
+            (Use of Color) says a link in a block of text must be
+            distinguishable without relying on colour — a colour that changes
+            on hover is not available to somebody who cannot tell gold from
+            grey, and an underline that appears on hover is not a distinction
+            at all until the pointer is over it. axe calls this
+            `link-in-text-block`, and it caught this page on 2026-11-04,
+            when the accessibility suite was run against the hosted stack
+            after this recovery route was added. */}
         <div className="mt-5 rounded-[var(--radius)] border border-hair-soft bg-[rgba(255,255,255,0.03)] p-3">
           <p className="text-sm text-parchment">Forgotten your password?</p>
           <p className="mt-1 text-xs text-muted">
-            Ask your dispatcher to reset it. They open your record in the operations
-            app and press <span className="text-cream">Reset password</span>, then read
-            you a temporary password. We cannot reset it from this page — that is
-            what would let anyone take over a driver&apos;s account.
+            <Link href="/forgot-password?audience=driver" className="text-gold-bright underline">
+              Reset it yourself
+            </Link>{' '}
+            — we will email a link to the address you were invited with. If the
+            address has changed, ask your operator to update it.
           </p>
         </div>
       </form>

@@ -217,7 +217,11 @@ export async function resetMemberPasswordAction(
     detail: { role: outcome.member.role, emailed: outcome.emailed },
   });
 
-  revalidatePath('/admin/members');
+  // The page that shows the member is `/admin/members/<id>` — there is no
+  // `/admin/members` list page, so revalidating that path was a no-op that
+  // left the screen the operator is looking at showing the old password
+  // state. The driver's own page is revalidated by the same action.
+  revalidatePath(`/admin/members/${userId}`);
   revalidatePath('/ops/drivers');
 
   return {

@@ -109,6 +109,54 @@ const nextConfig: NextConfig = {
   // (Note: `src/instrumentation.ts` is auto-detected by Next 15 — no flag
   // needed for the daily-rent-overdue run to register at boot.)
   serverExternalPackages: ['web-push', 'https-proxy-agent'],
+  /**
+   * The pages whose URL carries a secret send no referrer.
+   *
+   * WHY
+   * ---
+   * A page can be linked FROM. The browser sends the page's own URL as the
+   * referrer of a later request, and the query string is part of that URL:
+   *
+   *   GET /reset-password?token=THE_TOKEN     200
+   *   GET /somewhere-else                      200
+   *     Referer: https://fleet.example/reset-password?token=THE_TOKEN
+   *
+   * A cross-origin referrer is already reduced to its origin by the
+   * browser's default policy, which is why this has never been seen in the
+   * wild. But a SAME-origin request sends the whole thing — and every page
+   * of this product is on one origin. So a token in the query string arrives
+   * at the next request, and at the access log of that request.
+   *
+   * The reset token no longer goes in the query string: it rides in the URL
+   * FRAGMENT, which the browser does not send to the server at all — not in
+   * the request, not in a referrer, not in a log. So the referrer rule for
+   * the reset page no longer carries the token, and is kept as the layer
+   * underneath: it costs nothing, and it is what would hold if a secret
+   * ever reached that page's URL by another road.
+   *
+   * The signing token is in the PATH, and a path IS part of the referrer.
+   * That one is still live, and the rule for it is not optional.
+   *
+   * `Referrer-Policy: no-referrer` on the pages that carry a secret closes
+   * it. The pages are named rather than a blanket policy, because the
+   * referrer is useful on the pages that do not carry one.
+   */
+  async headers() {
+    return [
+      {
+        // The reset page. Its token is in the FRAGMENT now — this is the
+        // layer underneath, kept so the page has no referrer at all.
+        source: '/reset-password',
+        headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+      },
+      {
+        // The signing token is in the PATH, so the referrer carries it just
+        // as the reset token used to be carried.
+        source: '/sign/:path*',
+        headers: [{ key: 'Referrer-Policy', value: 'no-referrer' }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
