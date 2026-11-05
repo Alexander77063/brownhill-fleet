@@ -183,7 +183,28 @@ export async function requireServiceableSubscription(
   home: "/owner" | "/ops",
 ): Promise<void> {
   if (!deploymentProfile().subscriptionBilling || !payFirst()) return;
-  if (pathname && SERVICEABLE_ALLOWLIST.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return;
+
+  // A path we do not know is not a path we can refuse.
+  //
+  // The guard redirects to `${home}/billing`, and that page is on the
+  // allowlist — but it is on the allowlist only because the allowlist is
+  // checked against the path we are ON. With no path, the guard cannot tell
+  // that the page it is about to redirect TO is one of the pages it must not
+  // redirect away from: it would redirect to `/ops/billing`, the billing page
+  // would run this same guard, and the tenant would be redirected to
+  // `/ops/billing` forever.
+  //
+  // So an unknown path does not redirect. A guard that cannot prove its
+  // redirect terminates must not redirect: an infinite redirect is a hard
+  // outage, and a tenant being shown one page is not.
+  if (pathname === null) {
+    console.error(
+      '[entitlements] the pay-first guard was called without a path; it did not redirect',
+    );
+    return;
+  }
+
+  if (SERVICEABLE_ALLOWLIST.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return;
   const { status } = await subscriptionStatus();
   if (isServiceable(status)) return;
   redirect(`${home}/billing?notice=payment-required`);

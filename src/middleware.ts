@@ -195,6 +195,29 @@ function carriesItsOwnCredential(pathname: string): boolean {
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
+  // The pathname, forwarded to the server.
+  //
+  // A server layout cannot see the URL, and the pay-first guard needs it. The
+  // guard keeps a tenant that has not paid on the billing page, and the fleet
+  // and import pages it needs to pay from: without the path it cannot tell
+  // that the page it is about to redirect TO is one of the pages it must not
+  // redirect away from, so it redirects to `/ops/billing`, the billing page
+  // runs the same guard, and the tenant is redirected to `/ops/billing`
+  // forever.
+  //
+  // The header used to be set by `src/lib/supabase/middleware.ts`, which
+  // nothing called: it was a second middleware that the application had
+  // replaced with layout-level guards and never removed. A guard reading a
+  // header nobody sets is a guard that is not running.
+  //
+  // It is set UNCONDITIONALLY, and it OVERWRITES whatever the client sent.
+  // A client that could name its own `x-pathname` would walk straight past
+  // the pay-first gate; here the value is always the path the server itself
+  // resolved.
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set('x-pathname', pathname);
+  const next = () => NextResponse.next({ request: { headers: requestHeaders } });
+
   // The deployment gate runs FIRST, before everything else in this function —
   // including the `customerOps` early return below.
   //
@@ -230,7 +253,7 @@ export async function middleware(req: NextRequest) {
 
   // Only a box the customer operates has the operator surfaces this middleware
   // protects. On every other profile it does nothing at all.
-  if (!deploymentProfile().customerOps) return NextResponse.next();
+  if (!deploymentProfile().customerOps) return next();
 
   if (await readDraining()) {
     if (!isAdminPath(pathname)) {
@@ -248,12 +271,12 @@ export async function middleware(req: NextRequest) {
   // This is AFTER the drain check on purpose: a restore closes the database
   // under the application, and the cron writes to it, so a job must not run
   // into a half-restored database.
-  if (carriesItsOwnCredential(pathname)) return NextResponse.next();
+  if (carriesItsOwnCredential(pathname)) return next();
 
   const auth = req.headers.get('authorization');
-  if (!auth?.startsWith('Bearer ')) return NextResponse.next(); // not yet authed; downstream 401s
+  if (!auth?.startsWith('Bearer ')) return next(); // not yet authed; downstream 401s
   const token = auth.slice('Bearer '.length).trim();
-  if (!token) return NextResponse.next();
+  if (!token) return next();
 
   const claims = parseJwt(token);
   if (!claims) {
@@ -264,7 +287,7 @@ export async function middleware(req: NextRequest) {
     if (pathname.startsWith('/api/')) {
       return NextResponse.json({ error: 'bad_token' }, { status: 401 });
     }
-    return NextResponse.next();
+    return next();
   }
 
   // `/t/<tenant>/…` names the tenant in the path. A token for another tenant
@@ -274,7 +297,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.json({ error: 'tenant_mismatch' }, { status: 403 });
   }
 
-  return NextResponse.next();
+  return next();
 }
 
 export const config = {

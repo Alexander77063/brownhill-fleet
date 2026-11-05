@@ -1,3 +1,29 @@
+/**
+ * NOT THE APPLICATION'S MIDDLEWARE.
+ *
+ * `src/middleware.ts` is. Next.js loads exactly ONE middleware, from the
+ * root's `src/`, and this file is not it.
+ *
+ * Nothing calls `updateSession` below. It is dead: the session and
+ * portal-isolation rules it enforced were moved into the layouts
+ * (`requireRole`), and `tests/unit/signin-reachability.test.ts` holds that
+ * arrangement in place. Wiring it back up would put a second, contradictory
+ * session gate in front of the application — and it would bring back the
+ * ungated `/request-access` and `/platform` surfaces that
+ * `tests/unit/deployment-gate.test.ts` holds closed.
+ *
+ * IT MATTERS BECAUSE IT LOOKS AUTHORITATIVE
+ * -----------------------------------------
+ * This file was the only place in the repository that set the `x-pathname`
+ * request header, which the pay-first guard reads
+ * (`src/lib/entitlements/index.ts`). Because nothing called it, the header
+ * was never set, the guard was asked about a path it did not have, and a
+ * tenant that had not paid was redirected to the billing page — which runs
+ * the same guard — forever.
+ *
+ * `src/middleware.ts` sets the header now, and
+ * `tests/unit/hosted-middleware.test.ts` holds it to doing so.
+ */
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 import { deploymentProfile } from '@/lib/deployment/profile';
