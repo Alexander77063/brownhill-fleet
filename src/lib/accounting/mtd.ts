@@ -112,14 +112,38 @@ export interface MtdConfig {
 }
 
 /**
+ * The address HMRC sends the operator's browser back to.
+ *
+ * Null when the install does not know its own public address.
+ *
+ * It used to fall back to `http://localhost:3000`, which produced a redirect
+ * URI that can never work: HMRC would send the operator's browser to their
+ * own machine, where nothing is listening. The failure was silent until the
+ * moment somebody clicked "Connect to HMRC" — which is the worst possible
+ * moment to discover that the install does not know its own name. An install
+ * that cannot say where it lives is not connected, and says so.
+ *
+ * `NEXT_PUBLIC_APP_URL` is the deployment's own address, written by
+ * `hosted/bootstrap/write-app-env.sh` from the box's FQDN.
+ */
+function mtdRedirectUri(): string | null {
+  const explicit = process.env.HMRC_MTD_REDIRECT_URI?.trim();
+  if (explicit) return explicit;
+  const base = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (!base) return null;
+  return `${base.replace(/\/+$/, '')}/api/v1/accounting/mtd/callback`;
+}
+
+/**
  * The HMRC application credentials this install uses.
  *
  * These are install-level, not tenant-level: the HMRC app registration
  * belongs to the Brownhill installation. A tenant-specific client id can be
  * supplied per connection, but the secret never leaves the host.
  *
- * Returns null when the install has not been given credentials — the UI says
- * so plainly instead of offering a button that cannot work.
+ * Returns null when the install has not been given credentials, or does not
+ * know its own public address — the UI says which of the two it is instead
+ * of offering a button that cannot work.
  *
  * The client id and the secret are read by `readHmrcConfig`, so there is one
  * place that knows which environment variables carry them. This used to read
@@ -129,15 +153,39 @@ export interface MtdConfig {
 export function readMtdConfig(): MtdConfig | null {
   const config = readHmrcConfig();
   if (!config) return null;
-  const redirectUri =
-    process.env.HMRC_MTD_REDIRECT_URI?.trim() ||
-    `${(process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').replace(/\/+$/, '')}/api/v1/accounting/mtd/callback`;
+  const redirectUri = mtdRedirectUri();
+  if (!redirectUri) return null;
   return {
     clientId: config.clientId,
     clientSecret: config.clientSecret,
     redirectUri,
     baseUrl: config.baseUrl,
   };
+}
+
+/**
+ * Why this install cannot connect to HMRC, in words.
+ *
+ * Two different misconfigurations produce the same null from `readMtdConfig`,
+ * and they are fixed in different places: the client credentials live in the
+ * environment, and the public address may be missing entirely. An operator
+ * who is told only "not configured" will set the credentials and press the
+ * button again, and be refused again.
+ */
+export function mtdConfigProblem(): string | null {
+  if (!readHmrcConfig()) {
+    return (
+      'No HMRC application is registered on this installation. Set HMRC_MTD_CLIENT_ID and ' +
+      'HMRC_MTD_CLIENT_SECRET in the app environment.'
+    );
+  }
+  if (!mtdRedirectUri()) {
+    return (
+      'This installation does not know its own public address, so HMRC has nowhere to send the ' +
+      'operator back to. Set NEXT_PUBLIC_APP_URL (or HMRC_MTD_REDIRECT_URI) in the app environment.'
+    );
+  }
+  return null;
 }
 
 /**

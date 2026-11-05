@@ -110,6 +110,60 @@ jobs:
         # exists to catch, and requires it to fail on the right check each
         # time.
         run: bash hosted/tests/mtd-env-wiring-negative.sh
+      - name: The operator's identity reaches the legal pages
+        # The legal pages publish the operator's own identity — the company
+        # that runs the service, its registration number, its registered
+        # office, where to write. They used to publish somebody else's: on a
+        # box the customer operates, the privacy policy named a company with
+        # nothing to do with them and an address that did not exist.
+        #
+        # That identity is eight environment variables, and FOUR files have
+        # to agree on their names: the application reads them, the installer
+        # writes them, the operator's template shows them, and the systemd
+        # unit loads the file. A name spelled one way in the application and
+        # another in the installer does not fail — it is ignored, and the
+        # legal page omits the clause forever, with nothing saying why. It is
+        # the same class of fault as issue #120, in a different file.
+        run: bash hosted/tests/legal-env-wiring.sh
+      - name: The operator-identity gate can fail
+        # A gate that cannot fail is not a gate. This runs it against five
+        # copies of the tree, each carrying one of the faults the gate exists
+        # to catch — the unit not loading the file, the unit making it
+        # required, the installer not writing it, the application reading a
+        # name nobody writes, and the operator's template losing one — and
+        # requires it to fail on the right check each time.
+        run: bash hosted/tests/legal-env-wiring-negative.sh
+      - name: The password reset is covered at the edge
+        # The self-service password reset was built as an application
+        # feature and the edge knew nothing about it. The two reset
+        # endpoints were not rate limited at all — every other endpoint that
+        # takes a credential sits behind `limit_req zone=login`, and these
+        # two fell through to the catch-all, which has no limit. The caller's
+        # address was forwarded in a form the caller could write to, and the
+        # reset token was going into the access log, because nginx's
+        # built-in `combined` format logs the whole request line, query
+        # string and all.
+        #
+        # The gate holds both the production configuration and the one the
+        # compose stack runs: the reset endpoints are limited, the client
+        # address is the one nginx saw, and the log records the path but
+        # never the query string.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/nginx/reset-endpoints.sh
+      - name: The edge gate can fail
+        # A gate that cannot fail is not a gate. This breaks the nginx
+        # configuration on purpose — a deleted limit, a client-chosen
+        # address, an appended forwarded address, a log format that records
+        # the request line, an unredacted signing token, and a dev
+        # configuration left behind — one defect at a time, each in a fresh
+        # copy of the tree, and requires the gate to NOTICE every one of
+        # them.
+        #
+        # It runs against an unmodified copy first and requires that to
+        # pass, so a gate broken for any reason at all cannot satisfy the
+        # checks below.
+        run: bash hosted/tests/nginx/reset-endpoints-negative.sh
       - name: The credential files are never readable by anybody else
         # The installer writes the box's credentials: the database superuser
         # password, the JWT signing secret, the HMAC key the first-run setup

@@ -3,7 +3,7 @@
 Every surface, every actor, end to end — including what happens when it goes
 wrong.
 
-*Status: current as of 2026-10-31. Reviewed against `src/app/**`,
+*Status: current as of 2026-11-05. Reviewed against `src/app/**`,
 `src/components/shell/nav.ts`, `src/lib/iam.ts`, `src/lib/auth.ts`,
 `src/lib/deployment/signin-modes.ts`, `src/lib/auth/password-reset.ts`.*
 
@@ -140,11 +140,49 @@ Sign in → /api/auth/local/signin (HS256 JWT, local PostgREST)
 
 ### 2.4 Getting back in when the password is forgotten
 
-There is no self-service password reset on any local build, and there is not
-supposed to be: a reset link emailed to an address the person cannot reach
-re-creates the problem it is meant to solve, and an in-app "reset" form on
-the sign-in page is a takeover waiting to happen. **The recovery route is the
-operator, in the operations app.**
+There are **two** routes, and which one applies depends on one thing: whether
+the address on file can receive mail.
+
+**The self-service route** — the one that works without the office, and the
+one anybody with a working address on file should be able to use:
+
+```
+A driver, member or owner cannot sign in
+  → they open /forgot-password  (linked from every sign-in page; no session needed)
+  → they type the address they sign in with
+  → the app sends a link to the address ON FILE — never to the one they typed
+  → the link opens /reset-password?audience=…#token=… — the token rides in the
+    FRAGMENT, which the browser never sends to the server
+  → they choose a new password of at least 12 characters
+  → the password is changed and the link is spent
+  → the reset is audited, under every tenant the account belongs to
+  → they are sent to the sign-in page that matches their role READ NOW —
+    not the role the link named, which can be half an hour old
+```
+
+The rules the self-service reset holds to:
+
+| Rule | Why |
+| --- | --- |
+| The link goes to the address **on file**; the typed address only ever *selects* the account | Otherwise a stranger can have a reset link sent to an address they control and read the token out of the inbound mail |
+| The answer is **the same for every account state** — one message, one HTTP shape, one throttle | A different answer for "no such account" turns the page into a way of enumerating who holds an account here, and the person most likely to run that is the person trying to take one over |
+| Only the **hash** of the token reaches the database | The database is on the customer's own box, and a database that leaks must not hand out live reset links |
+| The token rides in the URL **FRAGMENT**, never in the query string | A query string is the one part of a URL everything copies about: the browser's history, the address bar, every log that records the request line, and the `Referer` of the next request the page makes. The fragment is not sent to the server at all — not in the request, not in a referrer, not in a log — so the token in it is a secret the box never sees. The browser reads it, posts it in the **body** of the redemption, and takes it out of the address bar. It is held by `tests/unit/reset-token-transport.test.ts`, which reads the source of every module under `src/` and fails if one writes a token into a query string. The **audience** stays in the query string, because it is not a secret: it chooses between three sign-in pages this application serves, and the server still works it out with the same rule the email and the redemption use |
+| The link is good for **30 minutes**, is **single-use**, and a second request replaces the first | A link that was already forwarded would otherwise keep working for the whole of its window |
+| A token with **no expiry** is treated as **expired**, not as unlimited | A NULL expiry read as "no limit" is a link that never dies |
+| The new password is set and the token spent in **one** statement, **conditional on the token being redeemed still being the live one** | Two statements leave a window in which the password has changed but the link still works. A write that is not conditional on the token leaves the same window open to a redemption that is in flight at that moment — two people holding the same forwarded link could both be told "your password has been changed", and the second one's password would be the one that stood. This was the defect the security review of 2026-11-04 found: the write named the account and not the token, so it spent whatever token the row held. It is now proved against a real Postgres by `tests/integration/auth/password-reset-single-use.test.ts`, which fails without the condition |
+| The redemption takes the account's **row locks first** | So it cannot interleave with a sign-in verifying the old password, and the two cannot disagree about what the password is |
+| The door is worked out from the role read at the **redemption**, not from the link | The link can be half an hour old, and the role can have changed in that time. The redemption reads the account's role as it stands and answers with the door that role belongs at; the browser uses that answer, not the one the link carried |
+| A vehicle owner goes to the **owner** door only on a build that **has** an owner portal | Everywhere else the staff door is the only door they have. The email used to point an owner at `/owner/login` on a build that does not serve it — a 404, in the feature built to end dead ends |
+| The email, the reset page and the redemption ask the **same** rule | They each worked it out separately and drifted: the email ignored the build, the page kept a private copy of the rule, and the redemption answered only "ok". The rule lives in `src/lib/auth/password-reset-policy.ts` and takes the build as a required argument, so a caller that forgets to say which build it is on fails to compile rather than guess |
+| Every reset is **audited** (`member.password_reset`), filed under **every** tenant the account belongs to | The operator's reset was audited and the self-service one was not: it changed a password and wrote nothing, so the trail had no record of the one thing a person does to their own account that an administrator might have to answer for. This was the defect the security review of 2026-11-04 found. One credential opens the account in every tenant the person belongs to, so the reset happened in every one of them, and `audit_log.tenant_id` is NOT NULL — a row is filed in each |
+| The audit row names **the person**, and says the reset was **self-service** | They proved control of the address on file by reading the link that was sent there. The service principal is deliberately not a user, and an audit row attributing a password reset to a named employee would be a lie |
+| The new password must be at least **12 characters**, and the two fields must match | The rule the application already enforces on its own passwords |
+| A reset **clears the lockout** along with the password | A reset is a recovery path; an account locked out for too many attempts must not stay locked out after it |
+| Both pages live **outside** the portal layouts | A recovery route under a session-gated layout is unreachable for exactly the people who need it — the same loop as the old "Forgot password?" links |
+
+**The operator route** — for anybody whose address on file cannot receive
+mail, and for the operator's own account:
 
 ```
 A driver or member cannot sign in
@@ -157,7 +195,7 @@ A driver or member cannot sign in
   → the person signs in and changes it from their profile page
 ```
 
-The rules the reset holds to:
+The rules the operator reset holds to:
 
 | Rule | Why |
 | --- | --- |
@@ -174,12 +212,15 @@ The rules the reset holds to:
 | A failed **read** changes nothing, and is reported as a failure | The checks that decide whether one operator may open another person's account must never fail open. A database that could not be reached is not a table that happened to be empty |
 | Every reset is **audited** (`member.password_reset`) | An audit trail for a change that hands over an account |
 
-Both portal sign-in pages say so plainly. Each used to carry a "Forgot
+Every sign-in page now says which route applies. Each used to carry a "Forgot
 password?" link pointing at a page behind its own layout — `/driver/login` →
 `/driver/profile`, `/owner/login` → `/owner/settings/security` — so a
 locked-out user was bounced straight back to the sign-in form, in a loop, with
-no way out. They now say: ask your dispatcher, who opens your record and
-presses *Reset password*.
+no way out. `/login` and `/driver/login` now offer the self-service route,
+and `/owner/login` offers it too for the owners who sign in with a password
+rather than a code. A vehicle owner on Brownhill's deployment signs in with a
+6-digit code, so the copy there says so and points the password-having owner
+at the self-service route rather than at a form that would do nothing.
 
 `set-customer-password.mjs` on the box remains the **last resort** — for the
 operator's own account, which has no in-app reset path — and it needs SSH.
@@ -201,7 +242,13 @@ operator's own account, which has no in-app reset path — and it needs SSH.
 | The database **cannot be reached** while the reset is being checked | "Could not check that account. Nothing has changed — try again" — and no password is written. A read that fails is never read as "no other memberships" |
 | The reset names an owner and the caller is not an owner | "Only an owner can reset the password for an owner account" — nothing is changed |
 | The reset names an account with no password | "This account signs in with a code sent to their phone number — there is no password to reset" |
-| The deployment is the SaaS | The reset refuses: Supabase Auth owns password resets there |
+| The self-service request names an address that is not on file | The **same** answer as a success — "If that address has an account with a password, a reset link is on its way." Nothing is sent, and nothing says whether the address exists |
+| The self-service request names an account that signs in with a code | The same answer again, and nothing is sent: the page must not say which addresses hold a password |
+| The reset link has expired, or was already used | "That reset link is not valid" — the same refusal as a link that never existed, and the page asks for a new one |
+| The link's **fragment** was stripped on the way through — by an email client, a chat client, or anything that rewrites the URL | The same refusal as an expired link — "That reset link is not valid" — and the page asks for a new one. A client that drops the fragment gives the person a link that does not work, but it does not leak the token and it does not leave the page waiting for something that will never arrive |
+| The new password is under 12 characters, or the two fields differ | The form says so before anything is sent, and the server refuses it as well |
+| The database cannot be reached while a reset link is being issued | Nothing is sent, and the log says the **store** failed rather than the account being unknown — a broken database must not look like a quiet one |
+| The deployment is the SaaS | Neither reset route is offered: the operator reset refuses, and the self-service pages are not served at all — Supabase Auth owns password resets there |
 | Email is not configured on the box | The password is still shown on screen, and the panel says so |
 | A code never arrives on the phone | The verify screen offers **Send another**; the old screen did not, which made it a dead end |
 | The database is empty on a `standalone` or `managed` build | The sign-in page redirects to `/setup` |

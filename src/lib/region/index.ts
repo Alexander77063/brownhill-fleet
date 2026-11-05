@@ -40,3 +40,5 @@ export type {
   TaxRegime,
   VehicleLookupSpec,
 } from './types';
+
+export { PAYMENT_PROVIDER_LABELS, SMS_PROVIDER_LABELS } from './types';

@@ -22,6 +22,8 @@
 export const PUBLIC_ROUTES = [
   ['/login', 'sign in'],
   ['/driver/login', 'driver sign in'],
+  ['/forgot-password', 'forgot password'],
+  ['/reset-password', 'reset password'],
   ['/accessibility', 'accessibility statement'],
   ['/terms', 'terms'],
   ['/privacy', 'privacy'],
@@ -275,3 +277,44 @@ export const A11Y_PAGES =
     ...REFLOW_ROUTES,
   ]).size +
   SIGN_PAGES.length;
+
+/**
+ * The tests that are NOT axe scans.
+ *
+ * The scan count above is not the suite's size. Playwright runs two other
+ * kinds of test, and a figure that counts only the scans understates the
+ * suite — which is how the published total went stale in the first place:
+ * two routes were added to the scan list, the scan figure was updated
+ * everywhere, and the total was not, so the documents said "102 Playwright
+ * tests passed" while the suite held 104.
+ *
+ * Two kinds:
+ *
+ *   * the SETUP tests. The `setup` project signs in as the four personas
+ *     (operator, accountant, driver, investor) and writes each one's
+ *     session to disk; the `signing-setup` project seeds a signing session
+ *     so the tokenised `/sign` route can be reached at all. Five tests.
+ *   * the BEHAVIOURAL checks. Tests that assert a behaviour rather than
+ *     scan for violations, so they run no axe analysis and contribute
+ *     nothing to the scan count. Two of them: the skip link's place in the
+ *     tab order, and the fleet table's caption.
+ *
+ * The two behavioural checks that DO also scan — the sign-in error state and
+ * the typed-signature state — are already counted in the scans, and are not
+ * counted again here.
+ */
+export const A11Y_SETUP_TESTS = 5;
+export const A11Y_BEHAVIOURAL_CHECKS = 2;
+
+/**
+ * Every test the suite runs.
+ *
+ * This is the number Playwright itself reports, and the two numbers above
+ * are held to it by `tests/unit/a11y-coverage.test.ts`, which enumerates the
+ * suite with `playwright test --list` — Playwright's own listing, which
+ * needs no browser and no running application — and requires the two to
+ * agree. A test added to a spec file without a matching change here fails
+ * the build, rather than quietly making every published total wrong.
+ */
+export const A11Y_PLAYWRIGHT_TESTS =
+  A11Y_SCANS + A11Y_SETUP_TESTS + A11Y_BEHAVIOURAL_CHECKS;

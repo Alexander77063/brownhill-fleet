@@ -9,7 +9,7 @@ is navigable. The *commercial* launch — when Brownhill starts selling
 rent-to-buy to its customers, and what is said to whom — depends on facts
 this repository does not hold.
 
-*Status: partial as of 2026-10-30.*
+*Status: partial as of 2026-11-05.*
 
 ---
 
@@ -55,25 +55,28 @@ hosted/tests/acceptance.sh                                  # all gates green
 - `hosted/tests/portability-guards.sh` + `hosted/tests/verify-hosted-portability.sh` + `hosted/tests/tls-assertion-negative.sh` — the proof's own guards, then assertions 0–17 against the live stack, then the negative case: the proof run again with a CA that signed nothing, which must fail on assertion 14
 - `hosted/tests/migrations-regression.sh` — replay the schema against a throwaway Postgres
 - `hosted/tests/smoke/hosted-smoke.sh` — round-trip one `.from()` per major resource
+- `hosted/tests/legal-env-wiring.sh` — the operator's own legal identity reaches the application under the names the application reads: the installer writes them, the operator's template carries them, and the unit loads the file. This one is also a **go-live item** rather than only a health item: the eight `LEGAL_OPERATOR_*` values belong to the operator and cannot be generated, so until they are filled in the legal pages **omit** the clauses they have no value for — a shorter document, not a false one
 - the Sunday `brownhill-backup-verify.service` journal entry — restore a fresh dump, assert row counts and RLS
 
 ### Stage 1 — The schema is proven from zero
 
-**Gate:** migrations 0001–0087 apply to an empty Postgres, in order, with
+**Gate:** migrations 0001–0089 apply to an empty Postgres, in order, with
 `ON_ERROR_STOP`, and the seed loads.
 
-**Status: passed 2026-11-01 against 0001–0086; migration 0087 is verified by
-the CI harness.** The replay ran against a scratch `postgres:16`
+**Status: passed 2026-11-01 against 0001–0086; migrations 0087, 0088 and 0089
+are verified by the CI harness.** The replay ran against a scratch `postgres:16`
 container, in two steps: a dry run that applied every migration inside one
 transaction and rolled it back — leaving `public_tables=0` behind, so nothing
 survived it — and then a real from-zero apply in production semantics, each
 migration in its own transaction. The result was 85 public tables, 15
-accounting tables and 10 public views.
+accounting tables and 10 public views. Migration 0088 adds one public table
+(`password_reset_requests`, the self-service reset throttle), so the
+public-table count is now 86; migration 0089 adds no table at all.
 
 A third phase runs the **migration runner itself** — not a re-implementation of
 it — against its own database: the first run applies the whole history, the
-second applies 0 migrations, and the ledger holds 87 rows. That count is 87
-and not 86 because the shim is recorded too, under its own name
+second applies 0 migrations, and the ledger holds 89 rows. That count is 89
+and not 88 because the shim is recorded too, under its own name
 (`0000_supabase_shim.sql`); the ledger holds one row per file it applied,
 and the shim is a file. The runner's own idempotency is what the deployment
 depends on — the systemd oneshot runs it on every boot.
@@ -189,13 +192,35 @@ not be reached by accident.
 ```
 1. systemctl stop brownhill-next.service postgrest.service brownhill-backup.timer
 2. git log -5 → git checkout <sha>
-3. ./hosted/scripts/deploy-app.sh   (builds, installs into /var/lib/brownhill/app, restarts)
+3. ./hosted/scripts/deploy-app.sh   (builds, applies the pending migrations, installs into /var/lib/brownhill/app, restarts)
 ```
 
 Rolling the application back is a **build-and-install**, not a build: the unit
 runs `node server.js` from `/var/lib/brownhill/app`, so the standalone output
 has to be copied there. `deploy-app.sh` does both and keeps the build it
 replaced at `/var/lib/brownhill/app.previous`.
+
+**Step 3 also applies the pending migrations, and on a rollback that step
+applies nothing.** The older commit's migrations are already recorded in the
+ledger, so they are not applied again; and the ledger has no "unapply", so
+nothing is undone. The schema is left exactly where the newer deployment left
+it — the table migration 0088 added is still there after the rollback, along
+with everything else the newer deployment applied.
+
+**Rolling the code back does not roll the schema back.** This is the same
+rule as §3.2, and it is what makes the rollback safe: an older build running
+against a newer schema is a supported state, and the reverse is not. If a
+migration's **content** was ever changed after it was applied, the ledger
+refuses the deploy and names the file — the schema history is content-versioned
+and forward-only, so a rewritten migration is corrected by writing a new one,
+not by rewriting the old one.
+
+**The build is swapped in only after the migrations have applied.** If a
+migration fails, the deploy stops and says which one, the failed migration is
+rolled back with its ledger row, and the previous build is still on disk at
+`/var/lib/brownhill/app` — but the service is still **stopped**, because step
+1 stopped it and the deploy never got as far as the restart. Bring it back
+with `systemctl start brownhill-next.service`.
 
 ### 3.2 A bad database change
 

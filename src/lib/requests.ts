@@ -10,6 +10,7 @@ import { isEmergencyKind } from '@/lib/escalation';
 import { pushConfigured } from '@/lib/push';
 import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { voiceConfigured } from '@/lib/voice/platform-voice';
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -93,13 +94,13 @@ export async function raiseRequestAsOwner(input: { vehicleId: string | null; kin
     .select('id')
     .single();
   if (error || !data) throw new Error(error?.message ?? 'Could not raise the request.');
-  await createServiceClient().rpc('log_audit', {
-    p_tenant: ctx.tenantId,
-    p_action: 'owner_request.raised',
-    p_entity_type: 'owner_request',
-    p_entity_id: data.id,
-    p_detail: { kind: input.kind, by: 'owner' } as never,
-    p_actor: userId,
+  await appendAudit(createServiceClient(), {
+    tenantId: ctx.tenantId,
+    action: 'owner_request.raised',
+    entityType: 'owner_request',
+    entityId: data.id,
+    detail: { kind: input.kind, by: 'owner' },
+    actor: userId,
   });
   if (!emergency) await emailAdminsAboutRequest(createServiceClient(), data.id, input.kind, input.note);
   await openFaultJobFor(ctx.tenantId, input.vehicleId, input.kind, input.note, data.id, 'owner');
@@ -143,13 +144,13 @@ export async function raiseRequestAsStaff(
     .select('id')
     .single();
   if (error || !data) throw new Error(error?.message ?? 'Could not raise the request.');
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'owner_request.raised',
-    p_entity_type: 'owner_request',
-    p_entity_id: data.id,
-    p_detail: { kind: input.kind, by: 'ops' } as never,
-    p_actor: input.raisedBy,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'owner_request.raised',
+    entityType: 'owner_request',
+    entityId: data.id,
+    detail: { kind: input.kind, by: 'ops' },
+    actor: input.raisedBy,
   });
   if (!emergency) await emailAdminsAboutRequest(sb, data.id, input.kind, input.note);
   await openFaultJobFor(tenantId, input.vehicleId, input.kind, input.note, data.id, input.raisedBy);

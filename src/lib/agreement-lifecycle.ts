@@ -14,6 +14,7 @@
 import { addDays, daysBetween } from '@/lib/cron';
 import { notifyTenantOwner, sendDriverMessage } from '@/lib/comms';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -59,13 +60,13 @@ interface AgreementRow extends AgreementTermFields {
 }
 
 async function audit(sb: Sb, tenantId: string, agreementId: string, detail: Record<string, unknown>, actor?: string | null) {
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'agreement.completed',
-    p_entity_type: 'agreement',
-    p_entity_id: agreementId,
-    p_detail: detail as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'agreement.completed',
+    entityType: 'agreement',
+    entityId: agreementId,
+    detail,
+    actor: actor ?? undefined,
   });
 }
 

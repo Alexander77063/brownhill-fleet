@@ -1,10 +1,26 @@
 import Link from 'next/link';
-import { LEGAL_DOCS, LEGAL_UPDATED, OPERATOR } from '@/lib/legal';
+import { LEGAL_DOCS, LEGAL_UPDATED, type OperatorIdentity } from '@/lib/legal';
 import { deploymentBrand } from '@/lib/deployment/brand';
 
-/** Public wrapper for the legal documents — readable typography, the operator
- *  banner, a clear "draft, get it reviewed" notice, and cross-links. */
-export function LegalShell({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * Public wrapper for the legal documents — readable typography, the operator
+ * banner, a clear "draft, get it reviewed" notice, and cross-links.
+ *
+ * The operator is PASSED IN rather than looked up here, so the identity on the
+ * page and the identity in the body come from one resolution. The operator of
+ * a deployment is a per-install fact (see `src/lib/legal-operator.ts`) and a
+ * legal document that named one operator in its prose and another in its
+ * footer would be a document nobody could rely on.
+ */
+export function LegalShell({
+  title,
+  operator,
+  children,
+}: {
+  title: string;
+  operator: OperatorIdentity;
+  children: React.ReactNode;
+}) {
   return (
     <main id="main-content" tabIndex={-1} className="mx-auto max-w-3xl px-5 py-12 sm:px-8">
       <style>{`
@@ -20,7 +36,7 @@ export function LegalShell({ title, children }: { title: string; children: React
       </Link>
       <h1 className="mt-4 font-display text-3xl text-cream sm:text-4xl">{title}</h1>
       <p className="mt-2 text-sm text-muted">
-        Last updated {LEGAL_UPDATED} · Operated by {OPERATOR.entity} (registered in {OPERATOR.jurisdiction})
+        Last updated {LEGAL_UPDATED} · Operated by {operator.entity} (registered in {operator.jurisdiction})
       </p>
       <div
         className="mt-4 rounded-[var(--radius)] border border-[var(--color-warn)] px-4 py-3 text-xs text-parchment"
@@ -40,7 +56,7 @@ export function LegalShell({ title, children }: { title: string; children: React
         <Link href="/accessibility" className="text-muted transition hover:text-cream">
           Accessibility
         </Link>
-        <span className="ml-auto text-muted">© {OPERATOR.entity}</span>
+        <span className="ml-auto text-muted">© {operator.entity}</span>
       </nav>
     </main>
   );

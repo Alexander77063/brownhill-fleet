@@ -27,6 +27,14 @@ EnvironmentFile=/etc/brownhill/secrets/app.env
 # load its environment and the application never came up at all, which is a
 # far worse answer than a deployment that simply has no HMRC connection yet.
 EnvironmentFile=-/etc/brownhill/secrets/mtd.env
+# legal.env — who operates this service, for the legal pages.
+#
+# The file is OPTIONAL, for the same reason mtd.env is: a box that has not
+# been told who operates it still starts, and its legal pages omit every
+# clause they have no value for. Without the leading '-' the unit would fail
+# to load its environment on a box where the file is absent, and the
+# application would never come up at all.
+EnvironmentFile=-/etc/brownhill/secrets/legal.env
 # cron.env   — CRON_SECRET, the token the scheduled jobs present.
 #
 # The APPLICATION needs it, not just the jobs that call it: the cron routes

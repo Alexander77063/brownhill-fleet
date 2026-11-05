@@ -1,34 +1,48 @@
 import type { Metadata } from 'next';
 import { LegalShell } from '@/components/legal/LegalShell';
-import { OPERATOR } from '@/lib/legal';
+import { contactOf } from '@/lib/legal';
+import { resolveOperator } from '@/lib/legal-operator';
+import { regionProvider, PAYMENT_PROVIDER_LABELS, SMS_PROVIDER_LABELS } from '@/lib/region';
 
 export const metadata: Metadata = { title: 'Data Processing Addendum' };
 
-export default function DpaPage() {
+// The operator and the governing law are resolved per request. On a box the
+// customer operates it is their own branding; the law is the law of the
+// market the box serves. Both can change, so neither is baked into the build.
+export const dynamic = 'force-dynamic';
+
+export default async function DpaPage() {
+  const OPERATOR = await resolveOperator();
+  const PRIVACY = contactOf(OPERATOR, 'privacy');
+
+  const REGION = regionProvider();
+  const DP = REGION.dataProtectionRegulator;
+
   return (
-    <LegalShell title="Data Processing Addendum">
+    <LegalShell title="Data Processing Addendum" operator={OPERATOR}>
       <p>
         This Data Processing Addendum (<strong>&ldquo;DPA&rdquo;</strong>) forms part of the{' '}
         <a href="/terms">Terms of Service</a> between {OPERATOR.entity} (<strong>&ldquo;Processor&rdquo;</strong>,{' '}
         <strong>&ldquo;we&rdquo;</strong>) and the Subscriber (<strong>&ldquo;Controller&rdquo;</strong>,{' '}
         <strong>&ldquo;you&rdquo;</strong>) and applies where we process Personal Data on your behalf through the{' '}
-        {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>). It reflects the requirements of Article
-        28 of the UK GDPR. If it conflicts with the Terms on data protection, this DPA prevails.
+        {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>). It reflects the requirements of{' '}
+        {DP.processorTerms}. If it conflicts with the Terms on data protection, this DPA prevails.
       </p>
 
       <h2>1. Definitions</h2>
       <p>
-        &ldquo;UK GDPR&rdquo;, &ldquo;Personal Data&rdquo;, &ldquo;Processing&rdquo;, &ldquo;Controller&rdquo;,
+        <strong>&ldquo;Applicable Data Protection Law&rdquo;</strong> means {DP.law}, together with any regulations
+        made under it and any successor legislation. &ldquo;Personal Data&rdquo;, &ldquo;Processing&rdquo;, &ldquo;Controller&rdquo;,
         &ldquo;Processor&rdquo;, &ldquo;Data Subject&rdquo; and &ldquo;Personal Data Breach&rdquo; have the meanings in
-        UK data protection law (the UK GDPR and Data Protection Act 2018). &ldquo;Subscriber Personal Data&rdquo; means
-        Personal Data we process on your behalf under the Terms.
+        the Applicable Data Protection Law. &ldquo;Subscriber Personal Data&rdquo; means Personal Data we process on
+        your behalf under the Terms.
       </p>
 
       <h2>2. Roles &amp; scope</h2>
       <p>
         As between the parties, you are the Controller and we are the Processor of Subscriber Personal Data. Each party
-        will comply with its obligations under UK data protection law. The subject matter, duration, nature, purpose,
-        types of data and categories of Data Subjects are set out in <strong>Annex A</strong>.
+        will comply with its obligations under the Applicable Data Protection Law. The subject matter, duration,
+        nature, purpose, types of data and categories of Data Subjects are set out in <strong>Annex A</strong>.
       </p>
 
       <h2>3. Processing on your instructions</h2>
@@ -70,7 +84,7 @@ export default function DpaPage() {
         </li>
         <li>
           <strong>DPIAs &amp; consultation:</strong> we provide reasonable assistance with data protection impact
-          assessments and prior consultation with the ICO, given the information available to us.
+          assessments and prior consultation with the {DP.name}, given the information available to us.
         </li>
       </ul>
 
@@ -83,9 +97,9 @@ export default function DpaPage() {
 
       <h2>9. International transfers</h2>
       <p>
-        We will not transfer Subscriber Personal Data outside the UK/EEA except where an appropriate safeguard is in
-        place (such as UK adequacy regulations, the International Data Transfer Agreement, or the UK Addendum to the EU
-        Standard Contractual Clauses), or another lawful basis applies.
+        We will not transfer Subscriber Personal Data outside {REGION.label} except where an appropriate safeguard is in
+        place (such as an adequacy regulation, or standard contractual clauses together with a transfer risk
+        assessment), or another lawful basis applies.
       </p>
 
       <h2>10. Return &amp; deletion</h2>
@@ -114,7 +128,7 @@ export default function DpaPage() {
         <li><strong>Subject matter:</strong> provision of the {OPERATOR.product} platform to the Controller.</li>
         <li><strong>Duration:</strong> the term of the subscription, plus any retention period in the Terms/Privacy Policy.</li>
         <li><strong>Nature &amp; purpose:</strong> hosting, storage, and processing of records to operate a vehicle-rental / private-hire business — vehicles, agreements, drivers, compliance, charges, payments, communications, and (where enabled) telematics and AI-assisted analysis.</li>
-        <li><strong>Types of Personal Data:</strong> identification and contact details; driver licence, PCO and DVLA-related details; insurance details; addresses; vehicle and agreement records; payment and arrears data; message logs; and, where enabled by the Controller, vehicle location/telematics.</li>
+        <li><strong>Types of Personal Data:</strong> identification and contact details; driver licence, permit and vehicle-registration details; insurance details; addresses; vehicle and agreement records; payment and arrears data; message logs; and, where enabled by the Controller, vehicle location/telematics.</li>
         <li><strong>Categories of Data Subjects:</strong> the Controller&rsquo;s staff/operators, drivers, and customers.</li>
       </ul>
 
@@ -134,10 +148,15 @@ export default function DpaPage() {
         <li><strong>Supabase</strong> — database, authentication.</li>
         <li><strong>Vercel</strong> — application hosting.</li>
         <li><strong>Cloudflare (R2)</strong> — file/object storage.</li>
-        <li><strong>Stripe</strong> — subscription and payment processing.</li>
-        <li><strong>GoCardless</strong> — direct-debit payment processing (where used).</li>
+        {REGION.paymentProviders.map((p) => (
+          <li key={p}>
+            <strong>{PAYMENT_PROVIDER_LABELS[p]}</strong> — payment processing (where used).
+          </li>
+        ))}
         <li><strong>Resend</strong> — transactional email.</li>
-        <li><strong>Twilio</strong> — SMS (where used).</li>
+        <li>
+          <strong>{SMS_PROVIDER_LABELS[REGION.smsProvider]}</strong> — SMS (where used).
+        </li>
         <li><strong>AI provider</strong> — the model provider powering the included assistant.</li>
       </ul>
       <p className="mt-2 text-xs text-muted">
@@ -146,7 +165,10 @@ export default function DpaPage() {
       </p>
 
       <h2>Contact</h2>
-      <p>{OPERATOR.entity} · {OPERATOR.privacyEmail}</p>
+      <p>
+        {OPERATOR.entity}
+        {PRIVACY ? ` · ${PRIVACY}` : ''}
+      </p>
     </LegalShell>
   );
 }

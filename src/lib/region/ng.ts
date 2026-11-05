@@ -22,6 +22,7 @@ import { intlCurrency, type RegionProvider } from './types';
 export const NG: RegionProvider = {
   id: 'ng',
   label: 'Nigeria',
+  legalJurisdiction: 'Federal Republic of Nigeria',
   timezone: 'Africa/Lagos',
 
   currency: {
@@ -135,4 +136,19 @@ export const NG: RegionProvider = {
   // first payment, so it carries no money consequence.
   billing: { defaultPlanKey: 'ng_standard_year', initialStatus: 'unpaid' },
   phone: { countryCode: '+234', trunkPrefix: '0', example: '+234 803 000 0000' },
+
+  // Nigeria's own accessibility and data-protection bodies. The UK's Equality
+  // Act 2010 and the ICO have no jurisdiction here, so the Nigerian
+  // deployment names the Nigerian ones.
+  accessibilityEnforcement: {
+    law: 'Nigeria Disability Act 2022',
+    body: 'National Commission for Persons with Disabilities',
+    url: 'https://ncpwd.gov.ng/',
+  },
+  dataProtectionRegulator: {
+    name: 'Nigeria Data Protection Commission',
+    url: 'https://ndpc.gov.ng/',
+    law: 'the Nigeria Data Protection Act 2023',
+    processorTerms: 'the processor obligations in the Nigeria Data Protection Act 2023',
+  },
 };

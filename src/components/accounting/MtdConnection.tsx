@@ -21,7 +21,7 @@
 // the Nigerian programme. Filing a UK return against it would file it against
 // the wrong organisation.
 
-import { loadCredentialMeta, loadVrnStatus, readMtdConfig } from '@/lib/accounting/mtd';
+import { loadCredentialMeta, loadVrnStatus, mtdConfigProblem, readMtdConfig } from '@/lib/accounting/mtd';
 import { Button } from '@/components/ui';
 
 export interface MtdConnectionProps {
@@ -42,8 +42,9 @@ function statusMessage(status: string | null | undefined): { tone: 'ok' | 'bad';
     return {
       tone: 'bad',
       text:
-        'This installation has no HMRC application registered, so the connection cannot be made. ' +
-        'Set HMRC_MTD_CLIENT_ID, HMRC_MTD_CLIENT_SECRET and HMRC_MTD_REDIRECT_URI in the app environment, then restart it.',
+        'This installation cannot make the HMRC connection. Either no HMRC application is registered ' +
+        '(set HMRC_MTD_CLIENT_ID and HMRC_MTD_CLIENT_SECRET) or it does not know its own public ' +
+        'address (set NEXT_PUBLIC_APP_URL, or HMRC_MTD_REDIRECT_URI). Set them in the app environment, then restart it.',
     };
   }
   if (status === 'invalid-state') {
@@ -158,9 +159,8 @@ export default async function MtdConnection({ tenantId, returnTo, status }: MtdC
         )}
         {!config && (
           <p className="mt-2 text-sm text-parchment">
-            No HMRC application is registered on this installation, so the Connect button cannot
-            complete. Ask whoever runs the server to set <code>HMRC_MTD_CLIENT_ID</code> and{' '}
-            <code>HMRC_MTD_CLIENT_SECRET</code>.
+            {mtdConfigProblem() ?? 'This installation cannot connect to HMRC.'} The Connect button
+            cannot complete until it does.
           </p>
         )}
       </div>

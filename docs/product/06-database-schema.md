@@ -2,9 +2,9 @@
 
 Tables, relationships, invariants, and what the money model actually is.
 
-*Status: current as of 2026-11-01. Read from `supabase/migrations/` (85 files)
+*Status: current as of 2026-11-05. Read from `supabase/migrations/` (88 files)
 and `supabase/seed.sql`. The most recent migration is
-`0086_accounting_gl_backfill.sql`.*
+`0089_audit_system_actor.sql`.*
 
 ---
 
@@ -988,6 +988,48 @@ is a `text` column with a CHECK over `in_stock`, `allocated`, `fitted`,
 exception**: it is free text with no CHECK, and the application writes
 `pending`, `sent`, `skipped` or `failed`.
 
+### 6.1 The self-service password reset's own state (migration 0088)
+
+Two pieces of state, in two different schemas, because they answer two
+different questions.
+
+**In `auth`, on the credential row** — `auth.local_credentials` gains two
+columns:
+
+| Column | What it holds |
+| --- | --- |
+| `reset_token_hash` | The **SHA-256** of the live reset token. Only the hash is stored: the database sits on the customer's own box, and a database that leaks must not hand out live reset links |
+| `reset_expires_at` | When the token stops working. The application refuses a token whose expiry has passed, and a token with **no** expiry is treated as **expired** — a NULL read as "no limit" would be a link that never dies |
+
+A partial index (`local_credentials_reset_token_idx`) covers the lookup, which
+is by hash and never by the token itself. There is **one live token per
+account**: a second request overwrites the first, so a link that was already
+forwarded stops working.
+
+**In `public`, the throttle's own table** — `password_reset_requests` records
+who asked for a reset and from where, so the endpoint can be throttled the way
+the one-time-code endpoint already is. Without it the endpoint is a mail
+cannon: a script can put an unlimited number of reset emails into one
+person's inbox.
+
+Two things about that table are deliberate. **The rows are written only when a
+link actually goes out** — an address that is not on file produces no mail, so
+counting it would let a stranger burn a legitimate user's allowance by
+guessing their address, and would let the throttle itself become an oracle for
+which addresses are real. And the table is **revoked from `anon`,
+`authenticated` and `service_role`**, with row-level security enabled: it is
+reachable only over the application's own direct database connection, never
+through the API.
+
+The columns are added **idempotently**, and the whole block is guarded. The
+shim already declares them, but `create table if not exists` only ever
+CREATES the table — on a box that applied an older shim the columns never
+arrive, and the application then fails with 42703 on the one screen that
+exists so a locked-out person can get back in. And `auth.local_credentials`
+does not exist at all on a Supabase-hosted database — there, Supabase Auth
+owns the passwords — so the block checks first and says so in a notice rather
+than failing the whole migration run and skipping every migration after it.
+
 ## 7. Operational state
 
 | Table | What it is |
@@ -995,7 +1037,7 @@ exception**: it is free text with no CHECK, and the application writes
 | `app_state` | Key/value operational flags: `bootstrap_pending`, `app_draining`. Read by the Node server through `localDb()` (a direct connection as the table owner) and by the Edge middleware over HTTP from PostgREST — see §7.1 |
 | `schema_migrations` | The migration ledger: which migrations this database has applied — see §8.1 |
 | `numbering_sequences` | Per-tenant document numbering (agreement numbers, invoice numbers) |
-| `audit_log` | Append-only. Migration 0018 makes it immutable |
+| `audit_log` | Append-only. Migration 0018 makes it immutable. Migration 0089 decides what a **system** action records as its actor — see §7.3 |
 | `void_events` | Void markers on financial records |
 | `notifications` | `status in ('pending','sent','acknowledged','failed')` |
 | `subscriptions` / `tenant_subscription` | The SaaS subscription — **unused in the hosted profile**, where entitlements come from `PROFILE_MODULES` |
@@ -1064,16 +1106,50 @@ Both first-run doors read the flag before they serve — the signed
 it through `localDb()`, as the table owner. The Edge middleware never sees
 it (§7.1), which is why the first-run decision is made server-side.
 
+### 7.3 The audit trail's actor — `audit_log.actor`
+
+`audit_log.actor` is a foreign key to `auth.users(id)`, and `log_audit()`
+defaults it to the user the request was made for.
+
+| The request was made by | The actor recorded |
+| --- | --- |
+| A person | That person |
+| The server — a cron job, an operations tool, the server signing on somebody's behalf | **Nothing.** The service principal is deliberately not a row in `auth.users`: an audit row attributing a cron job to a named employee would be a lie. The audit page renders a missing actor as "system" |
+| A subject that is not a user id at all — the hosted build's service role carries the subject `supabase` | **Nothing**, and no error. A subject that cannot be read as a user id means "not a person", and that is an answer, not a failure |
+
+The rule is that an action is **never lost because its actor could not be
+established**. If the actor turns out not to be a user, the row is written
+without one, and the drop is named in the database's own log. A failure that
+has nothing to do with the actor — a tenant that does not exist, say — still
+fails, loudly.
+
+This is migration 0089, and it fixes a defect that was not visible from the
+schema. `log_audit()` used to default the actor to `current_app_user()`
+unconditionally, so every system write was refused by the foreign key
+(23503) — and the twenty-four of the twenty-eight call sites that wrote
+system actions threw the refusal away. The trail did not fail; it was
+silently never written, and the only symptom was an empty table.
+
+The application now writes every audit row through **one** writer,
+`appendAudit` in `src/lib/audit.ts`, which looks at the error and reports a
+refusal instead of discarding it. A contract test fails the build if any
+module writes an audit row by hand.
+
 ## 8. Migrations
 
-- 84 files, `0001`–`0085` (there is no `0057`; the number was never used).
+- 88 files, `0001`–`0089` (there is no `0057`; the number was never used).
 - Applied in filename order, each in **its own transaction**, by
   `brownhill-bootstrap.service`.
 - **Forward-only.** Never rolled back. Restoring an old application build
   against a current schema is safe; restoring an old schema against current
   data is not.
 - The hosted deployment applies `standalone/sql/0000_supabase_shim.sql` first,
-  then the migrations.
+  then the migrations — at **boot**, by `brownhill-bootstrap.service`, and again
+  on **every deployment**, by `hosted/scripts/deploy-app.sh`. The deployment
+  applies them through the same runner, because a deploy that ships code
+  without its migrations ships code against a schema the database does not
+  have. It does so **before** the new build is swapped in, so a migration that
+  fails leaves the build that was serving in place, still serving.
 - **What has been applied is recorded**, in `public.schema_migrations` — see
   §8.1. The bootstrap is a systemd oneshot that runs on every boot, so it has
   to be a no-op against a database that is already provisioned, and it can

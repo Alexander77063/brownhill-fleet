@@ -28,13 +28,17 @@
 // running app, so it belongs in the fast lane and holds the documents honest
 // even when the browser pass cannot run.
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { isPathDisabled } from '../../src/lib/deployment/gate';
 import {
+  A11Y_BEHAVIOURAL_CHECKS,
   A11Y_PAGES,
+  A11Y_PLAYWRIGHT_TESTS,
   A11Y_SCANS,
+  A11Y_SETUP_TESTS,
   ACCOUNTS_ROUTES,
   ADMIN_ACCOUNTING_ROUTES,
   ADMIN_ROUTES,
@@ -121,6 +125,59 @@ const NOT_SCANNED: { path: string; reason: string }[] = [
   },
 ];
 
+/**
+ * How many tests the suite actually runs.
+ *
+ * `playwright test --list` is Playwright's own enumeration: it lists every
+ * test that will run, without launching a browser and without a running
+ * application. It is the suite's own answer to "how many tests are there",
+ * so it cannot disagree with the suite.
+ */
+function countPlaywrightTests(): number {
+  const cli = join(REPO_ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
+  if (!existsSync(cli)) {
+    throw new Error(
+      'the Playwright CLI is not installed, so the suite cannot be counted. Run `pnpm install`.',
+    );
+  }
+
+  let output: string;
+  try {
+    output = execFileSync(process.execPath, [cli, 'test', '--list'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 120_000,
+    });
+  } catch (error) {
+    throw new Error(`the Playwright suite could not be enumerated: ${(error as Error).message}`);
+  }
+
+  const match = output.match(/^Total: (\d+) tests? in (\d+) files?$/m);
+  if (!match) {
+    throw new Error(`the suite's test count could not be read from:\n${output}`);
+  }
+  return Number(match[1]);
+}
+
+/**
+ * Every Playwright test count a document states.
+ *
+ * Two shapes are in use in this repository:
+ *
+ *   "**104 Playwright tests passed**"  — the product index
+ *   "104 of 104 tests green"            — the accessibility audit
+ *
+ * Both state the SIZE of the suite, and both went stale once: the scan
+ * figure was updated when two routes were added and the total was not.
+ */
+function statedPlaywrightTotals(text: string): number[] {
+  const found: number[] = [];
+  for (const match of text.matchAll(/(\d+)\s+Playwright tests passed/g)) found.push(Number(match[1]));
+  for (const match of text.matchAll(/(\d+)\s+of\s+\d+\s+tests green/g)) found.push(Number(match[1]));
+  return found;
+}
+
 describe('the accessibility coverage', () => {
   it('counts the pages and the scans it publishes', () => {
     expect(A11Y_PAGES).toBe(SCANNED_ROUTES.size + 3); // + the three signing pages
@@ -193,6 +250,50 @@ describe('the accessibility coverage', () => {
       expect(text, `${document} does not state the number of pages`).toMatch(
         new RegExp(`\\b${A11Y_PAGES}\\b`),
       );
+
+      // The suite's TOTAL is a different number from the scan count — it
+      // counts the setup tests and the behavioural checks as well — and it is
+      // the one that used to be typed by hand and drift. Where a document
+      // states it, it must be the suite's own.
+      for (const claimed of statedPlaywrightTotals(text)) {
+        expect(
+          claimed,
+          `${document} states ${claimed} Playwright tests; the suite runs ${A11Y_PLAYWRIGHT_TESTS}`,
+        ).toBe(A11Y_PLAYWRIGHT_TESTS);
+      }
     }
+  });
+
+  it('counts the setup tests in the suite\'s own setup files', () => {
+    // The setup count is DERIVED here, not declared: the `setup` project
+    // signs in as the four personas and the `signing-setup` project seeds a
+    // signing session, and each of those is a `setup(...)` call in a file.
+    const setupDir = join(REPO_ROOT, 'tests', 'a11y');
+    const setupFiles = readdirSync(setupDir).filter((file) => file.endsWith('.setup.ts'));
+    expect(setupFiles.length, 'the suite has no setup files').toBeGreaterThan(0);
+
+    const declared = setupFiles.reduce((total, file) => {
+      const text = readFileSync(join(setupDir, file), 'utf8');
+      return total + (text.match(/^setup\(/gm) ?? []).length;
+    }, 0);
+
+    expect(
+      declared,
+      'the setup files hold a different number of setup tests than the model claims',
+    ).toBe(A11Y_SETUP_TESTS);
+  });
+
+  it('accounts for every test the suite runs', () => {
+    // The suite is enumerated by Playwright itself, so this is the suite's
+    // own answer rather than a second opinion. Every test it runs has to be
+    // an axe scan, a setup test or a behavioural check — a test added to a
+    // spec file without a matching change here fails the build, instead of
+    // quietly making every published total wrong.
+    const total = countPlaywrightTests();
+    expect(
+      total,
+      `the suite runs ${total} tests; the model accounts for ${A11Y_PLAYWRIGHT_TESTS} ` +
+        `(${A11Y_SCANS} scans + ${A11Y_SETUP_TESTS} setup + ${A11Y_BEHAVIOURAL_CHECKS} behavioural)`,
+    ).toBe(A11Y_PLAYWRIGHT_TESTS);
   });
 });

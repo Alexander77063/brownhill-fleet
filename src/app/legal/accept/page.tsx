@@ -2,7 +2,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getAuthContext, contextCan } from '@/lib/auth/context';
 import { tenantAcceptedCurrentLegal } from '@/lib/legal-consent';
-import { LEGAL_DOCS, LEGAL_UPDATED, OPERATOR } from '@/lib/legal';
+import { LEGAL_DOCS, LEGAL_UPDATED } from '@/lib/legal';
+import { resolveOperator } from '@/lib/legal-operator';
 import { deploymentBrand } from '@/lib/deployment/brand';
 import { acceptLegalAction } from '@/lib/actions/legal';
 import { Card, Button } from '@/components/ui';
@@ -24,6 +25,10 @@ export default async function AcceptLegalPage({
 
   const canAccept = contextCan(ctx, 'tenant.settings');
   const { error } = await searchParams;
+
+  // The operator of the deployment the tenant is signing up to — on a box the
+  // customer operates, that is the customer themselves.
+  const OPERATOR = await resolveOperator();
 
   return (
     <main id="main-content" tabIndex={-1} className="mx-auto max-w-2xl px-5 py-12 sm:px-8">

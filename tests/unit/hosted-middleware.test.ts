@@ -20,7 +20,7 @@
 // `Buffer` altogether, which also breaks the test runner's own machinery.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -144,8 +144,70 @@ describe('the hosted middleware', () => {
   });
 });
 
-describe('the routes a system timer calls', () => {
-  // These are not called by a browser. They are called by a timer on the box,
+describe('the path the server needs', () => {
+  // A server layout cannot see the URL, so the middleware forwards it as the
+  // `x-pathname` request header. The pay-first guard reads it: without the
+  // path it cannot tell that the page it is about to redirect TO is one of
+  // the pages it must not redirect away from, and it redirects there forever.
+  //
+  // The header used to be set by `src/lib/supabase/middleware.ts`, which
+  // Next.js never loads and whose `updateSession` nothing called — so it was
+  // never set at all. The gate for the guard's own half of the story is in
+  // `tests/unit/serviceable-guard.test.ts`.
+
+  it('forwards the path to the server on every request it continues', async () => {
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/ops/drivers'));
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe('/ops/drivers');
+  });
+
+  it('forwards the path on the SaaS profile too, which returns early', async () => {
+    const { middleware } = await loadMiddleware('saas');
+    const res = await middleware(request('/ops/drivers'));
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe('/ops/drivers');
+  });
+
+  it('forwards the path it resolved, not one the client chose', async () => {
+    // A client that could name its own path would walk straight past the
+    // pay-first gate by claiming to be on the billing page.
+    const { middleware } = await loadMiddleware('hosted');
+    const req = request('/ops/drivers');
+    req.headers.set('x-pathname', '/ops/billing');
+    const res = await middleware(req);
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe('/ops/drivers');
+  });
+
+  it('forwards the path even when the request carries a token it cannot read', async () => {
+    // A page request with a stale cookie as its credential. The middleware
+    // lets the page's own guard send the visitor to sign in — but it must
+    // still forward the path, or the pay-first guard sees no path and
+    // declines to redirect, and the tenant walks past it.
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/ops/drivers', 'not-a-jwt'));
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe('/ops/drivers');
+  });
+
+  it('forwards the path when the request carries a token it can read', async () => {
+    // The same rule on the last path through the middleware. Every route the
+    // middleware continues has to carry the path forward, or the guard's
+    // answer depends on whether the request happened to carry a credential.
+    const { middleware } = await loadMiddleware('hosted');
+    const res = await middleware(request('/ops/drivers', appToken('tenant-a')));
+    expect(res.headers.get('x-middleware-request-x-pathname')).toBe('/ops/drivers');
+  });
+
+  it('is a real gate: a response that forwards no request headers carries no path', () => {
+    // The negative control. Before the fix the middleware answered with a
+    // plain `NextResponse.next()`, which carries no request headers at all —
+    // so the path could not have been forwarded, and the assertions above
+    // could not have passed by accident. If `NextResponse.next()` ever grew
+    // the header by itself, this control would fail and say so.
+    const plain = NextResponse.next();
+    expect(plain.headers.get('x-middleware-request-x-pathname')).toBeNull();
+  });
+});
+
+describe('the routes a system timer calls', () => {  // These are not called by a browser. They are called by a timer on the box,
   // and the bearer they carry is a SHARED SECRET — `CRON_SECRET`,
   // `AUTOMATION_TOKEN` — not a session token. A shared secret is not a JWT.
   //

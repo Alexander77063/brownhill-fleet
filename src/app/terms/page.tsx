@@ -1,18 +1,36 @@
 import type { Metadata } from 'next';
 import { LegalShell } from '@/components/legal/LegalShell';
-import { OPERATOR } from '@/lib/legal';
+import { clause, contactOf } from '@/lib/legal';
+import { resolveOperator } from '@/lib/legal-operator';
 
 export const metadata: Metadata = { title: 'Terms of Service' };
 
-export default function TermsPage() {
+// The operator's identity is resolved per request. On a box the customer
+// operates it is their own branding, which they can change — a page frozen at
+// build time would publish whoever the operator was when the image was built.
+export const dynamic = 'force-dynamic';
+
+export default async function TermsPage() {
+  const OPERATOR = await resolveOperator();
+
+  // The registration particulars, or NOTHING. A document that reads "company
+  // number [company registration number]" is a template that escaped; one that
+  // reads "company number 09807970" when the operator has no such number is
+  // worse. So the clause is present when the operator has told us its details
+  // and absent when they have not.
+  const registration = clause(
+    OPERATOR.jurisdiction ? `a company registered in ${OPERATOR.jurisdiction}` : '',
+    OPERATOR.companyNumber ? `(company number ${OPERATOR.companyNumber})` : '',
+    OPERATOR.registeredAddress ? `registered office ${OPERATOR.registeredAddress}` : '',
+  );
+
   return (
-    <LegalShell title="Terms of Service">
+    <LegalShell title="Terms of Service" operator={OPERATOR}>
       <p>
         These Terms of Service (the <strong>&ldquo;Terms&rdquo;</strong>) govern your access to and use of the{' '}
-        {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>), operated by {OPERATOR.entity}, a
-        company registered in {OPERATOR.jurisdiction} (company number {OPERATOR.companyNumber}), registered office{' '}
-        {OPERATOR.registeredAddress} (<strong>&ldquo;we&rdquo;</strong>, <strong>&ldquo;us&rdquo;</strong>). By creating
-        an account, accepting these Terms, or using the Service, the organisation you represent (the{' '}
+        {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>), operated by {OPERATOR.entity}
+        {registration ? `, ${registration}` : ''} (<strong>&ldquo;we&rdquo;</strong>, <strong>&ldquo;us&rdquo;</strong>).
+        By creating an account, accepting these Terms, or using the Service, the organisation you represent (the{' '}
         <strong>&ldquo;Subscriber&rdquo;</strong>, <strong>&ldquo;you&rdquo;</strong>) agrees to these Terms.
       </p>
 
@@ -130,12 +148,14 @@ export default function TermsPage() {
         You may not assign these Terms without our consent; we may assign to a group company or on a sale of the
         business. If any provision is unenforceable, the rest remain in force. These Terms, the Acceptable Use Policy
         and the Privacy Policy are the entire agreement between us on their subject matter. Notices to us may be sent to{' '}
-        {OPERATOR.contactEmail}.
+        {contactOf(OPERATOR)}.
       </p>
 
       <h2>15. Contact</h2>
       <p>
-        {OPERATOR.entity} · {OPERATOR.contactEmail} · {OPERATOR.website}
+        {OPERATOR.entity}
+        {OPERATOR.contactEmail ? ` · ${OPERATOR.contactEmail}` : ''}
+        {OPERATOR.website ? ` · ${OPERATOR.website}` : ''}
       </p>
     </LegalShell>
   );

@@ -26,6 +26,26 @@ export const SHIM_PATH = path.join(REPO_ROOT, 'standalone/sql/0000_supabase_shim
 export const SRC_DIR = path.join(REPO_ROOT, 'src');
 
 /**
+ * Every SQL file the repository applies, in the order it applies them.
+ *
+ * The shim runs before migration 0001 on the standalone build and mirrors the
+ * auth schema Supabase provides on the hosted build, so it belongs in the
+ * model either way.
+ *
+ * One place reads them, so a gate that wants the raw SQL — to look for the
+ * REVOKE statements, say — reads the same files the model was built from and
+ * cannot be looking at a different set.
+ */
+export function readRepoSqlFiles(): Array<{ name: string; sql: string }> {
+  const shim = { name: '0000_supabase_shim.sql', sql: readFileSync(SHIM_PATH, 'utf8') };
+  const migrations = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => ({ name: f, sql: readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }));
+  return [shim, ...migrations];
+}
+
+/**
  * The schema the migrations produce.
  *
  * The shim runs before migration 0001 on the standalone build and mirrors the
@@ -33,12 +53,7 @@ export const SRC_DIR = path.join(REPO_ROOT, 'src');
  * model either way.
  */
 export function buildRepoSchemaModel(): SchemaModel {
-  const shim = { name: '0000_supabase_shim.sql', sql: readFileSync(SHIM_PATH, 'utf8') };
-  const migrations = readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith('.sql'))
-    .sort()
-    .map((f) => ({ name: f, sql: readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }));
-  return buildSchemaModel([shim, ...migrations]);
+  return buildSchemaModel(readRepoSqlFiles());
 }
 
 /** Every SQL statement the application sends. */

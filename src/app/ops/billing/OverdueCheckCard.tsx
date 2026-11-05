@@ -13,11 +13,18 @@ import {
 
 const initial: RunOverdueCheckResult = { ok: false, scanned: 0, sent: 0, skipped: 0, failed: 0 };
 
-export function OverdueCheckCard() {
+export function OverdueCheckCard({ appUrl }: { appUrl: string | null }) {
   const [state, formAction, pending] = useActionState(
     async (_prev: RunOverdueCheckResult) => runOverdueCheckAction(),
     initial,
   );
+
+  // The command has to name THIS box. It used to name one particular
+  // deployment, so an operator running it on any other box — including the one
+  // it was copied from — called the wrong host, and the check silently did
+  // nothing. When the install does not know its own address the command
+  // carries a placeholder and says so, which is the honest thing to print.
+  const target = appUrl ?? '<this box\'s address>';
 
   return (
     <div className="rounded-[var(--radius)] border border-hair-soft bg-[rgba(255,255,255,0.03)] p-5 reveal">
@@ -64,10 +71,17 @@ export function OverdueCheckCard() {
           accessibility pass caught it on /ops/billing at 320 px.
         */}
         <code className="ml-1 break-all rounded bg-[rgba(0,0,0,0.35)] px-1 py-0.5">
-          17 9 * * * curl -fsS -X POST -H 'authorization: Bearer $OPS_TOKEN' https://brownhillmanagementfleet.online/api/automation/rent-overdue
+          17 9 * * * curl -fsS -X POST -H 'authorization: Bearer $OPS_TOKEN' {target}/api/automation/rent-overdue
         </code>
         runs the same check at 09:17 every day, once you have an automation token wired up.
       </p>
+      {!appUrl && (
+        <p className="mt-2 text-xs text-muted">
+          This installation does not know its own public address, so the command above carries a
+          placeholder. Set <code>NEXT_PUBLIC_APP_URL</code> in the app environment and restart it,
+          and the address will be filled in for you.
+        </p>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { documentLabel, listExpiringDocuments, plannableDriverSpecs } from '@/li
 import { planDriverCompliance } from '@/lib/compliance-plan';
 import { regionProvider } from '@/lib/region';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 
 export type ObStatus = 'open' | 'due_soon' | 'overdue';
 export type Severity = 'info' | 'warning' | 'critical';
@@ -245,12 +246,12 @@ export async function markTflUploaded(tenantId: string, todayISO: string, userId
       onConflict: 'tenant_id,period',
     });
   if (error) throw new Error(`Could not record TfL upload: ${error.message}`);
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'tfl.uploaded',
-    p_entity_type: 'tfl_upload',
-    p_detail: { period } as never,
-    p_actor: userId,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'tfl.uploaded',
+    entityType: 'tfl_upload',
+    detail: { period },
+    actor: userId,
   });
 }
 

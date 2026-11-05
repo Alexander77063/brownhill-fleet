@@ -5,6 +5,7 @@
 import { type CommandStatus, type ImmobiliseAction, requestImmobilisation, type CommandOutcome } from '@/lib/immobilise';
 import { getRequest } from '@/lib/requests';
 import { createServiceClient } from '@/lib/supabase/server';
+import { appendAudit } from '@/lib/audit';
 import { hardwareEvent } from './events';
 import type { Env, TraccarClient } from './traccar';
 
@@ -45,15 +46,14 @@ export async function executeImmobilise(a: ExecuteArgs): Promise<CommandOutcome 
     now: a.now,
     env: a.env,
   });
-  const { error: auditErr } = await sb.rpc('log_audit', {
-    p_tenant: r.tenantId,
-    p_action: `owner_request.${a.action}`,
-    p_entity_type: 'owner_request',
-    p_entity_id: r.id,
-    p_detail: { status: outcome.status, delivered: outcome.delivered, reason: outcome.reason ?? null, speedKph: outcome.speedKph, commandId: outcome.commandId } as never,
-    p_actor: a.executedBy,
-  } as never);
-  if (auditErr) console.error('[immobilise] audit failed', r.id, auditErr.message);
+  await appendAudit(sb, {
+    tenantId: r.tenantId,
+    action: `owner_request.${a.action}`,
+    entityType: 'owner_request',
+    entityId: r.id,
+    detail: { status: outcome.status, delivered: outcome.delivered, reason: outcome.reason ?? null, speedKph: outcome.speedKph, commandId: outcome.commandId },
+    actor: a.executedBy,
+  });
   return { ...outcome, tenantId: r.tenantId, vehicleId: r.vehicle.id };
 }
 

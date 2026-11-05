@@ -75,9 +75,11 @@ Secrets live on the VM at `/etc/brownhill/secrets/`, mode `0640`, owned `root:br
 - `pg.env` — `PG_SUPERUSER_PASSWORD`
 - `jwt.env` — `JWT_SHARED_SECRET` (used by both PostgREST and Next.js)
 - `bootstrap.env` — `BOOTSTRAP_TOKEN` (HMAC key for the first-run `/api/v1/bootstrap` endpoint)
-- `backup.env` — `BACKBLAZE_B2_*` (off-host backup credentials) and
+- `backup.env` — `BACKBLAZE_B2_*` (off-host backup credentials),
   `BROWNHILL_FQDN` (the path prefix inside the bucket — the deployment's
-  hostname, and the source of `NEXT_PUBLIC_APP_URL`)
+  hostname, and the source of `NEXT_PUBLIC_APP_URL`) and
+  `BROWNHILL_OFFHOST_TARGET` / `BROWNHILL_OFFHOST_DIR` (where the dump is
+  copied to; both empty means Backblaze B2)
 - `app.env` — the application's own run-time environment (`DATABASE_URL`,
   `BOOTSTRAP_TOKEN`, `POSTGREST_URL`, `NEXT_PUBLIC_APP_URL`). Written by
   `hosted/bootstrap/write-app-env.sh`, which `install.sh` and
@@ -374,15 +376,17 @@ test directories.
 
 ## Backup adapter
 
-Off-host backups default to Backblaze B2 (S3-compatible, ~$0.005/GB/month, no egress fees within NA/EU). The adapter interface lives at `src/lib/backup/managed.ts`:
+Off-host backups go to Backblaze B2 (S3-compatible, ~$0.005/GB/month, no egress fees within NA/EU), unless the operator points them at a mounted drive, a NAS share or a second disk.
 
-```ts
-interface OffHostTarget {
-  push(localPath: string, remotePrefix: string): Promise<void>;
-}
-```
+The copy is made by `hosted/scripts/off-host-copy.mjs` — plain node with no dependencies. It has to be: the nightly job is a systemd oneshot that runs as `postgres`, and it cannot import the Next.js application, because a standalone build hashes its chunks, so any path into `.next/server/chunks` is a path that cannot exist. That is exactly how the off-host copy died the first time — the job imported a chunk that was never there, the import rejected, and the line after it swallowed the error.
 
-The default implementation is `backblazeB2`. Switching to another target is one file — implement `OffHostTarget` and swap the binding in `hosted/bootstrap/install.sh`.
+Switching targets is one file, and it is that one. `resolveOffHostPlan()` decides where the dump goes, from `BROWNHILL_OFFHOST_TARGET` (`b2` or `directory`) and `BROWNHILL_OFFHOST_DIR`. It refuses by name — the refusal says which variable to set — rather than filing the copy under a placeholder nobody will ever restore from. A directory copy is then compared with the dump file by file: a copy that lost a file on the way is reported as a failure, not as a success.
+
+A symlink is not a dump, and the copy will not follow one. A dump tree holding a symlink is **refused outright**, by name, listing the path — following it would copy whatever it points at, which on the box means a file elsewhere on the box or a whole directory tree the dump has no business containing, and the result would be recorded as a copy of the dump. At the destination the rule is the mirror image: a symlink standing where a file or a directory belongs is **replaced** with the real thing, and the replacement is reported in `_sync.json`. Removing a symlink does not touch what it points at, so nothing outside the backup directory is harmed — and the bytes land on the backup drive rather than wherever the link happened to lead.
+
+One thing worth knowing about a removable drive: **exFAT cannot hold a symlink at all.** The removable BROWNHILL drive is exFAT, and the operating system refuses to create a link on it, so on that drive the destination-side attack cannot be mounted in the first place. The refusal of a symlinked *dump* is the protection that carries the weight, because the dump lives on the box's own filesystem — ext4 on Linux, NTFS here — where links are ordinary. Both behaviours are covered by `tests/unit/backup/off-host.test.ts`, each with a negative control. The verifier is also total: it reports what is wrong rather than throwing, because a verifier that throws takes the nightly job down with it and leaves the operator with a stack trace where they needed a sentence.
+
+There used to be an `OffHostTarget` interface at `src/lib/backup/managed.ts` that described this seam. Nothing implemented it, nothing imported it, and the copy it described was the one that never ran — so it has been removed rather than left in place as a promise the code does not keep.
 
 ## Update (v1)
 
@@ -394,8 +398,45 @@ git pull origin main
 ```
 
 `deploy-app.sh` does the whole job: `pnpm install --frozen-lockfile`, the
-standalone hosted build, copying the output into `/var/lib/brownhill/app`
-(the systemd unit's `WorkingDirectory`), and restarting the service.
+standalone hosted build, **applying the pending migrations**, copying the
+output into `/var/lib/brownhill/app` (the systemd unit's `WorkingDirectory`),
+and restarting the service.
+
+**The deploy applies the migrations, and it applies them before the new build
+is swapped in.** It runs `hosted/bootstrap/brownhill-bootstrap.sh` — the same
+runner that applies the schema at boot — so there is one runner for one job,
+and it records what it applied in the ledger (`public.schema_migrations`). The
+ledger is what makes this safe to do on every deploy: a migration is applied at
+most once, so a re-deploy applies nothing, and a migration applied by hand is
+not applied again.
+
+This step was missing, and the update path above shipped code against a schema
+the database did not have. Migration 0088 added `password_reset_requests` —
+the table the self-service password reset writes its throttle to — and the
+deployment of that feature answered
+
+```
+ERROR: relation "password_reset_requests" does not exist
+```
+
+to the one screen that exists so a locked-out person can get back in.
+
+The order is deliberate. The migrations run **after** the build has been proved
+good and **before** the new build is in place, so:
+
+- a broken build never changes the database; and
+- a migration that fails leaves the previous build serving the previous
+  schema, rather than the new code running against a schema that does not
+  exist.
+
+A migration that fails is rolled back with its ledger row — the two are one
+transaction — so the database is left exactly as it was. The deploy stops,
+says why, and the build that was serving keeps serving.
+
+**Rolling the code back does not roll the schema back.** A deploy from an
+older commit applies nothing new — the ledger already records those
+migrations — and undoes nothing: there is no down-migration, and the tables
+the newer migrations created are still there.
 
 **Do not hand-run the build and restart the unit instead.** Two things make
 that sequence deploy nothing:

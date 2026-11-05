@@ -22,6 +22,11 @@
 # The previous build is kept until the new one is in place, so a failure part
 # way through cannot leave the box with no application at all.
 #
+# It also applies the pending migrations, because the code it deploys may need
+# a schema the database does not have yet. It did not, and the documented
+# update path shipped code against an old schema — see the comment on the
+# migration step below for what that cost.
+#
 # Usage (operator):  ./hosted/scripts/deploy-app.sh
 #
 # `systemctl restart` and the ownership fix need root; everything else does
@@ -79,6 +84,58 @@ fi
 # still in place, because the swap has not happened yet.
 echo "==> checking the staged tree stands on its own"
 node scripts/rebase-standalone-symlinks.mjs --check-self-contained "$STAGE"
+
+# ── apply the pending migrations ─────────────────────────────────────────────
+# The code being deployed may need a table, a column or a function that a
+# migration creates, and this script used to ship the code without ever
+# applying it. The documented update path was
+#
+#   git pull origin main && ./hosted/scripts/deploy-app.sh
+#
+# and the schema never moved. The first anyone heard of it was the first
+# person who used the feature the new migration belonged to: migration 0088
+# added the table the self-service password reset writes its throttle to, and
+# a deployment of that feature answered
+#
+#   ERROR: relation "password_reset_requests" does not exist
+#
+# to the one screen that exists so a locked-out person can get back in.
+#
+# The migrations are applied by the SAME script that applies them at boot —
+# hosted/bootstrap/brownhill-bootstrap.sh — so there is one runner for one
+# job. Two runners for one job is two runners to drift apart, and this
+# repository has been bitten by exactly that shape of thing more than once.
+#
+# The REPOSITORY's copy of the ledger library is used, not the installed one
+# at /usr/local/lib/brownhill/schema-ledger.sh. This deploy is applying THIS
+# repository's migrations, so the ledger that records them has to be THIS
+# repository's ledger — the installed copy may be from an older release, and
+# an older ledger is an older ledger's idea of what to check.
+#
+# It runs BEFORE the swap, and on purpose:
+#
+#   * after the build has been proved good, so a broken build never changes
+#     the database; and
+#   * before the new code is in place, so a migration that fails leaves the
+#     previous build serving the previous schema.
+#
+# The other order is strictly worse: a failed migration would leave the new
+# code running against the old schema, which is the very failure this step
+# exists to prevent. A migration that fails is rolled back with its ledger
+# row — the two are one transaction — so the database is left as it was.
+#
+# The ledger is what makes this safe to run on every deploy: a migration is
+# applied at most once, so a re-deploy applies nothing, and a migration that
+# was applied by hand is not applied again.
+echo "==> applying pending migrations"
+if ! BROWNHILL_REPO="$REPO" \
+     BROWNHILL_LEDGER_LIB="$REPO/standalone/scripts/schema-ledger.sh" \
+     bash "$REPO/hosted/bootstrap/brownhill-bootstrap.sh"; then
+  echo "FAIL: the migrations did not apply, so the deploy stops here." >&2
+  echo "      The previous build is still in place and still serving." >&2
+  echo "      The migration that failed was rolled back with its ledger row." >&2
+  exit 1
+fi
 
 # ── swap ────────────────────────────────────────────────────────────────────
 echo "==> installing into $APP_DIR"

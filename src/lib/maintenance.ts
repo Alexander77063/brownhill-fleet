@@ -7,6 +7,7 @@
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { gradeObligation, ragOf, type Rag } from '@/lib/compliance';
+import { appendAudit } from '@/lib/audit';
 
 function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00Z`);
@@ -61,13 +62,13 @@ export async function upsertSchedule(
       onConflict: 'tenant_id,vehicle_id,kind',
     });
   if (error) throw new Error(`Could not save schedule: ${error.message}`);
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'maintenance.scheduled',
-    p_entity_type: 'vehicle',
-    p_entity_id: vehicleId,
-    p_detail: { kind, next_due_on: nextDueOn } as never,
-    p_actor: actor,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'maintenance.scheduled',
+    entityType: 'vehicle',
+    entityId: vehicleId,
+    detail: { kind, next_due_on: nextDueOn },
+    actor: actor,
   });
 }
 
@@ -108,13 +109,13 @@ export async function completeService(tenantId: string, scheduleId: string, inpu
     .eq('id', scheduleId);
   if (schErr) throw new Error(`Could not update schedule: ${schErr.message}`);
 
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: 'maintenance.completed',
-    p_entity_type: 'vehicle',
-    p_entity_id: sched.vehicle_id,
-    p_detail: { kind: sched.kind, done_on: input.doneOn, next_due_on: nextDueOn } as never,
-    p_actor: actor,
+  await appendAudit(sb, {
+    tenantId,
+    action: 'maintenance.completed',
+    entityType: 'vehicle',
+    entityId: sched.vehicle_id,
+    detail: { kind: sched.kind, done_on: input.doneOn, next_due_on: nextDueOn },
+    actor: actor,
   });
   return { nextDueOn };
 }

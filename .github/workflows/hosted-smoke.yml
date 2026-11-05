@@ -195,6 +195,17 @@ jobs:
         # pre-rename name still working, and a loud refusal when there is no
         # hostname at all.
         run: bash hosted/tests/backup-offhost-target.sh
+      - name: The off-host copy to a directory is verified
+        # A copy is not a backup until somebody has checked that the bytes
+        # arrived. For a directory target the helper reads every file back
+        # and compares it with what was sent, so a copy that lost a file on
+        # the way is a failure and not a success — and a copy that could not
+        # be made at all is recorded as a failure too, rather than leaving
+        # yesterday's "Copied" on the status page.
+        #
+        # This drives the real backup script against a real directory.
+        # Static: no docker, no database, no box, a couple of seconds.
+        run: bash hosted/tests/backup-offhost-directory.sh
       - name: The off-host backup drill cannot pass for the wrong reason
         # The drill that proves the off-host copy is watched breaks the b2
         # CLI on purpose. It used to do that on a box where b2 had never
@@ -413,6 +424,47 @@ jobs:
         # not: it applied every migration from the top and died on 0001, which
         # creates the `user_role` enum without a guard.
         run: bash hosted/tests/hosted-bootstrap-idempotency.sh
+      - name: The deployment applies the migrations
+        # The documented update path was `git pull origin main &&
+        # ./hosted/scripts/deploy-app.sh`, and it shipped code against a schema
+        # the database did not have: the deploy built the application,
+        # installed it and restarted the service, and never applied a
+        # migration. The first anyone heard of it was the first person to use
+        # the feature migration 0088 belonged to — the self-service password
+        # reset — and the answer they got was
+        #
+        #   ERROR: relation "password_reset_requests" does not exist
+        #
+        # on the one screen that exists so a locked-out person can get back in.
+        #
+        # This runs the REAL deploy script, the real bootstrap, the real
+        # ledger and the real migrations against a real postgres:16. Only the
+        # build (pnpm), the service manager (systemctl) and the psql client
+        # (a forwarder into the container) are stood in for; `node` is real,
+        # so the deploy's self-contained-tree check runs over the real staged
+        # tree.
+        #
+        # It proves four things: the deploy applies the pending migrations, a
+        # second deploy applies nothing, a migration that cannot apply
+        # STOPS the deploy with the previous build still in place — because a
+        # deploy that swapped the build and then failed to migrate would leave
+        # the new code running against the old schema, which is the failure
+        # the step exists to prevent — and a deploy from an OLDER commit
+        # applies nothing new and undoes nothing, so that rolling the code
+        # back does not roll the schema back.
+        run: bash hosted/tests/deploy-applies-migrations.sh
+      - name: The deploy gate can fail
+        # A gate that cannot fail is not a gate. This one takes the migration
+        # step out of the deploy — which is exactly what the deploy did before
+        # it was fixed — in a copy of the tree, and requires the gate to
+        # notice.
+        #
+        # The gate is first required to PASS against an unmodified copy, and
+        # the failure has to be attributed to the check that the schema moved:
+        # a gate that failed for any other reason would otherwise satisfy
+        # every check below, including the ones that are supposed to prove it
+        # detects this particular defect.
+        run: bash hosted/tests/deploy-applies-migrations-negative.sh
       - name: Hosted smoke
         run: bash hosted/tests/smoke/hosted-smoke.sh
       - name: Two fixtures cannot share a stamp
@@ -560,6 +612,10 @@ jobs:
         run: bash hosted/tests/env-var-names.sh
       - name: The off-host backup's path prefix
         run: bash hosted/tests/backup-offhost-target.sh
+      - name: The off-host copy to a directory is verified
+        # The same gate as the hosted job above: the copy is checked against
+        # the dump, not assumed from the copy's own report.
+        run: bash hosted/tests/backup-offhost-directory.sh
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: pnpm/action-setup@v4

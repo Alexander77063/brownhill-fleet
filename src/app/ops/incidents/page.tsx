@@ -87,7 +87,7 @@ export default async function OpsIncidentsPage() {
                       ))
                     )}
                     {r.photoPath && (
-                      <a href={`/api/receipts/media/${encodeURIComponent(r.photoPath)}`} className="text-xs text-gold-bright hover:underline">
+                      <a href={`/api/damage-reports/${encodeURIComponent(r.id)}/photo`} className="text-xs text-gold-bright hover:underline">
                         View photo →
                       </a>
                     )}

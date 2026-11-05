@@ -287,16 +287,55 @@ if [[ ! -f /etc/brownhill/secrets/mtd.env ]]; then
   echo "      it, and no other tenant can take it afterwards." >&2
 fi
 
+# Who operates the service, for the legal pages.
+#
+# The pages used to name one company — the upstream's — and print its
+# registration details as if they were the box's own. On a box the CUSTOMER
+# operates, the privacy policy told the customer to write to a company that
+# has nothing to do with them, and named an address that does not exist.
+#
+# These are the operator's own identity, so they cannot be generated and they
+# cannot be guessed. They are written EMPTY, once, and never overwritten: the
+# operator fills them in, and a re-run of the installer leaves them alone.
+#
+# Every one of them may legitimately be empty. The pages OMIT a clause whose
+# value is missing rather than printing a bracketed placeholder, so a
+# half-filled file produces a shorter document and not a false one.
+if [[ ! -f /etc/brownhill/secrets/legal.env ]]; then
+  write_secret /etc/brownhill/secrets/legal.env \
+    "LEGAL_OPERATOR_ENTITY=" \
+    "LEGAL_OPERATOR_PRODUCT=" \
+    "LEGAL_OPERATOR_JURISDICTION=" \
+    "LEGAL_OPERATOR_COMPANY_NUMBER=" \
+    "LEGAL_OPERATOR_REGISTERED_ADDRESS=" \
+    "LEGAL_OPERATOR_CONTACT_EMAIL=" \
+    "LEGAL_OPERATOR_PRIVACY_EMAIL=" \
+    "LEGAL_OPERATOR_WEBSITE="
+  echo "note: /etc/brownhill/secrets/legal.env was created with empty values." >&2
+  echo "      The legal pages will omit every clause you leave empty. Fill in" >&2
+  echo "      the operator's own name, registration number, registered office" >&2
+  echo "      and contact address, then restart brownhill-next.service." >&2
+fi
+
 # The B2 credentials are the operator's to supply — they cannot be generated.
 # If they are missing the nightly job still runs and still writes a local
 # dump; only the off-host copy is skipped. The placeholders make that an
 # obvious, greppable failure rather than a silent one.
+#
+# The two off-host settings are written empty on purpose. Left empty, the
+# nightly job copies to Backblaze B2 — where every box has always copied. Set
+# BROWNHILL_OFFHOST_DIR to a mounted drive, a NAS share or a second disk and
+# the dump is copied there instead, under brownhill/<hostname>/, and every
+# file is compared with the dump afterwards. The operator's template says so
+# in the same place as the settings themselves.
 if [[ ! -f /etc/brownhill/secrets/backup.env ]]; then
   write_secret /etc/brownhill/secrets/backup.env \
     "BACKBLAZE_B2_KEY_ID=REPLACE_WITH_B2_KEY_ID" \
     "BACKBLAZE_B2_APPLICATION_KEY=REPLACE_WITH_B2_APPLICATION_KEY" \
     "BACKBLAZE_B2_BUCKET=brownhill-fleet-prod" \
-    "BROWNHILL_FQDN=brownhill.example.co.uk"
+    "BROWNHILL_FQDN=brownhill.example.co.uk" \
+    "BROWNHILL_OFFHOST_TARGET=" \
+    "BROWNHILL_OFFHOST_DIR="
   echo "WARNING: /etc/brownhill/secrets/backup.env was created with placeholder" >&2
   echo "         values. The nightly dump will stay on the box until you fill" >&2
   echo "         in the Backblaze B2 credentials and restart the timer." >&2
@@ -384,6 +423,11 @@ install -m 0644 standalone/scripts/schema-ledger.sh /usr/local/lib/brownhill/sch
 # because the runtime is pinned and already on the box (the app runs on it),
 # while curl is not something the installer puts there.
 install -m 0755 hosted/scripts/brownhill-cron.mjs /usr/local/lib/brownhill/brownhill-cron.mjs
+
+# The copy that leaves the box. The nightly job runs it, so it has to be on
+# the box — a job that cannot find it says so and raises the alert marker,
+# rather than leaving the dump on the machine it was supposed to protect.
+install -m 0755 hosted/scripts/off-host-copy.mjs /usr/local/lib/brownhill/off-host-copy.mjs
 
 # restore.sh is NOT called by a unit — it is spawned by absolute path from the
 # restore console (src/app/admin/restore/route.ts), and exercised by

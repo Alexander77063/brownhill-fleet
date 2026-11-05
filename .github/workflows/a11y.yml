@@ -19,7 +19,7 @@
 #
 # WHAT IT ACTUALLY SCANS
 # ----------------------
-# 95 axe analyses across 83 pages of the hosted deployment: the public pages,
+# 97 axe analyses across 85 pages of the hosted deployment: the public pages,
 # the operations console, the admin console, the accounting module, the
 # finance console, the driver portal, the investor portal, the agreement
 # signing pages, and ten of those pages again at 320 CSS px for WCAG 1.4.10
@@ -73,7 +73,7 @@ jobs:
   axe:
     runs-on: ubuntu-latest
     # The image build is the long pole (about half an hour on a developer
-    # machine), then 95 page loads. The ceiling is generous on purpose: a
+    # machine), then 97 page loads. The ceiling is generous on purpose: a
     # ceiling that is too low costs a whole cycle, and one that is too high
     # costs nothing — the job ends when it ends.
     timeout-minutes: 60

@@ -15,6 +15,7 @@ import { createLocalUser, localHasPassword, setLocalPassword } from "@/lib/auth/
 import { generateTemporaryPassword } from "@/lib/auth/password-reset";
 import { sendTenantEmail } from "@/lib/email/tenant-email";
 import { localDb } from "@/lib/db/local";
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -26,13 +27,13 @@ async function audit(
   detail: Record<string, unknown>,
   actor?: string | null,
 ): Promise<void> {
-  await sb.rpc("log_audit", {
-    p_tenant: tenantId,
-    p_action: action,
-    p_entity_type: "tenant",
-    p_entity_id: entityId ?? undefined,
-    p_detail: detail as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action,
+    entityType: "tenant",
+    entityId: entityId ?? undefined,
+    detail,
+    actor: actor ?? undefined,
   });
 }
 

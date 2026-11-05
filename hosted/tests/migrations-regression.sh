@@ -161,8 +161,19 @@ for f in $(ls -1 supabase/migrations/*.sql | sort); do
   fi
 done
 
+# A missing split point is a FAILURE, not a shrug.
+#
+# This detection is by CONTENT, so renaming the column or rewriting the
+# migration makes it miss — and if a miss is allowed to fall through, this
+# whole phase stops running and the script still ends in `echo OK`. A gate
+# that can be renamed into silence is not a gate. The same shape above (the
+# void-balance detection) already refuses in this situation; this one now does
+# too, for the same reason: the phase exists precisely because a from-zero
+# replay applies the split migration to an empty table, so its backfill
+# updates zero rows and a broken backfill is invisible.
 if [ -z "$split" ]; then
-  echo "no migration introduces agreed_vehicle_price_pence — the backfill phase has nothing to test"
+  echo "FAIL: no migration introduces agreed_vehicle_price_pence — the backfill phase has nothing to test"
+  exit 1
 else
   echo "the rent-to-buy contract arrives in $split"
 
@@ -216,8 +227,14 @@ else
     fi
   done
 
+  # Same rule as above, and the same reason: this is the guard that stops a
+  # second run of the backfill from adding a SECOND set of journal lines and
+  # doubling the business's revenue while every individual posting still
+  # looks correct. If the detection misses, the guard has to stop the run —
+  # a guard that cannot be found must not read as a guard that passed.
   if [ -z "$gl_migration" ]; then
-    echo "no migration creates accounting.ensure_period — the GL backfill is not there to test"
+    echo "FAIL: no migration creates accounting.ensure_period — the GL backfill is not there to test"
+    exit 1
   else
     echo "the GL backfill is $gl_migration"
 

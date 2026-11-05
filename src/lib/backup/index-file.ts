@@ -188,13 +188,33 @@ export function sortBackups(entries: readonly BackupEntry[]): BackupEntry[] {
   });
 }
 
-/** The outcome of the nightly job's off-host copy to Backblaze B2. */
+/** The kinds of destination the off-host copy can be filed under. */
+export type OffHostTargetKind = 'b2' | 'directory';
+
+/** The outcome of the nightly job's off-host copy. */
 export interface BackupSyncState {
   ok: boolean;
   /** When the copy was attempted, ISO-8601 UTC. */
   at: string | null;
   /** Where the copy went, e.g. b2://bucket/brownhill/host — absent on failure. */
   target: string | null;
+  /**
+   * Which kind of destination the copy was filed under.
+   *
+   * Null when the state does not say — a state file written before the field
+   * existed. The operator's page says "not recorded" rather than guessing,
+   * because the two kinds are checked in different ways.
+   */
+  targetKind: OffHostTargetKind | null;
+  /**
+   * Whether the copy was checked, and the check passed.
+   *
+   * Null means the state does not say: the copy was recorded by an older
+   * version of the job, which never checked it. That is NOT the same as
+   * false, which means a check was made and it failed — and the operator's
+   * page must not read one as the other.
+   */
+  verified: boolean | null;
   /** Why it failed, when the script said why. */
   detail: string | null;
 }
@@ -213,7 +233,86 @@ export function parseBackupSyncState(raw: string): BackupSyncState | null {
     ok: row.ok === true,
     at: typeof row.at === 'string' ? row.at : null,
     target: typeof row.target === 'string' ? row.target : null,
+    targetKind:
+      row.targetKind === 'b2' || row.targetKind === 'directory' ? row.targetKind : null,
+    verified: typeof row.verified === 'boolean' ? row.verified : null,
     detail: typeof row.detail === 'string' ? row.detail : null,
+  };
+}
+
+/** How the operator's page reads the off-host copy's state. */
+export interface SyncStateDescription {
+  /** The short label on the tile. */
+  value: string;
+  /** The colour the tile takes. */
+  tone: 'default' | 'profit' | 'warn' | 'loss';
+  /** The line under the label. */
+  hint: string;
+}
+
+/**
+ * Say, in words, what the off-host copy actually did.
+ *
+ * The wording lives here, beside the parser, so that the page and anything
+ * else that reads the state cannot drift apart about what a state means.
+ *
+ * The distinction it exists for: a copy that was made and a copy that was
+ * checked are different things. A box whose nightly job ran yesterday said
+ * "Copied" and nothing else, and the operator had no way to tell whether the
+ * bytes arrived. So the page now says which kind of destination the copy went
+ * to and what kind of check it got.
+ */
+export function describeSyncState(state: BackupSyncState | null): SyncStateDescription {
+  if (!state) {
+    return {
+      value: 'Not yet',
+      tone: 'default',
+      hint: 'No off-host copy has been recorded yet.',
+    };
+  }
+
+  const when = state.at ? formatTimestamp(state.at) : 'an unknown time';
+  const where = state.target ? ` to ${state.target}` : '';
+
+  if (!state.ok) {
+    return {
+      value: 'Failed',
+      tone: 'loss',
+      hint: `Last tried ${when}${state.detail ? ` — ${state.detail}` : ''}`,
+    };
+  }
+
+  if (state.verified === false) {
+    return {
+      value: 'Copied, not verified',
+      tone: 'warn',
+      hint:
+        `Copied ${when}${where} — the copy was not checked, so it may not be restorable.` +
+        `${state.detail ? ` ${state.detail}` : ''}`,
+    };
+  }
+
+  if (state.verified === null) {
+    return {
+      value: 'Copied',
+      tone: 'profit',
+      hint: `Copied ${when}${where} — the check was not recorded by this version of the job.`,
+    };
+  }
+
+  // What kind of check it got depends on where the copy went: a directory
+  // copy is compared with the dump file by file, and a B2 copy is accounted
+  // for by the CLI that made it.
+  const how =
+    state.targetKind === 'directory'
+      ? 'every file was compared with the dump'
+      : state.targetKind === 'b2'
+        ? 'verified by the B2 CLI'
+        : 'verified';
+  return {
+    value: 'Copied',
+    tone: 'profit',
+    hint: `Copied ${when}${where} — ${how}.`,
   };
 }
 

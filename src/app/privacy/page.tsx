@@ -1,16 +1,34 @@
 import type { Metadata } from 'next';
 import { LegalShell } from '@/components/legal/LegalShell';
-import { OPERATOR } from '@/lib/legal';
+import { contactOf } from '@/lib/legal';
+import { resolveOperator } from '@/lib/legal-operator';
+import { regionProvider, PAYMENT_PROVIDER_LABELS, SMS_PROVIDER_LABELS } from '@/lib/region';
 
 export const metadata: Metadata = { title: 'Privacy Policy' };
 
-export default function PrivacyPage() {
+// The operator's identity and the governing law are resolved per request. On a
+// box the customer operates it is their own branding, which they can change —
+// a page frozen at build time would publish whoever the operator was when the
+// image was built.
+export const dynamic = 'force-dynamic';
+
+export default async function PrivacyPage() {
+  const OPERATOR = await resolveOperator();
+  const PRIVACY = contactOf(OPERATOR, 'privacy');
+
+  // The regulator AND the law travel with the region. A privacy policy that
+  // names the NDPC but promises compliance with the UK GDPR is wrong in a
+  // different way from one that names the ICO: it points the reader at the
+  // right desk and misstates the law on the wall above it.
+  const REGION = regionProvider();
+  const DP = REGION.dataProtectionRegulator;
+
   return (
-    <LegalShell title="Privacy Policy">
+    <LegalShell title="Privacy Policy" operator={OPERATOR}>
       <p>
         This Privacy Policy explains how {OPERATOR.entity} (<strong>&ldquo;we&rdquo;</strong>) handles personal data in
-        connection with the {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>). We comply with the
-        UK GDPR and the Data Protection Act 2018.
+        connection with the {OPERATOR.product} platform (the <strong>&ldquo;Service&rdquo;</strong>). We comply with{' '}
+        {DP.law}.
       </p>
 
       <h2>1. Our two roles</h2>
@@ -31,7 +49,7 @@ export default function PrivacyPage() {
       <ul>
         <li><strong>Account &amp; billing:</strong> name, business, email, phone, plan, and payment status (card data is handled by Stripe, not stored by us).</li>
         <li><strong>Usage &amp; device:</strong> log data, IP address, actions taken, and cookies necessary to run the Service.</li>
-        <li><strong>Subscriber Data (as processor):</strong> may include drivers&rsquo; and customers&rsquo; names, contact details, addresses, licence/PCO details, insurance, vehicle and agreement records, charges, payments, and — where the Subscriber enables it — vehicle GPS/telematics.</li>
+        <li><strong>Subscriber Data (as processor):</strong> may include drivers&rsquo; and customers&rsquo; names, contact details, addresses, licence and permit details, insurance, vehicle and agreement records, charges, payments, and — where the Subscriber enables it — vehicle GPS/telematics.</li>
       </ul>
 
       <h2>3. How we use data &amp; lawful bases</h2>
@@ -45,16 +63,19 @@ export default function PrivacyPage() {
       <h2>4. Sharing &amp; sub-processors</h2>
       <p>
         We do not sell personal data. We share it with service providers who process it on our behalf under contract,
-        including: Supabase (database/auth), Vercel (hosting), Cloudflare R2 (file storage), Stripe and GoCardless
-        (payments), Resend (email), Twilio (SMS), and AI providers we use to power the assistant. Feature lookups (DVLA,
-        Companies House, getAddress) are used as directed. We may also disclose data where required by law or to protect
-        rights and safety. Subscribers remain responsible for third-party providers they connect with their own keys.
+        including: Supabase (database/auth), Vercel (hosting), Cloudflare R2 (file storage),{' '}
+        {REGION.paymentProviders.map((p) => PAYMENT_PROVIDER_LABELS[p]).join(', ')} (payments), Resend (email),{' '}
+        {SMS_PROVIDER_LABELS[REGION.smsProvider]} (SMS), and AI providers we use to power the assistant.
+        Vehicle-registration details are checked against the national service where one exists (
+        {REGION.lookups?.label ?? 'none in this market — registration details are entered by hand'}); other lookups are
+        used as directed. We may also disclose data where required by law or to protect rights and safety. Subscribers
+        remain responsible for third-party providers they connect with their own keys.
       </p>
 
       <h2>5. International transfers</h2>
       <p>
-        Some providers may process data outside the UK/EEA. Where they do, we rely on appropriate safeguards (such as UK
-        adequacy regulations or the International Data Transfer Agreement/SCCs).
+        Some providers may process data outside {REGION.label}. Where they do, we rely on appropriate safeguards (such
+        as an adequacy regulation, or standard contractual clauses together with a transfer risk assessment).
       </p>
 
       <h2>6. Retention</h2>
@@ -77,7 +98,7 @@ export default function PrivacyPage() {
         Subject to conditions, you have rights to access, rectify, erase, restrict, port and object to processing of
         your personal data, and to withdraw consent. If your data was entered into the Service by a Subscriber (e.g.
         you are a driver), please contact that Subscriber (the controller) first; we will assist them. To exercise
-        rights against us as controller, contact {OPERATOR.privacyEmail}.
+        rights against us as controller, contact {PRIVACY}.
       </p>
 
       <h2>9. Cookies</h2>
@@ -94,8 +115,12 @@ export default function PrivacyPage() {
 
       <h2>12. Contact &amp; complaints</h2>
       <p>
-        {OPERATOR.entity} · {OPERATOR.privacyEmail}. You have the right to complain to the UK Information
-        Commissioner&rsquo;s Office (ico.org.uk), though we ask that you contact us first.
+        {OPERATOR.entity}
+        {PRIVACY ? ` · ${PRIVACY}` : ''}. You have the right to complain to the{' '}
+        <a href={DP.url} target="_blank" rel="noopener noreferrer">
+          {DP.name}
+        </a>
+        , though we ask that you contact us first.
       </p>
     </LegalShell>
   );

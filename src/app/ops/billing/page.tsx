@@ -7,6 +7,7 @@ import { sendPaymentLink } from '@/lib/actions/billing';
 import { formatDate, titleCase } from '@/lib/display';
 import { hasEntitlement } from '@/lib/entitlements';
 import { payFirst } from '@/lib/region';
+import { appUrl } from '@/lib/app-url';
 import { SubscriptionSection } from './SubscriptionSection';
 import { OverdueCheckCard } from './OverdueCheckCard';
 
@@ -17,11 +18,12 @@ export default async function BillingPage() {
   // first; the rental arrears below exist only for tenants that bought rental.
   const pay = payFirst();
   const rental = await hasEntitlement('rental.core');
-  const [arrears, lookups, payments, agreements] = await Promise.all([
+  const [arrears, lookups, payments, agreements, selfUrl] = await Promise.all([
     getArrears(),
     getLookups(),
     getRecentPayments(20),
     getAgreements(),
+    appUrl(),
   ]);
 
   const totalBilled = arrears.reduce((s, a) => s + (a.billed_pence ?? 0), 0);
@@ -47,7 +49,7 @@ export default async function BillingPage() {
 
       {rental && (
         <section className="mb-4">
-          <OverdueCheckCard />
+          <OverdueCheckCard appUrl={selfUrl} />
         </section>
       )}
 

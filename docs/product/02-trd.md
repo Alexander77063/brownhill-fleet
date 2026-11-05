@@ -3,7 +3,7 @@
 Architecture, stack, integrations, constraints, and the decisions behind them
 with the reasons they were made.
 
-*Status: current as of 2026-11-01. Reviewed against `package.json`,
+*Status: current as of 2026-11-05. Reviewed against `package.json`,
 `next.config.ts`, `src/`, `supabase/`, `hosted/`.*
 
 ---
@@ -21,8 +21,8 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Tests | Vitest | 2.1.9 | `pnpm test` — 712 passing, 0 skipped, 56 files. The database-backed ones need `DATABASE_URL` |
-| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 95 scans across 83 pages of the hosted build |
+| Tests | Vitest | 2.1.9 | `pnpm test` — **1224 passing, 4 skipped, 0 failed, 107 files**, measured 2026-11-05 against the CI environment (`DATABASE_URL`, `APP_ORIGIN`, `REQUIRE_INTEGRATION=1`, `DEPLOYMENT_PROFILE=hosted`) **and a freshly provisioned, never-seeded database** — the `hosted-smoke` job's postgres carries the shim and every migration and no demo data, so a test that reads a row it did not write fails there while passing on a developer's seeded machine. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`; they run on the Linux CI runner, where the figure is 1228 of 1228 — **and the `hosted-smoke` job reported exactly that on 2026-11-05**: `107 passed` across 107 files, `1228 passed` across 1228 tests, against a database provisioned but never seeded |
+| End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 97 scans across 85 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
 | Backups | Backblaze B2 (S3-compatible) via `@aws-sdk/client-s3` | 3.1094.0 | Off-host copy of the nightly dump |
@@ -109,6 +109,50 @@ server** — and so the on-screen report, the downloaded document and the email
 are literally the same code path. They cannot disagree, because there is only
 one of them.
 
+The **self-service password reset** follows the same discipline, with the
+decision half separated from the database so that every branch is testable
+without one:
+
+| Layer | File | Depends on |
+| --- | --- | --- |
+| **Request half** | `src/lib/auth/password-reset-request.ts` | its store and its delivery function, both injected |
+| **Token half** | `src/lib/auth/password-reset-token.ts` | its store, injected |
+| **Policy** | `src/lib/auth/password-reset-policy.ts` | nothing — and it is browser-safe |
+| **Audit** | `src/lib/auth/password-reset-audit.ts` | its writer, injected |
+| **Local store** | `src/lib/auth/password-reset-local-store.ts` | the direct Postgres connection |
+| **Throttle** | `src/lib/auth/password-reset-throttle.ts` | the same connection |
+| **Delivery** | `src/app/api/auth/local/forgot-password/route.ts`, `src/app/api/auth/local/reset-password/route.ts` | the halves above |
+
+The policy module is deliberately free of Node imports: the token's lifetime,
+the minimum password length, the neutral message and the mapping from a role
+to the sign-in page all live in one place, and the browser reads the same file
+the server does. A second copy of the neutral message is a second copy that can
+drift, and a drifted message is how a page stops answering the same way for
+every account state — which is the one property the whole feature exists to
+hold.
+
+The mapping from a role to a sign-in page is **one function**, and it takes the
+build as a required argument: `resetAudienceOnBuild(role, ownerPortal)`. That
+argument is required on purpose. The email, the reset page and the redemption
+each worked the door out separately once, and they drifted — the email ignored
+the build and pointed an owner at a page that build does not serve, the page
+kept a private copy of the rule, and the redemption answered only "ok" so the
+browser used whatever the link had said. A caller that forgets to say which
+build it is on now fails to compile rather than guess, because a guess is what
+produced the drift.
+
+The **audit** module is separate from the token half for the same reason the
+policy is: the row it writes has to be right on its own terms, and it can be
+proved without a database. It is handed its writer — the route hands it
+`appendAudit`, the one place an audit row is written — so the rule can be
+tested without one, and so a failed write is reported rather than thrown at a
+person whose password has already been changed.
+
+The store speaks **SQL rather than PostgREST**, for the same reason
+`src/lib/auth/local-store.ts` does: `auth.local_credentials` is revoked from
+`anon`, `authenticated` and `service_role`, so no HTTP caller can reach it
+whatever role they claim.
+
 ### 3.3 The scheduled jobs (decision D17)
 
 The application's scheduled work runs as **eight systemd timers** on the box,
@@ -148,7 +192,7 @@ the VAT return reported nothing and the receivables never aged.
 | PostgREST | `src/lib/supabase/*` | Required; loopback only |
 | Resend (email) | `src/lib/email/*` | Platform send, `NOTIFY_FROM_EMAIL` |
 | Tenant BYO email | `src/lib/email/*` | `sendTenantEmail`; **silently skips when unconfigured** |
-| Backblaze B2 | `src/lib/backup/*` | Nightly 02:00; local retention 7 days, off-host 90 |
+| Backblaze B2 | `hosted/scripts/off-host-copy.mjs`, `hosted/bootstrap/brownhill-backup.sh` | Nightly 02:00; local retention 7 days, off-host 90. The destination is either B2 or a directory (`BROWNHILL_OFFHOST_DIR`), and a directory copy is compared file-by-file with the dump. A symlink is never followed: a dump holding one is refused by name, and a link standing at the destination is replaced by the real file or directory and reported in `_sync.json` |
 | HMRC MTD | `src/lib/accounting/mtd.ts` | VAT return submission; tokens AES-GCM at rest. Opt-in: reads `HMRC_MTD_CLIENT_ID`, `HMRC_MTD_CLIENT_SECRET`, `HMRC_MTD_REDIRECT_URI` and `HMRC_ENV` — see decision D13 |
 | DVLA | `src/lib/lookups/*` | Fails soft: the UI says "temporarily unavailable" |
 | Web Push | `src/lib/push.ts` | `web-push` is a `serverExternalPackage` |
@@ -315,7 +359,10 @@ trigger now translates.
 installer under the exact name the application reads, and the handover
 document quotes those same names. `hosted/tests/mtd-env-wiring.sh` holds
 both halves to that, and `hosted/tests/mtd-env-wiring-negative.sh` proves
-the gate can fail.
+the gate can fail. The same rule governs the operator's **own legal
+identity**, which `hosted/tests/legal-env-wiring.sh` holds to the same
+standard, with `hosted/tests/legal-env-wiring-negative.sh` proving that
+gate can fail too.
 
 Concretely, on the hosted box:
 
@@ -328,6 +375,49 @@ Concretely, on the hosted box:
 | `HMRC_MTD_VRN` | `src/lib/accounting/mtd.ts` | `install.sh` | `mtd.env` (the installation's default: the first tenant to connect adopts it, and the tenant's own `accounting.firs_credentials.vrn` is what a return is filed against) |
 | `HMRC_MTD_BASE_URL` | `src/lib/accounting/hmrc.ts` | `install.sh` | `mtd.env` (empty → HMRC's own sandbox/production address; the chaos drills point it at a stub) |
 | `NEXT_PUBLIC_APP_URL` | `src/lib/requests.ts`, `src/lib/accounting/mtd.ts` | `write-app-env.sh` | `app.env` |
+
+The operator's **own legal identity** is carried the same way, in eight
+variables that only the operator can fill in:
+
+| Setting | Read by | Provided by | Lives in | What it publishes |
+| --- | --- | --- | --- | --- |
+| `LEGAL_OPERATOR_ENTITY` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the legal entity that operates the service |
+| `LEGAL_OPERATOR_PRODUCT` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the product it operates |
+| `LEGAL_OPERATOR_JURISDICTION` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the jurisdiction whose law governs |
+| `LEGAL_OPERATOR_COMPANY_NUMBER` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the company registration number |
+| `LEGAL_OPERATOR_REGISTERED_ADDRESS` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the registered office address |
+| `LEGAL_OPERATOR_CONTACT_EMAIL` | `src/lib/legal.ts` | `install.sh` | `legal.env` | where general enquiries go |
+| `LEGAL_OPERATOR_PRIVACY_EMAIL` | `src/lib/legal.ts` | `install.sh` | `legal.env` | where privacy enquiries go |
+| `LEGAL_OPERATOR_WEBSITE` | `src/lib/legal.ts` | `install.sh` | `legal.env` | the operator's own website |
+
+**Why the legal identity is settings and not a table.** The legal pages used
+to name one company — the upstream's — and published its registration number
+and registered office as if they were the box's own. On a box the **customer**
+operates, the privacy policy told the customer to write to a company that had
+nothing to do with them. The identity cannot be generated and cannot be
+guessed: it is the operator's own, so it is written **empty once** and never
+overwritten — a re-run of the installer leaves it alone — and the pages
+**omit** a clause whose value is missing rather than printing a bracketed
+placeholder. A half-filled file therefore produces a shorter document, not a
+false one.
+
+**Why four files have to agree.** The names are read in `src/lib/legal.ts`,
+written in `hosted/bootstrap/install.sh`, shown in
+`hosted/bootstrap/operator-secrets.example`, and loaded by
+`hosted/systemd/brownhill-next.service`. A name that is read but never
+written is a setting that does nothing; a name spelled one way in the
+application and another in the installer is worse, because **nothing fails**:
+the legal page omits the clause, forever, and nobody is told. The page still
+renders. It is just shorter than it should be, and the only symptom is a
+missing company number.
+
+`hosted/tests/legal-env-wiring.sh` holds all four files to that — the
+installer writes exactly the names the application reads, the operator's
+template carries exactly those names, the unit loads the file, and the file
+is **optional** where the unit loads it, so a box that has not been told who
+operates it still starts and its pages omit what they have no value for.
+`hosted/tests/legal-env-wiring-negative.sh` runs the same gate against five
+doctored copies of the tree and requires it to fail on each.
 
 **Why.** A variable that is *set* under one spelling and *read* under
 another does not fail — it is ignored, and the application carries on with
@@ -648,6 +738,81 @@ passes is not evidence that it can fail.
 works: the account a failed invite stranded is still adopted and still handed
 a working password.
 
+### D19 — The deployment applies the migrations, before it swaps the build
+
+**Decision.** `hosted/scripts/deploy-app.sh` applies the pending migrations
+through the **same** runner that applies them at boot
+(`hosted/bootstrap/brownhill-bootstrap.sh`), and it does so **before** the new
+build is swapped in. A migration that cannot apply stops the deploy.
+
+**Why.** The documented update path was
+
+```
+cd /opt/brownhill/repo && git pull origin main && ./hosted/scripts/deploy-app.sh
+```
+
+and it shipped code against a schema the database did not have. The deploy
+built the application, copied it into place and restarted the service, and
+never applied a migration — so the code and the schema disagreed from the
+moment the deployment finished, and the first anyone heard of it was the
+first person to use the feature the new migration belonged to. Migration 0088
+added `password_reset_requests`, the table the self-service password reset
+writes its throttle to, and the deployment of that feature answered
+
+```
+ERROR: relation "password_reset_requests" does not exist
+```
+
+to the one screen that exists so a locked-out person can get back in.
+
+**Why the same runner.** Two runners for one job are two runners to drift
+apart, and this repository has been bitten by that shape of thing more than
+once. The boot path and the deploy path now call the same script, against the
+same ledger.
+
+**Why the repository's own copy of the ledger.** The deploy applies **this**
+repository's migrations, so the ledger that records them has to be **this**
+repository's ledger. The installed copy at
+`/usr/local/lib/brownhill/schema-ledger.sh` may be from an older release, and
+an older ledger is an older ledger's idea of what to check.
+
+**Why the migrations run before the swap.** The other order is strictly worse:
+a migration that fails *after* the swap leaves the new code running against
+the old schema, which is the very failure this step exists to prevent. Before
+the swap, a failed migration leaves the previous build serving the previous
+schema, and the deploy says why it stopped. After the build has been proved
+good and before the swap, a broken build never changes the database either.
+
+**Why a failed migration is safe.** The ledger applies a migration and records
+it in **one** transaction, so a failure rolls the migration back with its
+ledger row. The database is left exactly as it was, and the ledger does not
+claim a migration that is not there.
+
+**Why the ledger is what makes this safe on every deploy.** A migration is
+applied at most once: a re-deploy applies nothing, a migration applied by hand
+is not applied again, and a migration whose **content** changed after it was
+applied is refused by name — the schema history is content-versioned and
+forward-only.
+
+**Rolling the code back is not rolling the schema back.** A deploy from an
+older commit applies nothing new — every migration in that older tree is
+already recorded — and undoes nothing: there is no down-migration, and the
+table a newer migration created is still there. The ledger also keeps its rows
+for migrations the older tree does not carry, so the history is not lost. §3.1
+of the launch plan says this to an operator, and
+`hosted/tests/deploy-applies-migrations.sh` proves it: its fourth phase
+deploys a tree that does not carry migrations 0088 and 0089 and requires the
+schema fingerprint, the table and the ledger's row count all to be unchanged.
+
+**The gate.** `hosted/tests/deploy-applies-migrations.sh` runs the **real**
+deploy, the **real** bootstrap, the **real** ledger library and the **real**
+migrations against a real `postgres:16`. Only the build, the service manager
+and the database client are stood in for, and the client forwards to the real
+`psql` inside the container. `hosted/tests/deploy-applies-migrations-negative.sh`
+takes the migration step out of a copy of the tree and requires the gate to
+fail on the schema check — with the deploy itself still working, so that the
+gate is not measuring the wrong thing.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -729,13 +894,13 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Tests | `pnpm test` | 712 passing, 0 skipped, 56 files. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
-| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 52 tests across 7 files, against a real postgres — the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, the HMRC filing, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
+| Tests | `pnpm test` | 1224 passing, 4 skipped, 0 failed, 107 files — measured 2026-11-05 against the CI environment **and a freshly provisioned, never-seeded database**, which is what turns the database-backed suites on rather than skipping them, and what a test that reads a row it did not write has to be measured against. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`, and they run on the Linux CI runner, where the figure is 1228 of 1228 — **measured there by the `hosted-smoke` job on 2026-11-05**: `107 passed` across 107 files, `1228 passed` across 1228 tests. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset, the self-service password reset, the pay-first guard and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 165 tests across 26 files, against a real postgres — 25 integration files carrying 156 tests and the one RLS file carrying 9: the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, the HMRC filing, the invoice register and its void, the reconciliation queue's dates, the booking series, the self-service password reset (single-use, the per-IP throttle, the account it belongs to), the account session marker, the invite and team-member flows, the audit actor, the address and email-casing rules, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |
 | Lint a11y | `pnpm lint:a11y` | ESLint + `jsx-a11y` |
 | Contrast | `pnpm test:a11y:contrast` | The colour tokens' WCAG ratios, read out of `src/app/globals.css` and measured in both themes |
-| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **95 scans across 83 pages**, including the 320 px reflow pass and the tokenised signing route |
+| E2E + axe | `pnpm test:a11y` | Playwright + axe-core against the hosted build: **97 scans across 85 pages**, including the 320 px reflow pass and the tokenised signing route |
 | Hosted smoke | `hosted/tests/*` | The real deployment, on `ubuntu-latest`; the production-shaped job runs on the self-hosted `pulsar` runner |
 
 The three accessibility suites — form audit, lint and contrast — all run in the
@@ -750,7 +915,7 @@ in the `hosted-smoke` workflow either — that workflow's trigger paths are the
 schema, and adding `src/**` to them would drag the migration-replay job into
 every interface change. The `a11y` workflow builds the stack from
 `hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
-scans **83 distinct pages of the hosted deployment in 95 analyses** — ten of
+scans **85 distinct pages of the hosted deployment in 97 analyses** — ten of
 those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The
 coverage numbers are computed rather than typed: `tests/a11y/routes.ts` holds
 the route lists and `tests/unit/a11y-coverage.test.ts` counts them, checks that

@@ -7,6 +7,7 @@
 
 import { createServiceClient } from '@/lib/supabase/server';
 import { checkCompliance } from '@/lib/compliance';
+import { appendAudit } from '@/lib/audit';
 
 export type BookingStatus =
   | 'requested'
@@ -34,13 +35,13 @@ export function canTransition(from: BookingStatus, to: BookingStatus): boolean {
 type Sb = ReturnType<typeof createServiceClient>;
 
 async function audit(sb: Sb, tenantId: string, action: string, bookingId: string, detail: Record<string, unknown>, actor?: string | null) {
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: action,
-    p_entity_type: 'booking',
-    p_entity_id: bookingId,
-    p_detail: detail as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action,
+    entityType: 'booking',
+    entityId: bookingId,
+    detail,
+    actor: actor ?? undefined,
   });
 }
 

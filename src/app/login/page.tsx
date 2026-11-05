@@ -294,6 +294,19 @@ export default function LoginPage() {
                       {showPassword ? 'Hide' : 'Show'}
                     </button>
                   </div>
+                  {/* The way back, for the builds that have one.
+                      Only where the password is OUR password: under Supabase
+                      Auth the recovery link is Supabase's to send, and this
+                      endpoint is a 404 on that build. So the link appears only
+                      for local auth — and only in password mode, where it
+                      belongs. */}
+                  {LOCAL_AUTH && (
+                    <p className="mt-2 text-xs text-muted">
+                      <Link href="/forgot-password" className="text-gold-bright hover:underline">
+                        Forgotten your password?
+                      </Link>
+                    </p>
+                  )}
                 </div>
               )}
               <Button type="submit" disabled={busy} className="w-full">
@@ -367,6 +380,30 @@ export default function LoginPage() {
               </Link>
             </p>
           )}
+
+          {/* The other doors on this build.
+              The driver and owner forms both link back here ("← back to sign-in
+              options"), so the relationship used to be one-way: someone who
+              landed on this staff form had no way to reach the page meant for
+              them. Only the portals this build actually serves are listed — the
+              vehicle-owner portal is gated off on the hosted deployment
+              Brownhill runs, and a link that opens onto a 404 is worse than no
+              link at all. */}
+          {CAPS.portals.length > 0 && (
+            <nav aria-label="Other sign-in options" className="mt-6 border-t border-hair-soft pt-4">
+              <p className="text-xs text-muted">Signing in as someone else?</p>
+              <ul className="mt-2 space-y-1">
+                {CAPS.portals.map((portal) => (
+                  <li key={portal.href}>
+                    <Link href={portal.href} className="text-sm text-gold-bright hover:underline">
+                      {portal.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          )}
+
           <p className="mt-4 text-xs text-muted">
             <Link href="/terms" className="hover:text-cream">Terms</Link> ·{' '}
             <Link href="/privacy" className="hover:text-cream">Privacy</Link> ·{' '}

@@ -16,9 +16,10 @@
 # on the box, and the operator had no way of knowing that the one thing a
 # backup exists for — the box dying — had never been protected against.
 #
-# The copy is now made by the b2 CLI directly, and its outcome is recorded as
-# an alert marker that the operator's own paging reads. A failed copy is a
-# loud, non-zero exit, not a line in a log nobody reads.
+# The copy is now made by off-host-copy.mjs, and its outcome is recorded both
+# as an alert marker that the operator's own paging reads and as a state file
+# the operator's status page shows. A failed copy is a loud, non-zero exit,
+# not a line in a log nobody reads.
 set -euo pipefail
 
 # The directories are overridable so the job can be exercised without a box.
@@ -28,11 +29,11 @@ ALERT_DIR="${ALERT_DIR:-/run/brownhill/alerts}"
 STALE_MARKER="$ALERT_DIR/backup_sync_stale"
 SYNC_STATE="$DUMP_DIR/_sync.json"
 
-# The resolved remote prefix, filled in by sync_off_host. It is a global
-# because the caller writes it into _sync.json — and it has to be the value
-# the sync ACTUALLY used, not the environment variable read again, or a box
-# that is still on the pre-correction name records its target as "unset"
-# while copying to a real path.
+# The hostname the copy was filed under, filled in by sync_off_host. It is a
+# global because the caller reports it — and it has to be the value the copy
+# ACTUALLY used, not the environment variable read again, or a box that is
+# still on the pre-correction name reports its target as "unset" while
+# copying to a real path.
 SYNC_FQDN=""
 
 # ── how to reach the cluster ────────────────────────────────────────────────
@@ -82,69 +83,57 @@ clear_stale() {
 }
 
 # ── the off-host copy ───────────────────────────────────────────────────────
-# Credentials come from /etc/brownhill/secrets/backup.env, which is this unit's
-# EnvironmentFile. The b2 CLI reads B2_APPLICATION_KEY_ID / B2_APPLICATION_KEY;
-# the secrets file names them BACKBLAZE_B2_KEY_ID / BACKBLAZE_B2_APPLICATION_KEY,
-# so they are mapped here.
+# The copy is made by off-host-copy.mjs: ONE implementation, shared by the
+# nightly job here and by anything else that needs to put a dump somewhere
+# else. It resolves the destination from the deployment's settings, makes the
+# copy, checks that the bytes arrived, and records the outcome in _sync.json —
+# the file the operator's status page reads.
+#
+# The settings live in /etc/brownhill/secrets/backup.env, which is this unit's
+# EnvironmentFile. They are named here as well, so the contract with that
+# file is visible in the job that runs nightly and not only in the helper it
+# calls.
 #
 # An unconfigured box is not a failure of the backup — the dump is still
 # written — but it IS the state the operator needs to see, so it raises the
 # same marker and says so plainly.
 sync_off_host() {
-  if ! command -v b2 >/dev/null 2>&1; then
-    echo "WARNING: the b2 CLI is not installed, so the dump was NOT copied off" >&2
-    echo "         this box. Install it with:" >&2
-    echo "           sudo ./hosted/scripts/fetch-runtime.sh" >&2
+  local helper output status
+
+  helper="$(off_host_helper)"
+  if [[ ! -f "$helper" ]]; then
+    echo "WARNING: the off-host helper is not installed ($helper), so the dump was" >&2
+    echo "         NOT copied off this box. Install it with:" >&2
+    echo "           sudo ./hosted/scripts/install-hosted.sh" >&2
+    return 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "WARNING: node is not on this job's PATH, so the dump was NOT copied off" >&2
+    echo "         this box. The pinned runtime lives in /opt/brownhill/node/bin." >&2
     return 1
   fi
 
-  local key_id="${BACKBLAZE_B2_KEY_ID:-}"
-  local key="${BACKBLAZE_B2_APPLICATION_KEY:-}"
-  local bucket="${BACKBLAZE_B2_BUCKET:-}"
+  output="$(node "$helper" --source "$DUMP_DIR" \
+             --target "${BROWNHILL_OFFHOST_TARGET:-}" \
+             --dir "${BROWNHILL_OFFHOST_DIR:-}" 2>&1)" && status=0 || status=$?
+  printf '%s\n' "$output" >&2
+  SYNC_FQDN="$(printf '%s\n' "$output" | sed -n 's/^FQDN=//p' | head -n 1)"
+  return "$status"
+}
 
-  if [[ -z "$key_id" || -z "$key" || "$key_id" == REPLACE_* || "$key" == REPLACE_* ]]; then
-    echo "WARNING: the Backblaze B2 credentials in /etc/brownhill/secrets/backup.env" >&2
-    echo "         are still the placeholders, so the dump was NOT copied off this" >&2
-    echo "         box. Fill them in and the next run will copy it." >&2
-    return 1
+# Where the copy helper lives.
+#
+# The installed box has it in /usr/local/lib/brownhill, beside the other
+# helpers the installer ships. In the repository it sits beside this script,
+# so the tests drive the real thing rather than a copy of it.
+off_host_helper() {
+  if [[ -f /usr/local/lib/brownhill/off-host-copy.mjs ]]; then
+    printf '%s\n' /usr/local/lib/brownhill/off-host-copy.mjs
+    return 0
   fi
-  if [[ -z "$bucket" ]]; then
-    echo "WARNING: BACKBLAZE_B2_BUCKET is not set, so the dump was NOT copied off" >&2
-    echo "         this box." >&2
-    return 1
-  fi
-
-  # The remote prefix: the deployment's hostname, which is also the path the
-  # dump is filed under inside the bucket.
-  #
-  # The name of this variable was corrected across the whole repository — the
-  # product's name is Brownhill, so the prefix is BROWNHILL_ and not the
-  # one-letter-short spelling the files used to carry. A box provisioned
-  # before that correction still has the old name in
-  # /etc/brownhill/secrets/backup.env, because the installer only writes that
-  # file when it is absent. So the old name is read as a fallback and the
-  # operator is told to rename it; `grep -rn 'legacy-env-var:'` finds every
-  # place that fallback lives.
-  local fqdn="${BROWNHILL_FQDN:-}"
-  if [[ -z "$fqdn" ]]; then
-    fqdn="${BROWNILL_FQDN:-}"   # legacy-env-var: the pre-correction name, still honoured
-    if [[ -n "$fqdn" ]]; then
-      echo "WARNING: /etc/brownhill/secrets/backup.env still uses the old name for" >&2
-      echo "         the FQDN variable. Rename it to BROWNHILL_FQDN — the old name" >&2
-      echo "         still works, but it will be removed." >&2
-    fi
-  fi
-  if [[ -z "$fqdn" ]]; then
-    echo "WARNING: BROWNHILL_FQDN is not set, so the dump was NOT copied off" >&2
-    echo "         this box. Set it in /etc/brownhill/secrets/backup.env to the" >&2
-    echo "         deployment's hostname, e.g. brownhill.example.co.uk." >&2
-    return 1
-  fi
-  SYNC_FQDN="$fqdn"
-
-  export B2_APPLICATION_KEY_ID="$key_id"
-  export B2_APPLICATION_KEY="$key"
-  b2 sync "$DUMP_DIR" "b2://$bucket/brownhill/$fqdn/"
+  local here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
+  printf '%s\n' "$here/../scripts/off-host-copy.mjs"
 }
 
 # ── the nightly job ─────────────────────────────────────────────────────────
@@ -190,20 +179,28 @@ run_backup() {
   } > "$DUMP_DIR/_index.json"
 
   # ── the copy that leaves the box ──────────────────────────────────────────
+  #
+  # The helper writes the state itself — whether the copy worked or not — so
+  # that the status page and the alert marker can never disagree about what
+  # happened. The start time is kept so that a state left over from an
+  # earlier run can be recognised as stale: if the helper never ran at all
+  # (node missing, the helper not installed), the state on disk still says
+  # "Copied" from last night, and the operator must not be shown that.
+  local started
+  started=$(date +%s)
+
   if sync_off_host; then
     echo "off-host copy complete"
     clear_stale
-    printf '{"ok":true,"at":"%s","target":"b2://%s/brownhill/%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      "${BACKBLAZE_B2_BUCKET:-}" \
-      "${SYNC_FQDN:-unset}" > "$SYNC_STATE"
     exit 0
   fi
 
   echo "off-host copy did not complete — the local dump is retained at $DUMP" >&2
   raise_stale
-  printf '{"ok":false,"at":"%s","detail":"the off-host copy did not complete"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SYNC_STATE"
+  if [[ ! -f "$SYNC_STATE" ]] || [[ "$(stat -c %Y "$SYNC_STATE")" -lt "$started" ]]; then
+    printf '{"ok":false,"at":"%s","target":null,"targetKind":null,"verified":false,"detail":"the off-host helper did not run"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SYNC_STATE"
+  fi
   exit 1
 }
 

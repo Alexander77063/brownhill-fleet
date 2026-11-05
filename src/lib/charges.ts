@@ -11,6 +11,7 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { notifyTenantOwner } from '@/lib/comms';
 import { recordExpense } from '@/lib/expenses';
+import { appendAudit } from '@/lib/audit';
 
 type Sb = ReturnType<typeof createServiceClient>;
 
@@ -22,13 +23,13 @@ async function audit(
   detail: Record<string, unknown>,
   actor?: string | null,
 ) {
-  await sb.rpc('log_audit', {
-    p_tenant: tenantId,
-    p_action: action,
-    p_entity_type: 'charge',
-    p_entity_id: entityId,
-    p_detail: detail as never,
-    p_actor: actor ?? undefined,
+  await appendAudit(sb, {
+    tenantId,
+    action,
+    entityType: 'charge',
+    entityId,
+    detail,
+    actor: actor ?? undefined,
   });
 }
 
