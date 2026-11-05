@@ -911,9 +911,12 @@ cannot fail is not a gate.
 
 The runtime axe pass is a separate job, in the `a11y` workflow. It needs a
 browser and the hosted stack, so it cannot live in the fast lane, and it is not
-in the `hosted-smoke` workflow either — that workflow's trigger paths are the
-schema, and adding `src/**` to them would drag the migration-replay job into
-every interface change. The `a11y` workflow builds the stack from
+in the `hosted-smoke` workflow either — that workflow's pull-request filter
+already names the application, the schema and the tests, and adding a browser
+to it would drag the migration-replay job into every interface change. The
+`hosted-smoke` workflow does run on every push to `main`, and with no paths
+filter, because `main` is the branch the deployment is cut from. The `a11y`
+workflow builds the stack from
 `hosted/dev/docker-compose.yml`, seeds the demo data and the demo accounts, and
 scans **85 distinct pages of the hosted deployment in 97 analyses** — ten of
 those pages are scanned a second time at 320 CSS px for WCAG 1.4.10. The

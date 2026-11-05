@@ -114,7 +114,8 @@ The last three rows are the operator-only tables (`driver_damage_reports`,
 policies now require the operator role as well as tenant membership. They are
 assertions 10–12 of `standalone/sql/portable-rls-proof.sql`, and the
 `Migrations-regression` step of the `hosted-smoke` job is what runs them, on
-every pull request that touches `supabase/migrations/**`. They are marked
+every push to `main` and on every pull request that touches
+`supabase/migrations/**`. They are marked
 **Enforced by CI** rather than **Passed** because the gate for them is the
 pipeline, not a local claim: **a green `hosted-smoke` job is what turns them
 into Passed.**
@@ -133,8 +134,9 @@ same history over a database that already holds rent-to-buy agreements
 the backfill is asserted to reconstruct 36 months at £4,420 a month from
 £1,020 a week over 156 weeks, to take the agreed price from the car's list
 value, to leave the standard rentals alone, to be idempotent, and to satisfy
-the CHECK it adds. The harness already runs on every PR — it is the
-`Migrations-regression` step in `.github/workflows/hosted-smoke.yml` — so both
+the CHECK it adds. The harness already runs on every push to `main`, and on
+every PR that touches what it replays — it is the `Migrations-regression` step
+in `.github/workflows/hosted-smoke.yml` — so both
 phases are enforced by the pipeline. **The pipeline is the gate: a red
 `hosted-smoke` job means Stage 1 is not passed.**
 
