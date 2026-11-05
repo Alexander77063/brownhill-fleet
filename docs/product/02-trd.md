@@ -634,7 +634,8 @@ run without one and fails loudly when the endpoint fails. A timer that exits
 0 on a failed job is a timer that hides its own failures, which is how a box
 ends up billing nobody *and* reporting that it is fine.
 
-Proved by `hosted/tests/cron-timers.sh` (48 assertions) and
+Proved by `hosted/tests/cron-timers.sh` (56 assertions where `systemd-analyze`
+is present, as on the CI runner — 48, and a skip, where it is not) and
 `hosted/tests/cron-timers-negative.sh` (6), which runs the same gate against
 a doctored tree with a timer removed and requires it to fail.
 
