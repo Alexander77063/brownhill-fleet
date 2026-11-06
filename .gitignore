@@ -118,3 +118,14 @@ hosted/static/
 # Scratch space for the tooling's own diagnostics. Nothing here is a build
 # artefact of the application and nothing here belongs in the repository.
 .tmp/
+# The user-test harness in hosted/tests/user-test/ IS tracked — manifest.mjs,
+# sweep.mjs and seed-report.mjs are the repeatable test. The four .probe-*.mjs
+# files beside them are one-off diagnostics written while driving that harness
+# by hand: they read the box's own credentials and print them, so they are
+# machine-local in the same way as .tmp/ and must never be committed.
+hosted/tests/user-test/.probe-*.mjs
+# A field-dump diagnostic, superseded by tests/unit/contract-drift.test.ts,
+# which asserts the same thing properly. It is a .test.ts, so vitest collects
+# it — left in place it would make the local suite count differ from the one
+# CI reports, which is exactly the drift the published figure must not have.
+tests/unit/_dump-contract-fields.test.ts
