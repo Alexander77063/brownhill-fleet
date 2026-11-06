@@ -80,9 +80,27 @@ export default function SetupPage() {
     'w-full rounded-lg border border-hair-soft bg-transparent px-3 py-2 text-cream outline-none focus:border-gold';
 
   if (checking) {
+    //
+    // The heading is in this branch too, not only in the form's.
+    //
+    // This is a client component, so what the SERVER sends is this shell —
+    // and the shell used to be a bare line of text with no <h1> in it. A
+    // visitor without JavaScript, or on a slow connection, got a page with
+    // no heading and no way forward; a screen reader announced no page
+    // title at all. The user test found it by asserting that a page has an
+    // <h1>, and it was right to.
+    //
+    // The heading is the same one the form shows, because it is the same
+    // page — the check only decides whether the form is offered, not what
+    // the page is called.
     return (
       <main id="main-content" tabIndex={-1} className="grid min-h-dvh place-items-center p-6">
-        <p className="text-muted">Checking this installation…</p>
+        <div className="w-full max-w-md">
+          <p className="eyebrow">Welcome</p>
+          <h1 className="mt-1 font-display text-3xl text-cream">Set up your system</h1>
+          <div className="gold-rule mt-3 mb-4" />
+          <p className="text-sm text-muted">Checking this installation…</p>
+        </div>
       </main>
     );
   }
