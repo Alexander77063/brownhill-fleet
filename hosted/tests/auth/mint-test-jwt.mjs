@@ -18,7 +18,7 @@
 // `role: 'owner'` — neither of which the application ever produces.
 //
 // Usage:
-//   MINT_JWT_SECRET=<secret> node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [subject]
+//   MINT_JWT_SECRET=<secret> node hosted/tests/auth/mint-test-jwt.mjs <tenantId> [subject] [ttlSeconds]
 //
 // The secret comes from the ENVIRONMENT, never from the command line.
 //
@@ -30,6 +30,13 @@
 // who could read that argument could mint a session for any user in any
 // tenant. `/proc/<pid>/environ` is readable only by the process's own user
 // and by root, so the environment is the right place.
+//
+// The lifetime is optional and defaults to ten minutes, which is right for a
+// chaos drill: the drill runs, asserts and the credential is worthless
+// moments later. A long-running sweep needs longer than that — it drives
+// hundreds of requests across every console, and a session that expires
+// half-way through makes a working page look broken. A caller that needs a
+// longer session says so.
 //
 // The subject is the user id the token is for. It defaults to a fixed
 // placeholder, which is all the portability proof needs — it asserts about
@@ -104,6 +111,8 @@ if (!process.env[RESPAWNED]) {
 
 const tenant = process.argv[2];
 const subject = process.argv[3] || 'proof-subject';
+// The lifetime, in seconds. Ten minutes unless the caller says otherwise.
+const ttlSeconds = Number(process.argv[4]) || 600;
 
 // The signing secret, from the ENVIRONMENT.
 //
@@ -119,7 +128,9 @@ const subject = process.argv[3] || 'proof-subject';
 const secret = process.env.MINT_JWT_SECRET || '';
 
 if (!tenant) {
-  console.error('usage: MINT_JWT_SECRET=<secret> mint-test-jwt.mjs <tenantId> [subject]');
+  console.error(
+    'usage: MINT_JWT_SECRET=<secret> mint-test-jwt.mjs <tenantId> [subject] [ttlSeconds]',
+  );
   process.exit(2);
 }
 
@@ -163,7 +174,7 @@ try {
   const token = await signJwt(
     { sub: subject, role: 'authenticated', tenant_id: tenant },
     secret,
-    600,
+    ttlSeconds,
   );
   process.stdout.write(token);
 } catch (err) {
