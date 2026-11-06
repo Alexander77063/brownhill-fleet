@@ -3,7 +3,7 @@
 Architecture, stack, integrations, constraints, and the decisions behind them
 with the reasons they were made.
 
-*Status: current as of 2026-11-05. Reviewed against `package.json`,
+*Status: current as of 2026-11-06. Reviewed against `package.json`,
 `next.config.ts`, `src/`, `supabase/`, `hosted/`.*
 
 ---
@@ -21,7 +21,7 @@ with the reasons they were made.
 | Database | PostgreSQL | 16.4 | Hosted runtime fetches it; migrations are plain Postgres SQL |
 | Data access | PostgREST | 12.2.3 | Serves the schema over HTTP on `127.0.0.1:55430`; the app speaks Supabase's REST dialect to it |
 | Client | `@supabase/supabase-js` | 2.45.4 | See decision D2 |
-| Tests | Vitest | 2.1.9 | `pnpm test` — **1224 passing, 4 skipped, 0 failed, 107 files**, measured 2026-11-05 against the CI environment (`DATABASE_URL`, `APP_ORIGIN`, `REQUIRE_INTEGRATION=1`, `DEPLOYMENT_PROFILE=hosted`) **and a freshly provisioned, never-seeded database** — the `hosted-smoke` job's postgres carries the shim and every migration and no demo data, so a test that reads a row it did not write fails there while passing on a developer's seeded machine. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`; they run on the Linux CI runner, where the figure is 1228 of 1228 — **and the `hosted-smoke` job reported exactly that on 2026-11-05**: `107 passed` across 107 files, `1228 passed` across 1228 tests, against a database provisioned but never seeded |
+| Tests | Vitest | 2.1.9 | `pnpm test` — **1336 passing, 4 skipped, 0 failed, 113 files**, measured 2026-11-06 against the CI environment (`DATABASE_URL`, `APP_ORIGIN`, `REQUIRE_INTEGRATION=1`, `DEPLOYMENT_PROFILE=hosted`) **and a freshly provisioned, never-seeded database** — the `hosted-smoke` job's postgres carries the shim and every migration and no demo data, so a test that reads a row it did not write fails there while passing on a developer's seeded machine. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`; they run on the Linux CI runner, so the figure there is expected to be **1340 of 1340** — a figure **not** re-measured on the runner since these tests were added; the last runner measurement was **1228 of 1228 across 107 files** on 2026-11-05 |
 | End-to-end / a11y | Playwright + `@axe-core/playwright` | 1.62.1 / 4.12.1 | The axe pass is its own CI job — 97 scans across 85 pages of the hosted build |
 | Lint | ESLint 9 + `eslint-plugin-jsx-a11y` | 9.39.5 / 6.10.2 | `pnpm lint:a11y` |
 | Form a11y | Custom auditor | `scripts/a11y-audit.mjs` | `pnpm a11y:forms` — the house rule that every control sits inside a `<label>` |
@@ -813,6 +813,42 @@ takes the migration step out of a copy of the tree and requires the gate to
 fail on the schema check — with the deploy itself still working, so that the
 gate is not measuring the wrong thing.
 
+### D20 — One content module per agreement; the shipped document is a build artefact
+
+**Decision.** Each agreement has its **own** content module holding its clause
+text, its field list and its metadata, and its **own** build script. The two
+share a renderer (`scripts/contracts/render-contract.mjs`) and nothing else.
+The renderer writes two deliverables per agreement — a `.docx` and a fillable
+`.html` — into `docs/contracts/`.
+
+**Why.** The rental agreement and the rent-to-buy are two documents with two
+different legal characters. A shared content module with a `--kind` switch
+would mean one file had to know about both sets of clauses, and it would grow
+a branch every time a clause was added to either document. A shared *renderer*
+is different: the Word writer, the HTML writer and the token audit are the
+same problem three times over, and one implementation of them cannot disagree
+with itself.
+
+**The consequence, which is the point.** Because the shipped files are build
+artefacts and not sources, a hand-edit to one of them is a **defect** — the
+next build silently reverts it, and nobody notices either way. So
+`tests/unit/contract-drift.test.ts` holds the shipped document to its content
+module (the same bytes for the HTML; the same clauses for the Word file,
+because a `.docx` records when it was built and the archives cannot be compared
+byte for byte), holds every clause to a field the document actually defines —
+so no raw `{{token}}` can reach a customer — and holds the **application** to
+the **document**: every value the application computes has a box, and every
+particular it leaves blank is one the operator completes later or one with a
+written reason. The gate carries its own negative control, so it cannot
+degrade into comparing nothing and passing every document.
+
+**Why the gate had to exist at all.** Before it, nothing compared the
+documents with anything: a clause tightened in the content module left the
+shipped Word file saying the old thing, a field added to the application had no
+box on the document so the value was dropped at the last step, and a
+particular nobody could supply went out with a blank in it and no list. None of
+those crashes. They all arrive as a customer complaint.
+
 ## 7. The rent-to-buy model, in full
 
 ### 7.1 Inputs (all editable)
@@ -894,7 +930,7 @@ order, so the board's figure and the investor's figure are the same figure.
 
 | Suite | Command | What it covers |
 | --- | --- | --- |
-| Tests | `pnpm test` | 1224 passing, 4 skipped, 0 failed, 107 files — measured 2026-11-05 against the CI environment **and a freshly provisioned, never-seeded database**, which is what turns the database-backed suites on rather than skipping them, and what a test that reads a row it did not write has to be measured against. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`, and they run on the Linux CI runner, where the figure is 1228 of 1228 — **measured there by the `hosted-smoke` job on 2026-11-05**: `107 passed` across 107 files, `1228 passed` across 1228 tests. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset, the self-service password reset, the pay-first guard and the accessibility-coverage arithmetic), the accounting module against a real postgres, and the accounting schema's tenant isolation |
+| Tests | `pnpm test` | 1336 passing, 4 skipped, 0 failed, 113 files — measured 2026-11-06 against the CI environment **and a freshly provisioned, never-seeded database**, which is what turns the database-backed suites on rather than skipping them, and what a test that reads a row it did not write has to be measured against. The 4 skips are the POSIX permission-bit checks, `skipIf(process.platform === 'win32')`, and they run on the Linux CI runner, so the figure there is expected to be **1340 of 1340** — **not** re-measured on the runner since these tests were added; the last runner measurement was **1228 of 1228 across 107 files** on 2026-11-05. Unit, integration and RLS: pure logic (pricing, the report model, the renderers, accounting maths, audit filters, permission tokens, the WCAG contrast arithmetic, the sign-in capability rule, the operator's password reset, the self-service password reset, the pay-first guard, the accessibility-coverage arithmetic and the contract builder's field and clause drift), the accounting module against a real postgres, and the accounting schema's tenant isolation |
 | Database-backed | `pnpm exec vitest run tests/integration tests/rls` | 165 tests across 26 files, against a real postgres — 25 integration files carrying 156 tests and the one RLS file carrying 9: the journal's atomicity, the chart of accounts, the period close, its preflight and the race between a close and a bank import, the HMRC filing, the invoice register and its void, the reconciliation queue's dates, the booking series, the self-service password reset (single-use, the per-IP throttle, the account it belongs to), the account session marker, the invite and team-member flows, the audit actor, the address and email-casing rules, and the accounting schema's tenant isolation. They **skip** without `DATABASE_URL`, and a skip is not a pass, so the CI job sets it to the compose stack's own `postgres://postgres@127.0.0.1:55432/postgres` |
 | Typecheck | `pnpm typecheck` | `tsc --noEmit`, a CI gate |
 | Form a11y | `pnpm a11y:forms` | The house rule: every control inside a `<label>` |

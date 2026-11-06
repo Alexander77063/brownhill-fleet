@@ -3,7 +3,7 @@
 Every surface, every actor, end to end — including what happens when it goes
 wrong.
 
-*Status: current as of 2026-11-05. Reviewed against `src/app/**`,
+*Status: current as of 2026-11-06. Reviewed against `src/app/**`,
 `src/components/shell/nav.ts`, `src/lib/iam.ts`, `src/lib/auth.ts`,
 `src/lib/deployment/signin-modes.ts`, `src/lib/auth/password-reset.ts`.*
 
@@ -353,6 +353,67 @@ This is the flow the newest work added, end to end.
 | A recipient's email fails | The action reports it in `failed[]`, and still sends to the others |
 | No email provider is configured | `sendTenantEmail` skips silently; the platform sender (`NOTIFY_FROM_EMAIL`, defaulting to a Brownhill fleet address) is the fallback |
 | No recipients and no typed address | The action returns a message saying so, not an empty send |
+
+### 3.3 Issuing the contract — the document the customer signs
+
+Writing the agreement row is not the same thing as issuing the agreement. The
+document is a separate step, and it has its own gates.
+
+```
+/ops/agreements → [an agreement] → "Open & edit contract"
+  │
+  ├─ Which document?
+  │     type='rtb'                      → the rent-to-buy, always
+  │     type='standard', a certificate on file  → the self-insured edition
+  │     type='standard', nothing on file      → the company-insured edition
+  │
+  ├─ The identity gate
+  │     the tenant's legal name, trading name, registered address,
+  │     company number, VAT number, contact details
+  │     any one missing → REFUSE, and say which
+  │
+  ├─ Fill it
+  │     the agreement, the vehicle, the driver, the certificate,
+  │     the tenant's branding → every box the application can fill
+  │
+  ├─ Say what is left
+  │     "Still to be completed before this agreement is signed"
+  │     "Completed at handover"
+  │     nothing left → "Ready to issue"
+  │
+  └─ The customer sees the document
+        the outstanding list is hidden on print and on download
+        ?download=1 saves it as a file instead of opening it
+```
+
+The driver's own **Documents** page links to the same document, so a customer
+can be sent straight to it.
+
+**Why the identity gate exists.** A contract carries the **Lessor's** legal
+identity. Issuing one before the tenant has set that identity would put the
+platform's own company on a legal document — and the failure would be silent:
+a valid-looking agreement, with the wrong company on it. So the route refuses
+rather than filling in a default.
+
+**Why the outstanding list exists.** Some particulars cannot come from the
+database: the odometer at handover, the fuel level, the keys, the condition
+notes, and — on the two editions where the customer holds their own policy —
+**the insurance excess**. The platform holds the insurer, the policy number and
+the dates; it does **not** hold the excess. Quoting Brownhill's fleet excess as
+the excess on a customer's own policy would be a false statement in a contract,
+so those two editions leave it blank and the operator reads it off the policy.
+The list is a note to the operator and never reaches the customer's copy.
+
+**Failure paths**
+
+| Condition | What happens |
+| --- | --- |
+| The agreement does not exist | **404** `{"error":"agreement not found"}` — not an empty document |
+| The tenant has not set their legal identity | **403**, and a stop page naming what is missing and linking to `/admin/branding`. **No document is issued** |
+| The template file cannot be read | **500** "template unavailable" — a named failure, not a blank page |
+| The customer holds their own policy | The self-insured edition, with their insurer and policy number. Brownhill's fleet policy is **not** printed on it |
+| Nothing holds a certificate | The company-insured edition, with Brownhill's fleet policy and its £1,000 excess |
+| The agreement is a rent-to-buy | The rent-to-buy, with the rate of credit, the equity and the buyout balance. Always the customer's own insurance — Brownhill does not carry a fleet policy on a vehicle the customer may buy |
 
 ## 4. The accounting flow
 
