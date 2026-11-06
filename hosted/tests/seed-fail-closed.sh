@@ -303,5 +303,78 @@ else
 fi
 
 echo
+echo "== 4: the seeded books tell the truth — the invoices carry a VAT code =="
+
+# The demo seed runs AFTER the migrations, so migration 0086's backfill had
+# already been through by the time its invoices were created and could not
+# help them: they were created with a null `vat_code_id`.
+#
+# That state is invisible in the schema and fatal in the return. The VAT
+# return groups the invoices on the code, adds every row's net to box 4
+# whatever its code, and only sets box 1 — the output VAT due to HMRC — from
+# the row whose code IS 'T1'. So a null code left box 1 at zero while box 4
+# carried that month's net sales: the return said "you owe no VAT" and "you
+# sold £25,500 of rentals" in the same breath.
+#
+# The questions are therefore asked of the DATABASE, not of the seed's text:
+# what did the seeded invoices actually end up with?
+seeded_invoices() {
+  docker exec -u postgres "$cid" psql -tAq -d seedprobe -c \
+    "select count(*) from public.invoices;" | tr -d ' '
+}
+seeded_without_a_code() {
+  docker exec -u postgres "$cid" psql -tAq -d seedprobe -c \
+    "select count(*) from public.invoices where vat_code_id is null;" | tr -d ' '
+}
+seeded_standard_rated() {
+  docker exec -u postgres "$cid" psql -tAq -d seedprobe -c \
+    "select count(*) from public.invoices i
+       join accounting.vat_codes vc on vc.id = i.vat_code_id
+      where vc.code = 'T1';" | tr -d ' '
+}
+seeded_vat_total() {
+  docker exec -u postgres "$cid" psql -tAq -d seedprobe -c \
+    "select coalesce(sum(i.vat_pence), 0) from public.invoices i
+       join accounting.vat_codes vc on vc.id = i.vat_code_id
+      where vc.code = 'T1';" | tr -d ' '
+}
+seeded_net_total() {
+  docker exec -u postgres "$cid" psql -tAq -d seedprobe -c \
+    "select coalesce(sum(i.net_pence), 0) from public.invoices i
+       join accounting.vat_codes vc on vc.id = i.vat_code_id
+      where vc.code = 'T1';" | tr -d ' '
+}
+
+invoices="$(seeded_invoices)"
+without_code="$(seeded_without_a_code)"
+standard_rated="$(seeded_standard_rated)"
+vat_total="$(seeded_vat_total)"
+net_total="$(seeded_net_total)"
+
+if [[ "${without_code:-1}" -eq 0 && "${invoices:-0}" -gt 0 ]]; then
+  ok "every seeded invoice carries a VAT code ($invoices invoices, none without one)"
+else
+  bad "$without_code of $invoices seeded invoices carry no VAT code — the VAT return cannot see them"
+fi
+
+if [[ "${standard_rated:-0}" -eq "${invoices:-0}" && "${invoices:-0}" -gt 0 ]]; then
+  ok "and it is T1 — every seeded invoice carries VAT, so every one is standard-rated"
+else
+  bad "$standard_rated of $invoices seeded invoices are standard-rated (T1) — the return would miss the rest"
+fi
+
+if [[ "${vat_total:-0}" -gt 0 ]]; then
+  ok "the output VAT the return will report is $vat_total pence — it was zero while the codes were missing"
+else
+  bad "the output VAT the return will report is zero — box 1 is empty while box 4 carries the net sales"
+fi
+
+if [[ "${vat_total:-0}" -eq 510000 && "${net_total:-0}" -eq 2550000 ]]; then
+  ok "the return's figures are £5,100 of output VAT against £25,500 of net sales — the figures the index publishes"
+else
+  bad "the seeded totals are $vat_total pence of output VAT and $net_total pence of net sales, not 510000 and 2550000 — the index's figures have to change with them"
+fi
+
+echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

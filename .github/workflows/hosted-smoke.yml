@@ -30,6 +30,13 @@ on:
   pull_request:
     paths:
       - 'supabase/migrations/**'
+      # The seed is not a migration, and `supabase/migrations/**` does not
+      # cover it. It is the file the demo books are built from, and the gate
+      # that proves those books — hosted/tests/seed-fail-closed.sh, which
+      # replays the migrations and then seeds — is in this job. So a change
+      # to the seed did not bring the job up, and the seed was unproved: the
+      # same blind spot the filter had for src/, one directory over.
+      - 'supabase/seed.sql'
       - 'standalone/sql/**'
       - 'standalone/scripts/**'
       - 'hosted/**'
