@@ -86,7 +86,20 @@ export async function POST(req: NextRequest) {
   // C1: gate. C2: read the real session — the userId/tenantId written by
   // commitJournalForPayment must reference real auth.users rows; FK violations
   // would otherwise roll back every reconcile and every MTD submit.
-  const ctx = await requirePermission('billing.write');
+  //
+  // The refusal is ANSWERED, not thrown. A caller without `billing.write`
+  // pressing this button used to get a 500 with an empty body — "the server
+  // is broken" — where the truth is "you may not do this". Its four siblings
+  // in src/app/api/v1/accounting/ have always answered 403 here.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('billing.write');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
 
   const form = await req.formData();
   const bankTxId = String(form.get('bankTxId') ?? '');

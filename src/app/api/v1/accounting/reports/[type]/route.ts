@@ -13,7 +13,20 @@ import { renderProfitAndLoss, renderBalanceSheet, renderCashflow, renderArAging 
 import { jsonSafe } from '@/lib/accounting/json';
 
 export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ type: string }> }) {
-  const ctx = await requirePermission('reports.operational');
+  // The gate is OUTSIDE the try below, and answers its own refusal. A caller
+  // without `reports.operational` used to get a 500 with an empty body — "the
+  // server is broken" — where the truth is "you may not read these books".
+  // Its four siblings in src/app/api/v1/accounting/ have always answered 403
+  // here, and a 500 is not an answer an accountant can act on.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('reports.operational');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
   const { type } = await ctxRoute.params;
   const url = new URL(req.url);
   const from = url.searchParams.get('from');
