@@ -28,38 +28,69 @@ name: hosted-smoke
 
 on:
   pull_request:
+    # What this job reads, and therefore what has to bring it up.
+    #
+    # The list used to name the schema, the scripts, the hosted box and three
+    # hand-picked directories under src/ — and it missed the application's own
+    # middleware and instrumentation, the repository's own scripts, the helper
+    # that decides whether fourteen database-backed files run or silently skip,
+    # the unit tests the job also runs, `vercel.json` (which the cron gate
+    # compares against the timers on the box), the demo data the seed gate
+    # feeds in, and the build configuration. A filter that names some of what
+    # a job reads is a filter with a hole shaped like the files it forgot.
+    #
+    # It is now derived from the job rather than from a guess about it, and
+    # `hosted/tests/hosted-smoke-paths.sh` holds the derivation to account:
+    # every path the hosted box reads has to be inside this list, or the
+    # filter is refused.
+    #
+    # The one thing this job used to read and no longer does is the WHOLE
+    # repository — the environment-variable gate scanned every tracked file,
+    # which no list of paths can cover. That gate now runs in the `unit-tests`
+    # workflow, which has no filter at all, because a repository-wide gate
+    # belongs on every pull request rather than on the ones that happen to
+    # touch the box.
     paths:
-      - 'supabase/migrations/**'
-      - 'standalone/sql/**'
-      - 'standalone/scripts/**'
+      # The schema, and the demo data behind it. The seed gate reads
+      # `supabase/seed.sql` — not only the migrations.
+      - 'supabase/**'
+      # The box itself. Every gate under hosted/ reads the box's own files.
       - 'hosted/**'
+      # The self-contained tree the box is installed from.
+      - 'standalone/**'
+      # The repository's own scripts: the postgres-container helper the
+      # migration gates source, the build's prebuild step, the icon build.
+      - 'scripts/**'
+      # The application. The job builds it, serves it, and the suite imports
+      # it — and the journey below fetches every operator page with a real
+      # session and looks for a 500 in the answer, because that is the fault
+      # class a status-code assertion cannot see: `/ops` and `/ops/series`
+      # both went 500 as soon as a booking series existed.
+      - 'src/**'
+      # The suite the job runs, and the helpers it shares. `tests/helpers/**`
+      # is not decoration: every integration test resolves its environment
+      # through `tests/helpers/integration-env.ts`, so a change to that one
+      # file decides whether fourteen database-backed files run or silently
+      # skip — and the job would not have come up to find out.
+      - 'tests/**'
+      # The static assets the image copies.
+      - 'public/**'
+      # The workflows. The portability guards read them, to check that the
+      # production-shaped job's opt-in guard is still there.
+      - '.github/workflows/**'
+      # The configuration the job reads.
+      #
+      # `vercel.json` is where the SaaS's cron schedules are declared, and
+      # `hosted/tests/cron-timers.sh` compares them against the timers on the
+      # box. A change to it changes the contract the gate checks.
+      - 'vercel.json'
+      - 'vitest.config.ts'
+      - 'next.config.ts'
+      - 'tsconfig.json'
+      - 'postcss.config.mjs'
       - 'package.json'
-      - '.github/workflows/hosted-smoke.yml'
-      # The accounting module and the tests that need a real postgres.
-      #
-      # The filter used to name the schema, the scripts and the hosted box —
-      # and nothing under src/. So a change to the ledger's own code never
-      # brought this job up, and the database-backed tests never ran in CI at
-      # all. The accounting module is where the money is, so it is the last
-      # thing that should be left out of a job that exists to prove the
-      # deployment works.
-      - 'src/lib/accounting/**'
-      - 'src/app/api/v1/accounting/**'
-      - 'src/lib/db/**'
-      - 'src/lib/auth/local-store.ts'
-      - 'tests/integration/**'
-      - 'tests/rls/**'
-      # Every page and every library the operator touches.
-      #
-      # The journey below fetches every operator page with a real session and
-      # looks for a 500 in the answer, because that is the fault class a
-      # status-code assertion cannot see: `/ops` and `/ops/series` both went
-      # 500 as soon as a booking series existed, and nothing in the suite
-      # could see it. A gate that only runs when the DATABASE changes cannot
-      # catch a page that breaks.
-      - 'src/app/**'
-      - 'src/lib/**'
-      - 'src/components/**'
+      - 'pnpm-lock.yaml'
+      - '.dockerignore'
   # A push to main runs this job too.
   #
   # This job is the only one in the repository that runs the database-backed
@@ -147,18 +178,25 @@ jobs:
         #
         # Static: no docker, no database, about a second of work.
         run: bash hosted/tests/schema-ledger-fingerprint.sh
-      - name: Environment-variable names and wiring
-        # The deployment's settings are environment variables, and a variable
-        # that is SET under one spelling and READ under another does not
-        # fail — it is ignored, and the script carries on with a fallback that
-        # works on the developer's machine and not on the box. This check
-        # asserts there is one spelling, that everything read is provided and
-        # that everything provided is read.
-        #
-        # It is a static check over the repository: no docker, no database, a
-        # second of work. It runs first because it is the cheapest gate that
-        # can catch the most expensive mistake.
-        run: bash hosted/tests/env-var-names.sh
+      # The environment-variable gate is not here any more, and that is the
+      # point of this pull request.
+      #
+      # `hosted/tests/env-var-names.sh` scans EVERY tracked file in the
+      # repository: the rule it enforces is about the deployment's settings,
+      # and it cannot tell which file a setting was written in. So it reads
+      # the whole tree — and a paths filter can never cover the whole tree, so
+      # as long as this gate ran HERE, the filter below was necessarily
+      # incomplete: a change to any file outside it could break this gate and
+      # the job would not come up to find out.
+      #
+      # The gate now runs in the `unit-tests` workflow, which has no filter at
+      # all — the same place the repository's other whole-tree gate, the
+      # no-credential gate, has lived since it was written, and for the same
+      # reason: "it has to run on every pull request, including the ones that
+      # touch nothing under hosted/".
+      #
+      # It is a static check over the repository: no docker, no database, a
+      # second of work.
       - name: The box runs its scheduled jobs
         # The hosted deployment had NO scheduled job of any kind, and the
         # reason was two separate omissions that only looked like one:
@@ -411,6 +449,26 @@ jobs:
           DEPLOYMENT_PROFILE=hosted pnpm test
       - name: Hosted portability proof (assertions 0–17)
         run: bash hosted/tests/verify-hosted-portability.sh
+      - name: The backup assertions can fail
+        # The proof's assertions 16a and 17 answer two questions about the
+        # deployed box: did tonight's backup leave a dump, and did tonight's
+        # off-host copy record that it finished?
+        #
+        # Both used to be answered by the presence of a file. 16a was
+        # `ls "$DUMP_DIR"/*.dump`, which finds a dump from ANY night — so a
+        # backup unit that had failed outright, three nights running, still
+        # passed the assertion on last night's dump. 17 was
+        # `grep '"ok":true' "$DUMP_DIR/_sync.json"`, which finds last night's
+        # successful copy still sitting in the directory. A file being present
+        # is not the same as the work having been done.
+        #
+        # So this runs the REAL proof against a fake box — a fake `systemctl`
+        # and a fake `nc`, earlier on PATH — in which the backup unit
+        # misbehaves in each of the ways the assertions exist to catch, and
+        # requires the proof to FAIL, and to say why.
+        #
+        # It needs nothing from the live stack: the fakes answer for it.
+        run: bash hosted/tests/verify-hosted-portability-negative.sh
       - name: The chain assertion can fail
         # The proof's assertion 14 verifies nginx's certificate chain against
         # the test CA. A verification that cannot fail is not a verification.
@@ -629,8 +687,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: The migration ledger's fingerprint
         run: bash hosted/tests/schema-ledger-fingerprint.sh
-      - name: Environment-variable names and wiring
-        run: bash hosted/tests/env-var-names.sh
+      # The settings gate is not here. It scans EVERY tracked file in the
+      # repository, and this workflow is narrowed by a paths filter — so it
+      # runs in `unit-tests.yml`, which has no filter, where it belongs.
       - name: The off-host backup's path prefix
         run: bash hosted/tests/backup-offhost-target.sh
       - name: The off-host copy to a directory is verified

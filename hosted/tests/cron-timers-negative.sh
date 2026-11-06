@@ -142,6 +142,160 @@ else
   ok "the gate fails when a timer is installed but not started"
 fi
 
+# ── 6: the summary agrees with the lines above it ───────────────────────────
+#
+# The gate prints a line for every check and then a summary. The summary is
+# what a reader — and a CI log — looks at, so when it disagrees with the
+# lines above it, the summary is the thing that is wrong.
+#
+# The skip count is the one that matters most here. A `skip()` that prints
+# and forgets leaves the summary reading "N passed, 0 failed" whether the
+# check ran or was dropped, and a reader cannot tell the two apart. That is
+# not a hypothetical: the OnCalendar expressions were never parsed on the
+# machines that did not have systemd-analyze, and the summary said nothing
+# was wrong.
+
+# The faults in a gate's output, one per line. Nothing at all when the
+# summary agrees with the lines above it.
+arithmetic_faults() {
+  local out="$1"
+  local ok_lines fail_lines skip_lines
+  ok_lines="$(grep -c '^  ok:' "$out" || true)"
+  fail_lines="$(grep -c '^  FAIL:' "$out" || true)"
+  skip_lines="$(grep -c '^  skip:' "$out" || true)"
+
+  local result
+  result="$(grep -E '^Result: ' "$out" | tail -1 || true)"
+  if [[ -z "$result" ]]; then
+    echo "there is no result line"
+    return 1
+  fi
+
+  local passed reported_failed reported_skip
+  passed="$(sed -nE 's/^Result: ([0-9]+) passed.*/\1/p' <<<"$result")"
+  reported_failed="$(sed -nE 's/^Result: [0-9]+ passed, ([0-9]+) failed.*/\1/p' <<<"$result")"
+  reported_skip="$(sed -nE 's/^Result: [0-9]+ passed, [0-9]+ failed, ([0-9]+) skipped.*/\1/p' <<<"$result")"
+
+  local faults=0
+  if [[ -z "$reported_skip" ]]; then
+    echo "the result line does not report the skipped checks: \"$result\""
+    faults=$((faults + 1))
+  fi
+  if [[ "$passed" != "$ok_lines" ]]; then
+    echo "the result line says ${passed:-no number} passed, and $ok_lines ok: lines were printed"
+    faults=$((faults + 1))
+  fi
+  if [[ "$reported_failed" != "$fail_lines" ]]; then
+    echo "the result line says ${reported_failed:-no number} failed, and $fail_lines FAIL: lines were printed"
+    faults=$((faults + 1))
+  fi
+  if [[ "$reported_skip" != "$skip_lines" ]]; then
+    echo "the result line says ${reported_skip:-no number} skipped, and $skip_lines skip: lines were printed"
+    faults=$((faults + 1))
+  fi
+  [[ "$faults" -eq 0 ]]
+}
+
+# Put a skip() that prints and forgets in place of the real one.
+#
+# A later definition of a shell function replaces the earlier one, so this
+# does not have to match the original line exactly — it only has to come
+# after it.
+redefine_skip() {
+  awk '
+    { print }
+    /^skip\(\) \{/ {
+      print ""
+      print "# The negative control replaced skip() with one that prints and forgets."
+      print "skip() { echo \"  skip: $1\"; }"
+    }
+  ' "$1" > "$1.new" && mv "$1.new" "$1"
+}
+
+# Make the gate skip once, so the count has something to disagree about on
+# a machine where nothing would otherwise be skipped.
+inject_skip() {
+  awk '
+    { print }
+    /^skip\(\) \{/ {
+      print ""
+      print "# The negative control injected a skip."
+      print "skip \"the negative control injected a skip\""
+    }
+  ' "$1" > "$1.new" && mv "$1.new" "$1"
+}
+
+# Take the skipped count out of the summary.
+drop_skip_from_summary() {
+  awk '
+    /^echo "Result: / { print "echo \"Result: $PASS passed, $FAIL failed\""; next }
+    { print }
+  ' "$1" > "$1.new" && mv "$1.new" "$1"
+}
+
+echo
+echo "== 6: the summary agrees with the lines above it =="
+
+make_copy "$WORK/counts"
+BROWNHILL_REPO_ROOT="$WORK/counts" bash "$WORK/counts/hosted/tests/cron-timers.sh" \
+  >"$WORK/counts.out" 2>&1 || true
+
+faults="$(arithmetic_faults "$WORK/counts.out" || true)"
+if [[ -z "$faults" ]]; then
+  ok "the summary agrees with the ok, FAIL and skip lines above it"
+else
+  bad "the summary disagrees with the lines above it:"
+  printf '%s\n' "$faults" | sed 's/^/      /'
+fi
+
+# ── 6a: a skip() that prints and forgets ───────────────────────────────────
+#
+# The fault the count was introduced for. The gate skips a check, prints
+# "skip: …", and the summary says it did not skip anything. The summary is
+# what a reader trusts.
+
+echo
+echo "== 6a: a skip() that prints and forgets is noticed =="
+
+make_copy "$WORK/forgetful"
+inject_skip "$WORK/forgetful/hosted/tests/cron-timers.sh"
+redefine_skip "$WORK/forgetful/hosted/tests/cron-timers.sh"
+BROWNHILL_REPO_ROOT="$WORK/forgetful" bash "$WORK/forgetful/hosted/tests/cron-timers.sh" \
+  >"$WORK/forgetful.out" 2>&1 || true
+
+faults="$(arithmetic_faults "$WORK/forgetful.out" || true)"
+if [[ -z "$faults" ]]; then
+  bad "the summary agreed with a gate that skipped a check without counting it — the check cannot fail"
+  sed 's/^/      /' "$WORK/forgetful.out" | tail -5
+elif grep -q 'skipped' <<<"$faults"; then
+  ok "the summary is caught disagreeing about the skipped checks"
+else
+  bad "the summary disagreed, but not about the skipped checks:"
+  printf '%s\n' "$faults" | sed 's/^/      /'
+fi
+
+# ── 6b: a summary that stops reporting the skips ───────────────────────────
+
+echo
+echo "== 6b: a summary that stops reporting the skips is noticed =="
+
+make_copy "$WORK/mute"
+inject_skip "$WORK/mute/hosted/tests/cron-timers.sh"
+drop_skip_from_summary "$WORK/mute/hosted/tests/cron-timers.sh"
+BROWNHILL_REPO_ROOT="$WORK/mute" bash "$WORK/mute/hosted/tests/cron-timers.sh" \
+  >"$WORK/mute.out" 2>&1 || true
+
+faults="$(arithmetic_faults "$WORK/mute.out" || true)"
+if [[ -z "$faults" ]]; then
+  bad "the summary agreed with a gate that does not report its skips at all — the check cannot fail"
+  sed 's/^/      /' "$WORK/mute.out" | tail -5
+elif grep -q 'does not report the skipped checks' <<<"$faults"; then
+  ok "the summary is caught not reporting the skipped checks"
+else
+  bad "the summary disagreed, but not about the missing skip count:"
+  printf '%s\n' "$faults" | sed 's/^/      /'
+fi
+
 echo
 echo "Result: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

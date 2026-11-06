@@ -121,6 +121,58 @@ jobs:
         # left unguarded — and requires it to fail on the right check each
         # time.
         run: bash hosted/tests/hosted-smoke-on-main-negative.sh
+      - name: The hosted job comes up for everything it reads
+        # The `hosted-smoke` job is narrowed by a paths filter, and a filter
+        # is only as good as what it leaves out. This job's filter used to
+        # name the schema, the scripts, the hosted box and three directories
+        # under `src/` — and it left out the application's own middleware, the
+        # helper that decides whether fourteen database-backed files run or
+        # silently skip, the unit tests the job also runs, `vercel.json`
+        # (which the cron gate compares against the timers on the box), the
+        # demo data the seed gate feeds in, and the build configuration.
+        # Every one of those could break the job without the job coming up to
+        # find out, so the pull request said green and `main` said red.
+        #
+        # The filter is now HELD TO ACCOUNT rather than trusted: every path
+        # the hosted box reads is inside it, every configuration the job's
+        # commands read is inside it, and no gate that reads the WHOLE
+        # repository runs behind it — because no list of paths can cover the
+        # whole tree.
+        #
+        # Static: no docker, no database, about a second of work.
+        run: bash hosted/tests/hosted-smoke-paths.sh
+      - name: The paths gate can fail
+        # A gate that cannot fail is not a gate. This runs the gate against
+        # five copies of the tree — the filter narrowed to leave out what the
+        # job reads, the filter missing a file the commands read, the filter
+        # naming nothing at all, a whole-repository gate put back behind the
+        # filter, and a whole-repository gate that stops running on every pull
+        # request — and requires it to fail on the right check each time.
+        #
+        # It runs against an unmodified copy first and requires that to
+        # pass, so a gate broken for any reason at all cannot satisfy the
+        # checks below.
+        run: bash hosted/tests/hosted-smoke-paths-negative.sh
+      - name: One spelling, and one wiring, for the deployment's settings
+        # The deployment's settings are environment variables, and a variable
+        # that is SET under one spelling and READ under another does not
+        # fail — it is ignored, and the script carries on with a fallback
+        # that works on the developer's machine and not on the box. This gate
+        # asserts there is one spelling, that everything read is provided and
+        # that everything provided is read.
+        #
+        # It lives HERE, and not in the hosted-smoke job, because it scans
+        # EVERY tracked file in the repository: the rule is about the
+        # deployment's settings and it cannot tell which file a setting was
+        # written in. The hosted-smoke job is narrowed by a paths filter, and
+        # no list of paths can cover the whole tree — so a gate that reads the
+        # whole tree cannot live behind a filter. It is the same reason the
+        # no-credential gate above lives here: "it has to run on every pull
+        # request, including the ones that touch nothing under hosted/".
+        #
+        # It is a static check over the repository: no docker, no database, a
+        # second of work.
+        run: bash hosted/tests/env-var-names.sh
       - name: The deployment's settings reach the application
         # The application reads HMRC_MTD_CLIENT_ID, HMRC_MTD_CLIENT_SECRET,
         # HMRC_MTD_REDIRECT_URI, HMRC_ENV and NEXT_PUBLIC_APP_URL. Nothing

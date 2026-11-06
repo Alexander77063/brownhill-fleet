@@ -48,10 +48,18 @@ BROWNHILL_BOX_REQUIRED="${BROWNHILL_BOX_REQUIRED:-0}"
 # gate exists to catch: a setting read under one name and set under another
 # is not a failure, it is silence.
 #
-# The restore drill is not a setting at all. install.sh puts it at a fixed
-# path, so it is named here the same way.
+# Where the nightly dump lands. The installer puts it at a fixed path, so it
+# is named here the same way — and overridable, for the same reason
+# VERIFY_RESTORE is below: so a gate can drive the backup assertions against
+# a directory of its own without touching the machine's /var/backups.
 DUMP_DIR="${DUMP_DIR:-/var/backups/brownhill}"
-VERIFY_RESTORE="/usr/local/bin/verify-restore.sh"
+
+# The restore drill is not a setting at all. install.sh puts it at a fixed
+# path, so it is named here the same way — and overridable, for the same
+# reason DUMP_DIR is: so the negative control can drive the backup
+# assertions against a drill of its own without touching the machine's
+# /usr/local/bin.
+VERIFY_RESTORE="${VERIFY_RESTORE:-/usr/local/bin/verify-restore.sh}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -341,6 +349,10 @@ fi
 # drill all exist. Off the box they do not, and this assertion says so
 # rather than failing on a dump that was never going to be written.
 step "Assertion 16: backup + restore-verify"
+# Set here, not inside the branch below, because assertion 17 reads it and the
+# branch that sets it is not always reached — the postgres check can fail
+# first, and `set -u` would then abort the whole script on an unset name.
+run_started_at=0
 if ! is_box; then
   # The box check comes FIRST on purpose. Whether the stack happens to be up
   # says nothing about whether this machine is the box, and the other order
@@ -354,14 +366,48 @@ elif ! systemctl cat brownhill-backup.service >/dev/null 2>&1; then
 elif ! have_service "$NGX" "$PORT_PG"; then
   bad "16: PostgreSQL is not reachable on $NGX:$PORT_PG — this is the box, and its database is down"
 else
-  # The unit's exit code is deliberately not the assertion: the script
-  # exits non-zero when the OFF-HOST copy fails, which is a different
-  # assertion (17) and is not a failure of the dump.
-  systemctl start brownhill-backup.service >/dev/null 2>&1 || true
-  if ls "$DUMP_DIR"/*.dump >/dev/null 2>&1; then
-    ok "16a: the backup unit ran and left a dump in $DUMP_DIR"
+  # How many dumps are in the directory RIGHT NOW, before the unit runs.
+  #
+  # The old assertion was `ls "$DUMP_DIR"/*.dump` — which finds a dump from
+  # ANY night. So a backup unit that had failed outright, three nights
+  # running, still passed this assertion on last night's dump. The count
+  # before and after is what makes the assertion say "the unit left a dump"
+  # rather than "a dump is lying there".
+  dumps_before=0
+  if ls -1 "$DUMP_DIR"/*.dump >/dev/null 2>&1; then
+    dumps_before="$(ls -1 "$DUMP_DIR"/*.dump | wc -l | tr -d ' ')"
+  fi
+
+  # When this run started, so that assertion 17 can tell a state file this
+  # run wrote from one a previous night left behind.
+  run_started_at="$(date +%s)"
+
+  # The unit's exit code is not the assertion: the script exits non-zero when
+  # the OFF-HOST copy fails, which is a different assertion (17) and is not a
+  # failure of the dump. But the code is CAPTURED rather than swallowed by
+  # `|| true`, so that a unit which died for a reason of its own can say so
+  # in the message instead of vanishing. The old `|| true` hid the exit code
+  # entirely — which is how a unit that failed was reported as having run.
+  #
+  # The capture does not switch errexit on and off around the call. This
+  # script runs with `set -uo pipefail` and NOT with `-e`; a `set -e` left
+  # behind by the capture would arm errexit for every line that follows,
+  # which is a different script from the one the assertions were written
+  # against.
+  unit_status=0
+  systemctl start brownhill-backup.service >/dev/null 2>&1 || unit_status=$?
+
+  dumps_after=0
+  if ls -1 "$DUMP_DIR"/*.dump >/dev/null 2>&1; then
+    dumps_after="$(ls -1 "$DUMP_DIR"/*.dump | wc -l | tr -d ' ')"
+  fi
+
+  if [[ "$dumps_after" -gt "$dumps_before" ]]; then
+    ok "16a: the backup unit ran and left a new dump in $DUMP_DIR"
+  elif [[ "$unit_status" -ne 0 ]]; then
+    bad "16a: the backup unit failed (exit $unit_status) and left no new dump in $DUMP_DIR"
   else
-    bad "16a: the backup unit ran but left no dump in $DUMP_DIR"
+    bad "16a: the backup unit ran but left no new dump in $DUMP_DIR (there were $dumps_before before and $dumps_after after — the dumps that are there are older than this run)"
   fi
   if [[ -x "$VERIFY_RESTORE" ]]; then
     if "$VERIFY_RESTORE" >"$TMP/verify-restore.log" 2>&1; then
@@ -388,10 +434,22 @@ else
   state="$DUMP_DIR/_sync.json"
   if [[ ! -f "$state" ]]; then
     bad "17: the off-host copy has never recorded its state ($state is missing)"
-  elif grep -q '"ok":true' "$state"; then
-    ok "17: the off-host copy completed and recorded its target — $(cat "$state")"
   else
-    bad "17: the off-host copy did not complete — $(cat "$state")"
+    # The state file has to be THIS RUN's.
+    #
+    # A _sync.json left by last night's successful copy says "ok":true, and it
+    # is still sitting there. If tonight's unit died before it got as far as
+    # writing the state, the file would be read as tonight's answer — and the
+    # assertion would pass on evidence that is a day old. The timestamp is
+    # what separates "the copy completed" from "a copy completed, once".
+    state_mtime="$(stat -c %Y "$state" 2>/dev/null || stat -f %m "$state" 2>/dev/null || echo 0)"
+    if [[ "$state_mtime" -lt "$run_started_at" ]]; then
+      bad "17: the off-host copy has not recorded its state since before this run — the state on disk is from an earlier night ($(cat "$state"))"
+    elif grep -q '"ok":true' "$state"; then
+      ok "17: the off-host copy completed and recorded its target — $(cat "$state")"
+    else
+      bad "17: the off-host copy did not complete — $(cat "$state")"
+    fi
   fi
 fi
 

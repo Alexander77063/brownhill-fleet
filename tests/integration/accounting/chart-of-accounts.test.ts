@@ -56,15 +56,19 @@ import {
   findAccountId,
   requireAccountId,
 } from '@/lib/accounting/chart-of-accounts';
+import { integrationEnv } from '../../helpers/integration-env';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  console.warn(
-    '[integration] DATABASE_URL is not set — the chart-of-accounts tests are being SKIPPED.\n' +
-      '            They need a real postgres with the migrations applied. See hosted/README.md.',
-  );
-}
+// This file talks straight to postgres and never through the service
+// client, so it asks for the database alone.
+//
+// `integrationEnv` is the repository's rule for this, and it is the rule that
+// matters: it SKIPS, out loud, when the job has not asked for the
+// integration tests, and it FAILS when the job has set REQUIRE_INTEGRATION=1
+// and the database is not there. The hand-rolled guard this replaced skipped
+// in BOTH cases — so a build with REQUIRE_INTEGRATION=1 could report this
+// file's tests as skipped and still be green. A test that did not run is not
+// a test that passed.
+const env = integrationEnv({ app: false });
 
 /**
  * Every account the ledger posts to, and what it has to be.
@@ -89,7 +93,7 @@ const REQUIRED_ACCOUNTS: Array<{
   { code: '5910', name: 'Bank Charges', type: 'expense', normal_balance: 'debit' },
 ];
 
-describe.skipIf(!DATABASE_URL)('the chart of accounts the ledger posts into', () => {
+describe.skipIf(!env)('the chart of accounts the ledger posts into', () => {
   let sql: Awaited<ReturnType<typeof localDb>>;
 
   const tenantId = randomUUID();

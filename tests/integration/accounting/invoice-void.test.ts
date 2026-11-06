@@ -60,17 +60,21 @@ import { postInvoiceToLedger, postPaymentToLedger } from '@/lib/accounting/gl-po
 import { voidInvoiceByReversal } from '@/lib/accounting/invoice-void';
 import { AccountingPeriodError, closePeriod, openPeriod } from '@/lib/accounting/periods';
 import type { ISql } from 'postgres';
+import { integrationEnv } from '../../helpers/integration-env';
 
-const DATABASE_URL = process.env.DATABASE_URL;
+// This file talks straight to postgres and never through the service
+// client, so it asks for the database alone.
+//
+// `integrationEnv` is the repository's rule for this, and it is the rule that
+// matters: it SKIPS, out loud, when the job has not asked for the
+// integration tests, and it FAILS when the job has set REQUIRE_INTEGRATION=1
+// and the database is not there. The hand-rolled guard this replaced skipped
+// in BOTH cases — so a build with REQUIRE_INTEGRATION=1 could report this
+// file's tests as skipped and still be green. A test that did not run is not
+// a test that passed.
+const env = integrationEnv({ app: false });
 
-if (!DATABASE_URL) {
-  console.warn(
-    '[integration] DATABASE_URL is not set — the invoice-void tests are being SKIPPED.\n' +
-      '            They need a real postgres with the migrations applied. See hosted/README.md.',
-  );
-}
-
-describe.skipIf(!DATABASE_URL)('voiding an invoice by reversal, against a real postgres', () => {
+describe.skipIf(!env)('voiding an invoice by reversal, against a real postgres', () => {
   let sql: Awaited<ReturnType<typeof localDb>>;
 
   const tenantId = randomUUID();

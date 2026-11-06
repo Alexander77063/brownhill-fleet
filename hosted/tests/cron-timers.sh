@@ -58,9 +58,17 @@ cd "$REPO"
 
 PASS=0
 FAIL=0
+# Skips are COUNTED, not just printed.
+#
+# The old `skip()` printed and forgot. A gate that silently dropped a check
+# and a gate that ran it looked identical in the result line — "N passed, 0
+# failed" — so a reader could not tell that the OnCalendar expressions had
+# never been parsed on the machine they were looking at. The count is what
+# makes the difference visible.
+SKIP=0
 ok()  { echo "  ok: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-skip() { echo "  skip: $1"; }
+skip() { echo "  skip: $1"; SKIP=$((SKIP + 1)); }
 
 # The node to run the caller with. The box's own runtime is pinned under
 # /opt/brownhill; everywhere else node is simply on the PATH.
@@ -399,5 +407,5 @@ else
 fi
 
 echo
-echo "Result: $PASS passed, $FAIL failed"
+echo "Result: $PASS passed, $FAIL failed, $SKIP skipped"
 [[ "$FAIL" -eq 0 ]]

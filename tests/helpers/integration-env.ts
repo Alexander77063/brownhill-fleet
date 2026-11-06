@@ -16,8 +16,12 @@
  *     The hosted-smoke job sets it, so that job cannot go green without the
  *     integration tests having actually run.
  *
- * Both of the values are read once, at module load, so a test cannot change
- * its mind halfway through about whether it is running.
+ * The environment is read on every call. Every integration test asks for it
+ * once, at module scope, and holds the answer — so a file cannot change its
+ * mind halfway through about whether it is running — and reading it per call
+ * is what lets a test prove what the helper does. See
+ * tests/unit/integration-env.test.ts, which is the negative control for the
+ * throw below: take the throw away and that file fails.
  *
  * NOT EVERY FILE NEEDS THE APPLICATION
  * ------------------------------------

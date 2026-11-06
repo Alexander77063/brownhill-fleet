@@ -50,15 +50,19 @@ import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createFirstUserAndTenant } from '@/lib/auth/local-store';
 import { FIRST_RUN_LOCK_KEY, takeFirstRunLock } from '@/lib/auth/first-run-lock';
+import { integrationEnv } from '../../helpers/integration-env';
 
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  console.warn(
-    '[integration] DATABASE_URL is not set — the first-run race tests are being SKIPPED.\n' +
-      '            They need a real postgres with the migrations applied. See hosted/README.md.',
-  );
-}
+// This file talks straight to postgres and never through the service
+// client, so it asks for the database alone.
+//
+// `integrationEnv` is the repository's rule for this, and it is the rule that
+// matters: it SKIPS, out loud, when the job has not asked for the
+// integration tests, and it FAILS when the job has set REQUIRE_INTEGRATION=1
+// and the database is not there. The hand-rolled guard this replaced skipped
+// in BOTH cases — so a build with REQUIRE_INTEGRATION=1 could report this
+// file's tests as skipped and still be green. A test that did not run is not
+// a test that passed.
+const env = integrationEnv({ app: false });
 
 /** A promise, plus the handle that resolves it. */
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -82,7 +86,7 @@ async function waitFor(
   return false;
 }
 
-describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', () => {
+describe.skipIf(!env)('the first-run lock, against a real postgres', () => {
   let pool: Sql;
   let observer: Sql;
 
@@ -103,8 +107,7 @@ describe.skipIf(!DATABASE_URL)('the first-run lock, against a real postgres', ()
     // and the shared pool is capped at two connections — which the rest of the
     // suite also uses. A pool of its own means this file cannot be starved by
     // a neighbour that leaked a connection, and cannot starve one.
-    const url = DATABASE_URL;
-    if (!url) throw new Error('DATABASE_URL is not set');
+    const url = env!.DATABASE_URL;
 
     const { default: postgres } = await import('postgres');
     pool = postgres(url, { max: 2, idle_timeout: 30 }) as unknown as Sql;
