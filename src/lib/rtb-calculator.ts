@@ -11,8 +11,7 @@
  * TWO CLOCKS, ON PURPOSE.
  *
  *   The rentee's side is a MONTHLY contract. That is what the customer signs:
- *   £750 a month for five years. The cost, the equity, the buyout balance and
- *   the implied rate are all monthly.
+ *   £750 a month for five years. The cost and the implied rate are monthly.
  *
  *   Brownhill's side is a WEEKLY billing stream. That is what the agreement
  *   record holds and what the directors' report sums: `weekly_net_pence`
@@ -23,6 +22,26 @@
  * The two differ by the rounding of the weekly rate (a term of 60 months at
  * £750 a month bills £45,000.80 over 260 weeks, not £45,000), and the plan
  * reports that difference rather than hiding it in a total.
+ *
+ * WHY THE OPTION CREDIT ACCRUES WEEKLY
+ * ------------------------------------
+ * The Option Credit is part of each WEEKLY payment, and it accrues with the
+ * billing: `option_credit_weekly_pence` a week for `term_weeks` weeks. That
+ * is how the rentee's own equity ledger records it (`rtbEquityAtWeek`) and
+ * how the directors' report prices it (`rtbDealEconomics`) — both of them
+ * multiply the weekly credit by the weeks.
+ *
+ * This module used to accrue the credit on the MONTHLY figure instead, which
+ * left it a rounding away from both of the others: on a five-year deal the
+ * projection said £600,000 of credit where the ledger said £600,080. The
+ * customer would have seen a different equity on their own statement than
+ * the operator saw on the calculator and the board saw in the report, and the
+ * contract — which quotes this figure — would have quoted the wrong one.
+ *
+ * The customer ends up owning the credit they actually paid for, and the
+ * buyout balance is what is actually left to pay. The total cost of owning
+ * the car does not change: the extra the weekly billing collects is taken
+ * off the buyout balance instead.
  *
  * Pure and isomorphic: no Node APIs, no React. The same module prices the
  * deal in the browser, in the server action that writes the agreement, and in
@@ -44,7 +63,8 @@ export interface RtbInputs {
   monthlyPaymentPence: number;
   /** Standard rate VAT, as a percentage (20). */
   vatRatePct: number;
-  /** The part of each monthly payment credited against the buyout. */
+  /** The part of each monthly payment credited against the buyout. Accrued
+   *  weekly with the billing — see the note at the top of this module. */
   optionCreditMonthlyPence: number;
   /** The price the rentee pays to take the car at the end of the term. */
   agreedResidualPence: number;
@@ -57,9 +77,9 @@ export interface RtbScheduleRow {
   month: number;
   /** Rent paid to date, VAT-inclusive. */
   rentPaidPence: number;
-  /** Rent credited against the buyout to date. */
+  /** Option Credit accrued against the buyout to date. */
   optionCreditPence: number;
-  /** Deposit plus the credited rent. */
+  /** Deposit plus the Option Credit accrued to date. */
   equityPence: number;
   /** Equity as a percentage of the car's price. */
   pctOfVehicle: number;
@@ -80,7 +100,7 @@ export interface RtbPlan {
   totalRentNetPence: number;
   totalRentVatPence: number;
   depositPence: number;
-  /** Deposit plus every month's credited rent. */
+  /** Deposit plus the Option Credit accrued over the term. */
   equityFinalPence: number;
   equityFinalPctOfVehicle: number;
   /** The price the rentee pays to take the car at the end of the term. */
@@ -412,10 +432,16 @@ export function buildRtbPlan(
   const weeklyBillingTotalPence = weeklyGrossPence * termWeeks;
   const weeklyRoundingPence = weeklyBillingTotalPence - totalRentGrossPence;
 
-  /* Equity and the buyout. */
+  /* Equity and the buyout.
+   *
+   * The Option Credit is part of each WEEKLY payment, so it accrues with the
+   * billing: the weekly credit, multiplied by the weeks. That is the same
+   * figure the rentee's equity ledger accrues (`rtbEquityAtWeek`) and the
+   * directors' report prices (`rtbDealEconomics`), so all three agree. */
   const depositPence = Math.max(0, input.depositPence || 0);
   const residualPence = Math.max(0, input.agreedResidualPence || 0);
-  const equityFinalPence = depositPence + monthlyCreditPence * termMonths;
+  const creditOverTermPence = weeklyOptionCreditPence * termWeeks;
+  const equityFinalPence = depositPence + creditOverTermPence;
   const buyoutBalancePence = Math.max(0, residualPence - equityFinalPence);
   const buyoutSurplusPence = Math.max(0, equityFinalPence - residualPence);
   const vehiclePricePence = Math.max(0, input.vehiclePricePence || 0);
@@ -492,7 +518,7 @@ export function buildRtbPlan(
       termMonths,
       step: opts.scheduleStepMonths && opts.scheduleStepMonths > 0 ? opts.scheduleStepMonths : 12,
       monthlyGrossPence,
-      monthlyCreditPence,
+      weeklyOptionCreditPence,
       depositPence,
       residualPence,
       vehiclePricePence,
@@ -512,12 +538,12 @@ function buildSchedule(args: {
   termMonths: number;
   step: number;
   monthlyGrossPence: number;
-  monthlyCreditPence: number;
+  weeklyOptionCreditPence: number;
   depositPence: number;
   residualPence: number;
   vehiclePricePence: number;
 }): RtbScheduleRow[] {
-  const { termMonths, step, monthlyGrossPence, monthlyCreditPence, depositPence, residualPence, vehiclePricePence } = args;
+  const { termMonths, step, monthlyGrossPence, weeklyOptionCreditPence, depositPence, residualPence, vehiclePricePence } = args;
   const rows: RtbScheduleRow[] = [];
   for (let month = step; month <= termMonths; month += step) {
     rows.push(scheduleRow(month, args));
@@ -531,13 +557,17 @@ function buildSchedule(args: {
     month: number,
     a: {
       monthlyGrossPence: number;
-      monthlyCreditPence: number;
+      weeklyOptionCreditPence: number;
       depositPence: number;
       residualPence: number;
       vehiclePricePence: number;
     },
   ): RtbScheduleRow {
-    const optionCreditPence = a.monthlyCreditPence * month;
+    // The credit accrues with the weekly billing: the agreement holds one
+    // weekly credit and every week adds it, so at the end of month M the
+    // rentee has termMonthsToWeeks(M) weeks of it. Same basis as the
+    // rentee's equity ledger, so the schedule agrees with the statement.
+    const optionCreditPence = a.weeklyOptionCreditPence * termMonthsToWeeks(month);
     const equityPence = a.depositPence + optionCreditPence;
     return {
       month,
@@ -571,7 +601,10 @@ export function solveMonthlyPayment(input: RtbInputs, targetAprPct: number): Rtb
   let payment = 0;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const equity = (input.depositPence || 0) + credit * termMonths;
+    // The credit accrues with the weekly billing, so the equity that offsets
+    // the buyout is the weekly credit times the weeks of the term.
+    const weeklyCredit = weeklyFromMonthly(credit, termMonths);
+    const equity = (input.depositPence || 0) + weeklyCredit * termMonthsToWeeks(termMonths);
     const balloon = Math.max(0, (input.agreedResidualPence || 0) - equity);
     payment = annuity > 0 ? (financed - balloon * disc) / annuity : 0;
     if (payment >= credit) break;
@@ -616,7 +649,12 @@ export function solveBuyoutResidual(input: RtbInputs, targetAprPct: number): Rtb
   if (balloon <= 0) {
     warnings.push('The rent covers the car: there is no buyout payment at the end of the term.');
   } else {
-    residual = Math.round(balloon + (input.depositPence || 0) + credit * termMonths);
+    // The credit accrues with the weekly billing: the weekly credit times the
+    // weeks of the term, the same basis as the rentee's equity ledger.
+    const weeklyCredit = weeklyFromMonthly(credit, termMonths);
+    residual = Math.round(
+      balloon + (input.depositPence || 0) + weeklyCredit * termMonthsToWeeks(termMonths),
+    );
     if (residual > (input.vehiclePricePence || 0)) {
       warnings.push('The solved buyout price is above the car’s price.');
     }

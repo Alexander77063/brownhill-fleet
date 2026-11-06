@@ -76,27 +76,32 @@ describe('the cost of the deal', () => {
     expect(plan.totalRentVatPence).toBe(750_000);
   });
 
-  it('builds the equity from the deposit plus the credited rent', () => {
-    expect(plan.equityFinalPence).toBe(1_600_000);
+  it('builds the equity from the deposit plus the option credit accrued', () => {
+    // The credit is £100 a month, but it is credited out of each WEEKLY
+    // payment: £23.08 a week for 260 weeks is £600.08, not £600.00.
+    expect(plan.equityFinalPence).toBe(1_600_080);
     expect(plan.equityFinalPctOfVehicle).toBeCloseTo(53.3, 1);
   });
 
   it('leaves the buyout balance the rentee still owes at the end', () => {
-    expect(plan.buyoutBalancePence).toBe(400_000);
+    expect(plan.buyoutBalancePence).toBe(399_920);
     expect(plan.buyoutSurplusPence).toBe(0);
   });
 
   it('totals what it costs to own the car', () => {
     // deposit + rent + buyout balance
-    expect(plan.totalToOwnPence).toBe(5_900_000);
+    expect(plan.totalToOwnPence).toBe(5_899_920);
     // and the cost of credit is the difference against the car's price
-    expect(plan.costOfCreditPence).toBe(2_900_000);
+    expect(plan.costOfCreditPence).toBe(2_899_920);
   });
 
   it('cancels the deposit out of the total, because it is credited against the buyout', () => {
-    // total = residual + (payment - credit) x term
+    // total = residual + rent - the option credit accrued, with the deposit
+    // on one side and the same deposit inside the equity cancelling it out.
     expect(plan.totalToOwnPence).toBe(
-      DEAL.agreedResidualPence + (DEAL.monthlyPaymentPence - DEAL.optionCreditMonthlyPence) * DEAL.termMonths,
+      DEAL.agreedResidualPence +
+        plan.totalRentGrossPence -
+        (plan.equityFinalPence - DEAL.depositPence),
     );
   });
 
@@ -112,7 +117,7 @@ describe('the implied rate the rentee pays', () => {
     expect(plan.impliedAprPct).not.toBeNull();
     const r = (plan.impliedAprPct as number) / 100 / 12;
     // amount financed = the present value of the payments and the balloon
-    expect(npv(2_000_000, 75_000, 400_000, 60, r)).toBeCloseTo(0, 0);
+    expect(npv(2_000_000, 75_000, plan.buyoutBalancePence, 60, r)).toBeCloseTo(0, 0);
   });
 
   it('reports a nominal annual rate and the effective rate beside it', () => {
@@ -225,20 +230,28 @@ describe('the equity schedule', () => {
   it('steps through the term and lands on the final equity', () => {
     const plan = buildRtbPlan(DEAL, { scheduleStepMonths: 12 });
     expect(plan.schedule).toHaveLength(5);
-    expect(plan.schedule[4].equityPence).toBe(1_600_000);
+    expect(plan.schedule[4].equityPence).toBe(1_600_080);
     expect(plan.schedule[4].month).toBe(60);
   });
 
   it('shows the buyout balance falling as the equity builds', () => {
     const plan = buildRtbPlan(DEAL, { scheduleStepMonths: 12 });
     expect(plan.schedule[0].month).toBe(12);
-    expect(plan.schedule[0].buyoutBalancePence).toBe(880_000);
-    expect(plan.schedule[4].buyoutBalancePence).toBe(400_000);
+    expect(plan.schedule[0].buyoutBalancePence).toBe(879_984);
+    expect(plan.schedule[4].buyoutBalancePence).toBe(399_920);
   });
 
-  it('agrees with the finance engine the rest of the app uses', () => {
-    // The calculator must not drift from src/lib/finance.ts: the same equity,
-    // computed in weeks, to within the rounding of the weekly rate.
+  it('accrues the credit with the weeks, the way the ledger does', () => {
+    // A row at month 12 is 52 weeks in, so 52 weeks of the weekly credit.
+    const plan = buildRtbPlan(DEAL, { scheduleStepMonths: 12 });
+    expect(plan.schedule[0].optionCreditPence).toBe(2_308 * 52);
+    expect(plan.schedule[0].equityPence).toBe(DEAL.depositPence + 2_308 * 52);
+  });
+
+  it('agrees with the finance engine the rest of the app uses, to the penny', () => {
+    // The calculator must not drift from src/lib/finance.ts. Both accrue the
+    // weekly credit over the weeks, so they now agree exactly — not merely
+    // to within a tolerance, which is how the 12p drift hid for so long.
     const plan = buildRtbPlan(DEAL);
     const engine = rtbEquityAtWeek(
       plan.termWeeks,
@@ -246,7 +259,7 @@ describe('the equity schedule', () => {
       DEAL.depositPence,
       DEAL.vehiclePricePence,
     );
-    expect(Math.abs(engine.equityTotalPence - plan.equityFinalPence)).toBeLessThanOrEqual(plan.termWeeks);
+    expect(engine.equityTotalPence).toBe(plan.equityFinalPence);
   });
 });
 
@@ -254,7 +267,7 @@ describe('edge cases', () => {
   it('caps the buyout balance at zero when the equity overtakes it', () => {
     const plan = buildRtbPlan({ ...DEAL, agreedResidualPence: 1_200_000 });
     expect(plan.buyoutBalancePence).toBe(0);
-    expect(plan.buyoutSurplusPence).toBe(400_000);
+    expect(plan.buyoutSurplusPence).toBe(400_080);
   });
 
   it('handles a deal with no deposit and no credit', () => {
