@@ -17,6 +17,9 @@ interface BankAccountRow {
   gl_account_code: string;
 }
 
+/** A uuid, and nothing else. The id goes straight into a `::uuid` cast. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function loadBankAccount(id: string, tenantId: string): Promise<BankAccountRow | null> {
   const sql = await localDb();
   // Tenant-scoped: this connection is the superuser one, which bypasses RLS,
@@ -51,6 +54,11 @@ export default async function BankImportPage({ params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
+  // The id comes from the URL, so it is whatever the visitor typed. A string
+  // that is not a uuid cannot be cast to one, and the cast happens in the
+  // DATABASE — so without this check a mistyped URL answers 500, while the
+  // very next line gives the right answer (404) for an id that names no row.
+  if (!UUID_RE.test(id)) notFound();
   const bank = await loadBankAccount(id, ctx.tenantId);
   if (!bank) notFound();
 

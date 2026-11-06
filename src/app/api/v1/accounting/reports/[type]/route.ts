@@ -13,7 +13,20 @@ import { renderProfitAndLoss, renderBalanceSheet, renderCashflow, renderArAging 
 import { jsonSafe } from '@/lib/accounting/json';
 
 export async function GET(req: NextRequest, ctxRoute: { params: Promise<{ type: string }> }) {
-  const ctx = await requirePermission('reports.operational');
+  // The gate is guarded, so a caller without the permission is REFUSED rather
+  // than crashing. A 500 says the server is broken; the server is not broken,
+  // the request was. The rest of this API answers 403 for exactly this
+  // situation — `periods/close` and `mtd/[action]` guard theirs the same way
+  // — and this route was the odd one out.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('reports.operational');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
   const { type } = await ctxRoute.params;
   const url = new URL(req.url);
   const from = url.searchParams.get('from');

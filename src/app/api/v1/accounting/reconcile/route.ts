@@ -86,9 +86,33 @@ export async function POST(req: NextRequest) {
   // C1: gate. C2: read the real session — the userId/tenantId written by
   // commitJournalForPayment must reference real auth.users rows; FK violations
   // would otherwise roll back every reconcile and every MTD submit.
-  const ctx = await requirePermission('billing.write');
+  //
+  // The gate is guarded, so a caller without the permission is REFUSED rather
+  // than crashing. A 500 says the server is broken; the server is not broken,
+  // the request was. The rest of this API answers 403 for exactly this
+  // situation — `periods/close` and `mtd/[action]` guard theirs the same way
+  // — and this route was the odd one out.
+  let ctx: Awaited<ReturnType<typeof requirePermission>>;
+  try {
+    ctx = await requirePermission('billing.write');
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'forbidden' },
+      { status: 403 },
+    );
+  }
 
-  const form = await req.formData();
+  // The body is a form — the operator's screen posts one. A body the server
+  // cannot read as a form is a malformed request, not a broken server, so it
+  // is a 400 and not a 500. The refusal happens before the ledger is touched:
+  // a route that opens a transaction and then refuses is a route that can
+  // leave a lock behind.
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json({ error: 'expected a form-encoded body' }, { status: 400 });
+  }
   const bankTxId = String(form.get('bankTxId') ?? '');
   const action = String(form.get('action') ?? '');
   const invoiceId = String(form.get('invoiceId') ?? '');

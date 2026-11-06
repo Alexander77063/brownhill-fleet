@@ -197,6 +197,20 @@ describe('the accounting reports route', () => {
     expect(res.status).toBe(404);
   });
 
+  it('answers 403 for a caller without reports.operational', async () => {
+    // A refusal is a refusal, not a server error. The gate's throw used to
+    // escape the handler, so a caller without the permission was told the
+    // server was broken — while the rest of the accounting API answers 403
+    // for exactly this situation.
+    requirePermission.mockRejectedValue(
+      new Error("You don't have permission to do this (reports.operational)."),
+    );
+
+    const res = await call('pnl', { from: '2026-01-01', to: '2026-12-31' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('reports.operational');
+  });
+
   it('answers 500 with the message when the report itself fails', async () => {
     // A failure inside the report must not become an unhandled rejection that
     // takes the whole request down with an empty body.

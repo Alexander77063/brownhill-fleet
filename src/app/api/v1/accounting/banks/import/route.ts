@@ -84,7 +84,17 @@ export async function POST(req: NextRequest) {
   }
   const tenantId = ctx.tenantId;
 
-  const form = await req.formData();
+  // The body is a multipart upload — the operator's screen posts a file. A
+  // body the server cannot read as one is a malformed request, not a broken
+  // server, so it is a 400 and not a 500. The refusal happens before the
+  // ledger is touched: a route that opens a transaction and then refuses is
+  // a route that can leave a lock behind.
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json({ error: 'expected a multipart file upload' }, { status: 400 });
+  }
   const bankAccountId = String(form.get('bank_account_id') ?? '');
   const file = form.get('file');
   if (!bankAccountId) {

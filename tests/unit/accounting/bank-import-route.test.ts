@@ -195,6 +195,21 @@ describe('the bank import route', () => {
     expect(insertBankLines).not.toHaveBeenCalled();
   });
 
+  it('answers 400 for a body it cannot read, and imports nothing', async () => {
+    // The import is a multipart upload — the operator's screen posts a file.
+    // A JSON body is a malformed request, not a broken server, so it is a
+    // 400. The route used to let the read escape as an unhandled 500.
+    const res = await POST(
+      new NextRequest('http://localhost/api/v1/accounting/banks/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bank_account_id: BANK_ACCOUNT_ID }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(insertBankLines).not.toHaveBeenCalled();
+  });
+
   it('answers 403 for a caller without billing.write', async () => {
     requirePermission.mockRejectedValue(
       new Error("You don't have permission to do this (billing.write)."),
