@@ -26,6 +26,14 @@ export interface TenantBranding {
   vat_number?: string;
   company_number?: string;
   contract_footer?: string;
+  // Fleet cover — the Lessor's own motor policy, named in Schedule 1 of the
+  // company-insured edition of the standard hire. A company fact, not a term of
+  // an individual agreement, so it lives with the rest of the identity.
+  fleet_insurer?: string;
+  fleet_policy_number?: string;
+  fleet_policy_expiry?: string;
+  // The breakdown line the customer telephones. Named in Schedule 1.
+  breakdown_number?: string;
 }
 
 /**
@@ -56,6 +64,10 @@ const STRING_KEYS: (keyof TenantBranding)[] = [
   "vat_number",
   "company_number",
   "contract_footer",
+  "fleet_insurer",
+  "fleet_policy_number",
+  "fleet_policy_expiry",
+  "breakdown_number",
 ];
 
 function coerce(raw: Record<string, unknown> | null | undefined): TenantBranding {

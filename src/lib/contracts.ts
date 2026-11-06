@@ -1,9 +1,30 @@
-// Pure helpers for generating a populated rental contract from the database.
-// Kept free of I/O so they can be unit-tested; the route in
-// src/app/api/contracts/[agreementId] composes them with Supabase reads.
+/**
+ * Generating a customer's agreement from the database.
+ *
+ * The documents themselves live in `docs/contracts/` and are generated from
+ * their content modules by `scripts/contracts/`. This module is the other half:
+ * it reads an agreement out of the database, decides which document it needs,
+ * fills that document's fields, and reports what is still outstanding.
+ *
+ * WHY THE FIELDS ARE READ OUT OF THE DOCUMENT
+ * --------------------------------------------
+ * The application does not keep its own list of what a contract contains. It
+ * reads the `name`, `data-label`, `data-optional`, `data-stage` and
+ * `data-return` attributes out of the shipped HTML. That means the list of
+ * "what is still to be completed" can never disagree with the document the
+ * operator is looking at: if a field is added to the agreement, it appears in
+ * the outstanding list the moment the document is rebuilt, and if a field is
+ * removed, it disappears. A hand-maintained list in the app would drift from
+ * the document within one release.
+ *
+ * Pure and isomorphic: no Node APIs, no React, no database. The same module
+ * fills the document in the route and is unit-tested directly.
+ */
 
 import type { TenantBranding } from '@/lib/branding';
-import type { AgreementType } from '@/lib/types';
+import { formatGBP } from '@/lib/money';
+import { RENT_TO_BUY_TERMS, STANDARD_HIRE_TERMS } from '@/lib/contract-terms';
+import { buildRtbPlan, monthlyFromWeekly } from '@/lib/rtb-calculator';
 
 export type InsuranceModel = 'company' | 'self';
 
@@ -20,7 +41,7 @@ export interface CertLike {
 /**
  * Derive the insurance model from the driver's insurance record. A driver who
  * holds their own (non-rejected) policy is self-insured — the company is only an
- * interested party. With nothing on file the vehicle rides on Elite Fleet Management's fleet
+ * interested party. With nothing on file the vehicle rides on the Lessor's fleet
  * policy (company-insured). Returns the governing certificate so the caller can
  * fill the insurer/policy fields of the self-insured edition.
  */
@@ -35,12 +56,254 @@ export function resolveInsuranceModel(certs: CertLike[]): {
   return { model: 'self', cert: chosen };
 }
 
-/** Map (agreement type, insurance model) → the HTML template in docs/business. */
-export function contractTemplateFile(type: AgreementType, model: InsuranceModel): string {
-  if (type === 'rtb') return 'rent-to-buy-contract.html';
-  return model === 'self'
-    ? 'fleet-management-rental-self-insured.html'
-    : 'fleet-management-rental-insured.html';
+/* ── Which document ───────────────────────────────────────────────────────── */
+
+/** The documents in `docs/contracts/`, by what they are. */
+export const CONTRACT_TEMPLATES = {
+  standardCompany:
+    'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Fillable.html',
+  standardSelf:
+    'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Self-Insured-Fillable.html',
+  rtb: 'Brownhill-Fleet-Rent-to-Buy-Agreement-Fillable.html',
+} as const;
+
+/**
+ * The document an agreement of this type and insurance model needs.
+ *
+ * The rent-to-buy is always the customer's own insurance (the company does not
+ * carry a fleet policy for a vehicle the customer may buy), so the insurance
+ * model does not change which document it gets.
+ */
+export function contractTemplateFile(type: 'standard' | 'rtb', model: InsuranceModel): string {
+  if (type === 'rtb') return CONTRACT_TEMPLATES.rtb;
+  return model === 'self' ? CONTRACT_TEMPLATES.standardSelf : CONTRACT_TEMPLATES.standardCompany;
+}
+
+/* ── Reading the fields out of a document ────────────────────────────────── */
+
+/** When a particular is completed. */
+export type FieldStage = 'agreement' | 'handover' | 'return';
+
+/** One fillable particular in a document. */
+export interface ContractField {
+  /** The field's name — the key its value is stored under. */
+  key: string;
+  /** The label the operator sees. */
+  label: string;
+  /** When the particular is completed. */
+  stage: FieldStage;
+  /** True when the particular may legitimately be left blank. */
+  optional: boolean;
+  /** How many times the field appears in the document. */
+  count: number;
+}
+
+const TAG_RE = /<(input|textarea)\b([^>]*)>/gi;
+
+function attr(attrs: string, name: string): string | null {
+  const m = new RegExp(`\\b${name}="([^"]*)"`, 'i').exec(attrs);
+  return m ? m[1] : null;
+}
+
+/**
+ * The fillable particulars in a document, read out of the document itself.
+ *
+ * A field's stage comes from `data-stage`; a field marked `data-return="1"` is
+ * completed when the vehicle comes back. A field marked `data-optional="1"` may
+ * legitimately be blank — an end date on a rolling hire, for instance — and is
+ * not reported as outstanding.
+ */
+export function contractTemplateFields(html: string): ContractField[] {
+  const found = new Map<string, ContractField>();
+  let m: RegExpExecArray | null;
+  TAG_RE.lastIndex = 0;
+  while ((m = TAG_RE.exec(html)) !== null) {
+    const attrs = m[2];
+    const key = attr(attrs, 'name');
+    if (!key) continue;
+    const existing = found.get(key);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    const label = attr(attrs, 'data-label') || attr(attrs, 'aria-label') || key;
+    const isReturn = /\bdata-return="1"/i.test(attrs);
+    const stageAttr = attr(attrs, 'data-stage');
+    const stage: FieldStage = isReturn
+      ? 'return'
+      : stageAttr === 'handover' || stageAttr === 'return'
+        ? (stageAttr as FieldStage)
+        : 'agreement';
+    found.set(key, {
+      key,
+      label,
+      stage,
+      optional: /\bdata-optional="1"/i.test(attrs),
+      count: 1,
+    });
+  }
+  return [...found.values()];
+}
+
+/* ── Filling a document ───────────────────────────────────────────────────── */
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Put a value into an input tag, replacing any value it already carries. */
+function setInputValue(tag: string, value: string): string {
+  const withoutValue = tag.replace(/\s+value="[^"]*"/gi, '');
+  const at = withoutValue.lastIndexOf('>');
+  if (at < 0) return tag;
+  return `${withoutValue.slice(0, at)} value="${escapeHtml(value)}"${withoutValue.slice(at)}`;
+}
+
+/**
+ * Fill a document's fields from a value map.
+ *
+ * Every instance of a field is filled, not just the first: the document shows
+ * each particular more than once (in the fill-in panel at the top and in the
+ * body of the agreement), and the two must agree. The document's own script
+ * keeps them in step when the operator edits one of them.
+ *
+ * A field with no value is left exactly as it is — an empty box for the
+ * operator to complete.
+ */
+export function fillContractFields(html: string, values: Record<string, string>): string {
+  let out = html;
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined || value === null) continue;
+    const text = String(value);
+    const k = escapeRegExp(key);
+    // Inputs: <input ... name="key" ...>
+    out = out.replace(
+      new RegExp(`<input\\b[^>]*\\bname="${k}"[^>]*>`, 'gi'),
+      (tag) => setInputValue(tag, text),
+    );
+    // Textareas: <textarea ... name="key" ...>inner</textarea>
+    out = out.replace(
+      new RegExp(`(<textarea\\b[^>]*\\bname="${k}"[^>]*>)([\\s\\S]*?)(</textarea>)`, 'gi'),
+      (_m, pre: string, _inner: string, post: string) => `${pre}${escapeHtml(text)}${post}`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Keep only the values the document actually has a box for.
+ *
+ * The application knows more than any one document can carry — the fleet
+ * policy belongs on the company-insured standard hire and nowhere else, the
+ * weekly figures belong on the rent-to-buy's schedule. Filling a document with
+ * a value it has no field for is a silent no-op; writing them out makes the
+ * mismatch visible, and this test keeps it visible.
+ */
+export function documentValues(
+  values: Record<string, string>,
+  fields: ContractField[],
+): Record<string, string> {
+  const keep = new Set(fields.map((f) => f.key));
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(values)) if (keep.has(k)) out[k] = v;
+  return out;
+}
+
+/* ── What is still to be completed ────────────────────────────────────────── */
+
+/** The outstanding particulars, grouped by when they are completed. */
+export interface OutstandingFields {
+  /** Still to be completed before the agreement is signed. */
+  beforeSigning: ContractField[];
+  /** Completed at handover. */
+  atHandover: ContractField[];
+  /** Completed when the vehicle comes back. */
+  onReturn: ContractField[];
+}
+
+/**
+ * The particulars a document still needs, given the values that would be
+ * filled in.
+ *
+ * A particular that is optional — one the document says may be left blank — is
+ * never outstanding. Everything else is, and it is listed under the stage it
+ * belongs to.
+ */
+export function outstandingFields(
+  fields: ContractField[],
+  values: Record<string, string>,
+): OutstandingFields {
+  const out: OutstandingFields = { beforeSigning: [], atHandover: [], onReturn: [] };
+  for (const f of fields) {
+    if (f.optional) continue;
+    const value = values[f.key];
+    if (value !== undefined && String(value).trim() !== '') continue;
+    if (f.stage === 'return') out.onReturn.push(f);
+    else if (f.stage === 'handover') out.atHandover.push(f);
+    else out.beforeSigning.push(f);
+  }
+  return out;
+}
+
+/* ── Building the values ──────────────────────────────────────────────────── */
+
+/** The agreement row, as the contract needs it. */
+export interface ContractAgreement {
+  id: string;
+  type: 'standard' | 'rtb';
+  start_date?: string | null;
+  end_date?: string | null;
+  term_weeks?: number | null;
+  term_months?: number | null;
+  notice_weeks?: number | null;
+  weekly_gross_pence?: number | null;
+  weekly_net_pence?: number | null;
+  weekly_vat_pence?: number | null;
+  monthly_gross_pence?: number | null;
+  deposit_pence?: number | null;
+  option_credit_weekly_pence?: number | null;
+  agreed_residual_pence?: number | null;
+  agreed_vehicle_price_pence?: number | null;
+  excess_mile_pence?: number | null;
+}
+
+/** The vehicle row, as the contract needs it. */
+export interface ContractVehicle {
+  registration?: string | null;
+  vin?: string | null;
+  make?: string | null;
+  model?: string | null;
+  colour?: string | null;
+  model_year?: number | null;
+  fuel?: string | null;
+  list_value_pence?: number | null;
+}
+
+/** The driver row, as the contract needs it. */
+export interface ContractDriver {
+  full_name?: string | null;
+  address?: string | null;
+  date_of_birth?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  pco_licence_no?: string | null;
+  dvla_licence_no?: string | null;
+}
+
+export interface BuildFieldValuesInput {
+  type: 'standard' | 'rtb';
+  model: InsuranceModel;
+  agreement: ContractAgreement;
+  vehicle: ContractVehicle;
+  driver: ContractDriver;
+  cert: CertLike | null;
+  branding: TenantBranding;
+  /** Today's date, ISO. */
+  todayISO: string;
 }
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -54,365 +317,271 @@ export function buildContractReference(
   const regPart = reg.replace(/\s+/g, '').toUpperCase();
   const surname = (fullName.trim().split(/\s+/).pop() ?? '').toUpperCase();
   const parts = [regPart, surname];
-  if (startISO) {
-    const [year, month] = startISO.split('-');
-    parts.push(MONTHS[Number(month) - 1] ?? '', year);
+  const start = isoDateParts(startISO);
+  if (start) {
+    parts.push(MONTHS[Number(start.m) - 1] ?? '', start.y);
   }
   return parts.filter(Boolean).join('-');
 }
 
-/** ISO YYYY-MM-DD → UK DD/MM/YYYY (empty string if absent/malformed). */
-function toUKDate(iso: string | null | undefined): string {
-  if (!iso) return '';
-  const [y, m, d] = iso.split('-');
-  return y && m && d ? `${d}/${m}/${y}` : '';
-}
-
-/** Pence → pounds with thousands separators and no currency symbol (contract style). */
-export function poundsNoSymbol(pence: number | null | undefined): string {
-  if (pence == null) return '';
-  return Math.round(pence / 100).toLocaleString('en-GB');
-}
-
-/** Pence → pounds with 2 decimal places + thousands separators, no symbol. */
-export function poundsFixed(pence: number | null | undefined): string {
-  if (pence == null) return '';
-  return (pence / 100).toLocaleString('en-GB', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-export interface ContractTokenInput {
-  vehicle: {
-    registration?: string | null;
-    vin?: string | null;
-    make?: string | null;
-    model?: string | null;
-    colour?: string | null;
-    model_year?: number | null;
-    list_value_pence?: number | null;
-    ved_renewal_on?: string | null;
-    mot_due_on?: string | null;
-  };
-  driver: {
-    full_name?: string | null;
-    address?: string | null;
-    date_of_birth?: string | null;
-    phone?: string | null;
-    email?: string | null;
-    pco_licence_no?: string | null;
-    pco_licence_expiry?: string | null;
-    dvla_licence_no?: string | null;
-  };
-  agreement: { start_date?: string | null };
-  cert: CertLike | null;
-  model: InsuranceModel;
-  todayISO: string;
-}
-
 /**
- * Map the agreement's vehicle / driver / insurance rows to the contract token
- * map consumed by fillContractTokens. Empty values are dropped so the template's
- * own placeholder survives for anything the database doesn't hold (NI number,
- * odometer, witness, signatures).
- */
-export function buildContractTokens(input: ContractTokenInput): Record<string, string> {
-  const { vehicle: v, driver: d, agreement: a, cert, model, todayISO } = input;
-  const reg = v.registration ?? '';
-  const raw: Record<string, string> = {
-    reg,
-    vin: v.vin ?? '',
-    veh_make: v.make ?? '',
-    veh_model: v.model ?? '',
-    veh_year: v.model_year != null ? String(v.model_year) : '',
-    colour: v.colour ?? '',
-    veh_value: poundsNoSymbol(v.list_value_pence),
-    ved_expiry: toUKDate(v.ved_renewal_on),
-    mot_expiry: toUKDate(v.mot_due_on),
-    hirer_name: d.full_name ?? '',
-    hirer_addr: d.address ?? '',
-    dob: toUKDate(d.date_of_birth),
-    driving_licence: d.dvla_licence_no ?? '',
-    pco_no: d.pco_licence_no ?? '',
-    pco_expiry: toUKDate(d.pco_licence_expiry),
-    mobile: d.phone ?? '',
-    email: d.email ?? '',
-    hire_start: toUKDate(a.start_date),
-    agreement_date: toUKDate(todayISO),
-    reference: reg && d.full_name ? buildContractReference(reg, d.full_name, a.start_date ?? null) : '',
-  };
-  if (model === 'self' && cert) {
-    raw.insurer_policy = `${cert.insurer} — ${cert.policy_no}`;
-    raw.policy_no = cert.policy_no;
-    raw.insurer = cert.insurer;
-  }
-  const tokens: Record<string, string> = {};
-  for (const [k, val] of Object.entries(raw)) if (val) tokens[k] = val;
-  return tokens;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-/**
- * Fill a contract template's `data-tok` spans from a token map. A span keeps all
- * its attributes (so a generated contract stays editable for handover fields);
- * only its inner text is replaced, and only when a non-empty value is supplied.
- * Spans without a matching token keep their placeholder / default.
- */
-export function fillContractTokens(html: string, tokens: Record<string, string>): string {
-  let out = html;
-  for (const [key, value] of Object.entries(tokens)) {
-    if (!value) continue;
-    const re = new RegExp(`(<span[^>]*\\bdata-tok="${key}"[^>]*>)([^<]*)(</span>)`, 'g');
-    out = out.replace(re, (_m, pre: string, _inner: string, post: string) => `${pre}${escapeHtml(value)}${post}`);
-  }
-  return out;
-}
-
-/**
- * SaaS: rebrand a contract template's hardcoded platform identity to the current
- * tenant's branding. Every hardcoded platform literal (legal name, display name,
- * company number, phone, email, address) is replaced with the tenant's value when
- * set, and BLANKED when unset — the platform's own details must never survive into
- * a tenant's contract. Every injected value is HTML-escaped with the same helper
- * fillContractTokens uses.
+ * Split an ISO date into its parts, or null when it is not a real date.
  *
- * The contract route gates generation on checkBrandingComplete() so the required
- * identity fields (name, address, phone, email) are present in practice; this
- * blanking is the defence-in-depth safety net for the optional fields and any
- * bypass. Ordering matters: the legal name is replaced before the shorter display
- * name (a substring of it), and the one-line address before the two split
- * party-block lines.
+ * Accepts `YYYY-MM-DD` with an optional time suffix. The parts must be
+ * numbers and must name a day that exists — `2026-02-31` is not a date, and
+ * a contract must not show one.
  */
-export function applyBrandingToContract(html: string, b: TenantBranding): string {
-  let out = html;
-  // Tenant identity, blank when unset — the platform default must not leak through.
-  const legal = b.legal_name || b.trading_name || '';
-  const display = b.trading_name || b.legal_name || '';
-  // Legal (longer) name first, then the shorter display name (a substring of it).
-  out = out.split('Elite Fleet Management Limited').join(escapeHtml(legal));
-  out = out.split('Elite Fleet Management').join(escapeHtml(display));
-  out = out.split('09807970').join(escapeHtml(b.company_number || ''));
-  out = out.split('+44 208 064 2662').join(escapeHtml(b.phone || ''));
-  out = out.split('info@elitefleetmanagement.co.uk').join(escapeHtml(b.email || ''));
-  const addr = escapeHtml(b.address || '');
-  // One-line letterhead address first…
-  out = out.split('Suite 109, 4-6 Wadsworth Road, Perivale, UB6 7JJ').join(addr);
-  // …then the party block's first line, and blank its second line so the address
-  // isn't duplicated across two rows.
-  out = out.split('Suite 109, 4-6 Wadsworth Road').join(addr);
-  out = out.split('Perivale, UB6 7JJ').join('&nbsp;');
-  if (b.logo_url) {
-    out = out
-      .split('<div class="dh">')
-      .join(
-        `<div class="dh"><img src="${escapeHtml(b.logo_url)}" alt="" style="max-height:44px;margin-bottom:8px;display:block" />`,
-      );
+function isoDateParts(iso: string | null | undefined): { y: string; m: string; d: string } | null {
+  if (!iso) return null;
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/.exec(String(iso).trim());
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
   }
-  return out;
+  return { y: m[1], m: m[2].padStart(2, '0'), d: m[3].padStart(2, '0') };
 }
 
-// ── Editable deal terms (weekly rent, deposit, mileage, value, per-mile) ──────
-//
-// The five headline figures are hardcoded example values in the standard-rental
-// templates (£825 / £1,000 / £1.00-per-mile, repeated ~20× including a 12-week
-// payment schedule). We (a) wrap every occurrence as a `data-mir` mirror span,
-// (b) prepend a labelled, click-to-edit control panel whose `data-field` inputs
-// are the single source of truth, and (c) inject a small script that copies each
-// control's value into its mirrors live. Editing one figure updates the whole
-// contract. Values pre-fill from the agreement; a "Download filled copy" button
-// serialises the edited document so it can be sent on.
-
-/**
- * SaaS: make the ENTIRE contract page click-to-edit — company identity (name,
- * address, reg no, signatory), party details, every clause, and all figures —
- * not just the pre-wired `.f`/`.fd` fields. The interactive widgets are shielded:
- * each signature pad and the Deal-terms panel are marked `contenteditable="false"`
- * so their own inputs keep working as editable islands. The download serialiser
- * strips every `contenteditable`, so a saved/sent copy is frozen and clean.
- */
-export function makeAllEditable(html: string): string {
-  return html
-    .replace('<div class="page">', '<div class="page" contenteditable="true" spellcheck="false">')
-    .split('class="sigpad"')
-    .join('class="sigpad" contenteditable="false"')
-    .split('class="deal-terms"')
-    .join('class="deal-terms" contenteditable="false"');
+/** ISO YYYY-MM-DD → UK DD/MM/YYYY (empty string if absent/malformed). */
+export function toUKDate(iso: string | null | undefined): string {
+  const parts = isoDateParts(iso);
+  return parts ? `${parts.d}/${parts.m}/${parts.y}` : '';
 }
 
-const mir = (field: string, inner: string) => `<span class="mir" data-mir="${field}">${inner}</span>`;
+const FUEL_LABELS: Record<string, string> = {
+  phev: 'Plug-in hybrid',
+  ev: 'Electric',
+  petrol: 'Petrol',
+  diesel: 'Diesel',
+  hybrid: 'Hybrid',
+};
 
-/**
- * Wrap the standard-rental deal figures as live-mirrored spans. Uses exact
- * literal substitutions so the £1,000 *insurance excess* (worded
- * "£1,000 insurance excess") is never mistaken for the £1,000 *deposit*.
- * Occurrences absent from a given template (e.g. RTB, which has its own rate
- * structure) simply don't match — the transform is a no-op for them.
- */
-export function markEditableFields(html: string): string {
-  const swaps: Array<[string, string]> = [
-    // Vehicle value (Schedule + Clause 1.01) — drop the standalone editable spans
-    // in favour of a single panel-driven mirror.
-    [
-      '&pound;<span class="fd m" data-def="98,000" contenteditable="true" data-ph="[Value]" data-tok="veh_value">98,000</span>',
-      `&pound;${mir('veh_value', '98,000')}`,
-    ],
-    [
-      '&pound;<span class="fd m" data-def="98,000" contenteditable="true" data-ph="[Value]">98,000</span>',
-      `&pound;${mir('veh_value', '98,000')}`,
-    ],
-    // Odometer at commencement → starting-mileage mirror.
-    [
-      '<span class="fd m" data-def="111" contenteditable="true" data-ph="[XXXXX]">111</span> miles',
-      `${mir('start_mileage', '111')} miles`,
-    ],
-    // Weekly rent — rate clause, rental-amount clause, first payment.
-    ['&pound;825.00 per week', `&pound;${mir('weekly_rent', '825.00')} per week`],
-    ['&pound;825 per week', `&pound;${mir('weekly_rent', '825.00')} per week`],
-    ["One week's rental of <strong>&pound;825</strong>", `One week's rental of <strong>&pound;${mir('weekly_rent', '825.00')}</strong>`],
-    // Weekly rent — the 12 rows of the payment schedule.
-    ['<td style="text-align:right">825.00</td>', `<td style="text-align:right">${mir('weekly_rent', '825.00')}</td>`],
-    // Security deposit (never the insurance excess).
-    ['the <strong>&pound;1,000</strong> security deposit', `the <strong>&pound;${mir('deposit', '1,000.00')}</strong> security deposit`],
-    ['<strong>&pound;1,000</strong> — used in the event', `<strong>&pound;${mir('deposit', '1,000.00')}</strong> — used in the event`],
-    ['A deposit of <strong>&pound;1,000</strong>', `A deposit of <strong>&pound;${mir('deposit', '1,000.00')}</strong>`],
-    ['refundable deposit of &pound;1,000', `refundable deposit of &pound;${mir('deposit', '1,000.00')}`],
-    ['The &pound;1,000 security deposit is separate', `The &pound;${mir('deposit', '1,000.00')} security deposit is separate`],
-    ['<td>Deposit</td><td>At Signing</td><td style="text-align:right">1,000.00</td>', `<td>Deposit</td><td>At Signing</td><td style="text-align:right">${mir('deposit', '1,000.00')}</td>`],
-    // Excess mileage charge.
-    ['&pound;1.00 per mile', `&pound;${mir('per_mile', '1.00')} per mile`],
-  ];
-  let out = html;
-  for (const [from, to] of swaps) out = out.split(from).join(to);
-  return out;
+function fuelLabel(fuel: string | null | undefined): string {
+  if (!fuel) return '';
+  return FUEL_LABELS[fuel.toLowerCase()] ?? fuel;
+}
+
+/** The licence the driver holds, as the document describes it. */
+function licenceType(d: ContractDriver): string {
+  if (d.pco_licence_no) return 'UK photocard driving licence';
+  if (d.dvla_licence_no) return 'UK driving licence';
+  return '';
+}
+
+function licenceNumber(d: ContractDriver): string {
+  return d.dvla_licence_no || d.pco_licence_no || '';
 }
 
 /**
- * Set the initial text of the `data-mir` spans server-side, so the contract body
- * shows the real agreement figures even before (or without) the mirror script
- * runs. The script then keeps them in sync as the user edits the control panel.
+ * The values for every field the document has, from the agreement, the
+ * vehicle, the driver, the insurance record and the tenant's branding.
+ *
+ * A value the database does not hold is left out, and the document shows an
+ * empty box for it. The caller reports those as outstanding.
  */
-export function fillMirrors(html: string, values: Record<string, string>): string {
-  let out = html;
-  for (const [key, value] of Object.entries(values)) {
-    const re = new RegExp(`(<span[^>]*\\bdata-mir="${key}"[^>]*>)([^<]*)(</span>)`, 'g');
-    out = out.replace(re, (_m, pre: string, _inner: string, post: string) => `${pre}${escapeHtml(value)}${post}`);
-  }
-  return out;
-}
+export function buildAgreementFieldValues(input: BuildFieldValuesInput): Record<string, string> {
+  const { type, model, agreement: a, vehicle: v, driver: d, cert, branding, todayISO } = input;
+  const values: Record<string, string> = {};
 
-export interface DealTermsInput {
-  weeklyGrossPence: number;
-  depositPence: number;
-  vehicleValuePence: number | null;
-  /** Odometer at commencement; no DB source, so usually blank/editable. */
-  startMileage?: string | null;
-  /** Excess-mileage charge in pence; defaults to £1.00 when absent. */
-  perMilePence?: number | null;
-}
-
-/**
- * The editable "Deal terms" panel prepended to the contract: five click-to-edit
- * controls, pre-filled from the agreement, that drive every mirrored figure in
- * the body. Rendered on brand with the contract's own print CSS; the helper
- * toolbar/hint are screen-only so a printed / saved copy stays clean.
- */
-export function buildDealTermsPanel(t: DealTermsInput): string {
-  const perMile = t.perMilePence ?? 100;
-  const field = (f: string, prefix: string, value: string, suffix: string, ph = '') =>
-    `<div class="dt-row"><span class="dt-k">${labelFor(f)}</span><span class="dt-v">${prefix}<span class="dfx" contenteditable="true" data-field="${f}" data-ph="${ph}">${value}</span>${suffix}</span></div>`;
-  return `
-<div class="deal-terms">
-  <div class="dt-h">Deal terms <span class="dt-hint no-print no-save">— click any amount to edit, then use “Download filled copy”.</span></div>
-  ${field('weekly_rent', '£', poundsFixed(t.weeklyGrossPence), ' <span class="dt-u">per week (gross)</span>')}
-  ${field('deposit', '£', poundsFixed(t.depositPence), '')}
-  ${field('start_mileage', '', t.startMileage ?? '', ' <span class="dt-u">miles at commencement</span>', 'e.g. 24,500')}
-  ${field('veh_value', '£', poundsNoSymbol(t.vehicleValuePence), ' <span class="dt-u">as at commencement</span>', 'e.g. 98,000')}
-  ${field('per_mile', '£', poundsFixed(perMile), ' <span class="dt-u">per excess mile</span>')}
-</div>`;
-}
-
-function labelFor(field: string): string {
-  switch (field) {
-    case 'weekly_rent':
-      return 'Weekly rent';
-    case 'deposit':
-      return 'Security deposit';
-    case 'start_mileage':
-      return 'Starting mileage';
-    case 'veh_value':
-      return 'Vehicle value';
-    case 'per_mile':
-      return 'Excess mileage charge';
-    default:
-      return field;
-  }
-}
-
-/** Styles for the editable "Deal terms" panel (screen affordance; clean in print). */
-export const DEAL_TERMS_STYLE = `
-<style>
-  .deal-terms{border:1px solid #c9a94a;border-radius:8px;padding:14px 16px;margin:0 0 16px;background:#fbf7ec}
-  .deal-terms .dt-h{font-weight:700;font-size:11pt;margin-bottom:8px;color:#1a2740}
-  .deal-terms .dt-row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-top:1px solid #ece2c4}
-  .deal-terms .dt-row:first-of-type{border-top:0}
-  .deal-terms .dt-k{color:#555}
-  .deal-terms .dt-v{font-weight:600;color:#111;text-align:right}
-  .deal-terms .dt-u{font-weight:400;color:#777;font-size:9pt}
-  .dfx{display:inline-block;min-width:2ch;padding:0 3px;border-bottom:1px dashed #c9a94a;outline:none;cursor:text}
-  .dfx:focus{background:#fff6d8}
-  .dfx:empty::before{content:attr(data-ph);color:#b9a25a}
-  /* Starting mileage has no data source; show a fill-in line until it's entered. */
-  .mir[data-mir="start_mileage"]:empty::before{content:"_______";color:#999;letter-spacing:1px}
-  @media print{ .no-print{display:none!important} .dfx{border-bottom:0;background:none;padding:0} }
-</style>`;
-
-/**
- * "Download filled copy" button, styled to match the template's own toolbar
- * `.btn` and injected alongside "Save as Signed PDF". Produces the editable HTML
- * the user sends on (vs. the print-to-PDF button).
- */
-export const CONTRACT_DOWNLOAD_BUTTON =
-  '<button class="btn bpdf" style="background:#e9c96a;color:#0a1628" onclick="__downloadFilledContract()">&#11015; Download filled copy</button>';
-
-/**
- * Client script (runs in the browser, including the downloaded file): mirror each
- * control into its `data-mir` spans live, and serialise a filled copy on demand —
- * the edit toolbar and scripts stripped, edits frozen — so the sent file is a
- * clean, static contract carrying the entered amounts.
- */
-export const CONTRACT_SCRIPT = `
-<script>
-(function(){
-  var FIELDS=['weekly_rent','deposit','start_mileage','veh_value','per_mile'];
-  function sync(f){
-    var src=document.querySelector('[data-field="'+f+'"]'); if(!src) return;
-    var t=src.textContent.trim();
-    var mirrors=document.querySelectorAll('[data-mir="'+f+'"]');
-    for(var i=0;i<mirrors.length;i++) mirrors[i].textContent=t;
-  }
-  FIELDS.forEach(function(f){
-    var src=document.querySelector('[data-field="'+f+'"]'); if(!src) return;
-    src.addEventListener('input',function(){sync(f);});
-    sync(f);
-  });
-  window.__downloadFilledContract=function(){
-    var clone=document.documentElement.cloneNode(true);
-    var strip=clone.querySelectorAll('.no-save, .toolbar, script');
-    for(var i=0;i<strip.length;i++) strip[i].parentNode.removeChild(strip[i]);
-    // Freeze current edits so a re-opened copy stays static with the entered values.
-    var edits=clone.querySelectorAll('[contenteditable]');
-    for(var j=0;j<edits.length;j++) edits[j].removeAttribute('contenteditable');
-    var html='<!doctype html>\\n'+clone.outerHTML;
-    var blob=new Blob([html],{type:'text/html'});
-    var a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=(document.title||'contract').replace(/[^a-z0-9\\-]+/gi,'-')+'-filled.html';
-    document.body.appendChild(a); a.click();
-    setTimeout(function(){URL.revokeObjectURL(a.href); a.remove();},0);
+  const set = (key: string, value: string | number | null | undefined) => {
+    if (value === null || value === undefined) return;
+    const text = String(value);
+    if (text.trim() === '') return;
+    values[key] = text;
   };
-})();
-</script>`;
+
+  /* The Lessor. */
+  set('lessorLegalName', branding.legal_name);
+  set('lessorTradingName', branding.trading_name || branding.legal_name);
+  set('lessorRegisteredNumber', branding.company_number);
+  set('lessorRegisteredAddress', branding.address);
+  set('lessorContactEmail', branding.email);
+  set('lessorContactPhone', branding.phone);
+  set('breakdownNumber', branding.breakdown_number);
+
+  /* The fleet policy belongs on the company-insured standard hire and nowhere
+   * else: the self-insured edition carries the Customer's own policy, and the
+   * rent-to-buy is always the Customer's own insurance. */
+  if (type === 'standard' && model === 'company') {
+    set('companyPolicyInsurer', branding.fleet_insurer);
+    set('companyPolicyNumber', branding.fleet_policy_number);
+    set('companyPolicyExpiry', branding.fleet_policy_expiry);
+  }
+
+  /* The Customer. */
+  set('customerFullName', d.full_name);
+  set('customerAddress', d.address);
+  set('customerDob', d.date_of_birth);
+  set('customerPhone', d.phone);
+  set('customerEmail', d.email);
+  set('customerLicenceType', licenceType(d));
+  set('customerLicenceNumber', licenceNumber(d));
+
+  /* The agreement. */
+  set(
+    'agreementReference',
+    v.registration && d.full_name
+      ? buildContractReference(v.registration, d.full_name, a.start_date ?? null)
+      : '',
+  );
+  set('agreementDate', todayISO);
+  set('startDate', a.start_date);
+  set('endDate', termEndDate(a.start_date, a.term_weeks));
+  set('termWeeks', a.term_weeks);
+
+  /* The Vehicle. */
+  set('vehicleMake', v.make);
+  set('vehicleModel', v.model);
+  set('vehicleReg', v.registration);
+  set('vehicleVin', v.vin);
+  set('vehicleColour', v.colour);
+  set('vehicleModelYear', v.model_year);
+  set('vehicleFuel', fuelLabel(v.fuel));
+
+  /* The money — the standard hire. */
+  if (type === 'standard') {
+    const terms = STANDARD_HIRE_TERMS;
+    set('weeklyRentGross', money(a.weekly_gross_pence));
+    set('weeklyRentNet', money(a.weekly_net_pence));
+    set('weeklyRentVat', money(a.weekly_vat_pence));
+    set('vatRate', `${terms.vatRatePct}%`);
+    set('depositAmount', money(a.deposit_pence));
+    set('includedMilesPerWeek', terms.mileageAllowanceMilesPerWeek);
+    set('excessMileRate', money(a.excess_mile_pence ?? terms.excessMilePence));
+    set('noticePeriod', noticePeriodText(a.notice_weeks));
+    set('paymentMethod', terms.paymentMethod);
+    set('latePaymentCharge', terms.latePaymentCharge);
+    set('lateReturnCharge', terms.lateReturnCharge);
+    set('firstPaymentDate', a.start_date);
+    set('vehicleListValue', money(v.list_value_pence));
+  }
+
+  /* The insurance excess.
+   *
+   * On the company-insured edition the Customer pays the excess on BROWNHILL's
+   * fleet policy, and that figure is published: £1,000 a claim.
+   *
+   * On the self-insured edition the Customer pays the excess on THEIR OWN
+   * policy (clause 6.5). That is whatever they and their insurer agreed, and
+   * the platform does not hold it — an insurance certificate carries the
+   * insurer, the policy number and the dates, not the excess. So the figure is
+   * left for the operator to read off the policy, and the agreement is listed
+   * as outstanding until it is filled in. Quoting our fleet excess against a
+   * customer's own policy would be a false statement in a contract.
+   */
+  if (type === 'standard' && model === 'company') {
+    set('damageExcessAmount', money(STANDARD_HIRE_TERMS.insuranceExcessPence));
+  }
+
+  /* The money — the rent-to-buy. */
+  if (type === 'rtb') {
+    const terms = RENT_TO_BUY_TERMS;
+    const termMonths = a.term_months ?? 0;
+    const termWeeks = a.term_weeks ?? 0;
+    const monthlyGross = a.monthly_gross_pence ?? 0;
+    const deposit = a.deposit_pence ?? 0;
+    const optionCreditWeekly = a.option_credit_weekly_pence ?? 0;
+    const optionCreditMonthly = termMonths ? monthlyFromWeekly(optionCreditWeekly, termMonths) : 0;
+    const vehiclePrice = a.agreed_vehicle_price_pence ?? v.list_value_pence ?? 0;
+    const buyout = a.agreed_residual_pence ?? 0;
+
+    const plan = buildRtbPlan({
+      vehiclePricePence: vehiclePrice,
+      depositPence: deposit,
+      termMonths,
+      monthlyPaymentPence: monthlyGross,
+      vatRatePct: terms.vatRatePct,
+      optionCreditMonthlyPence: optionCreditMonthly,
+      agreedResidualPence: buyout,
+    });
+
+    set('termMonths', termMonths);
+    set('termWeeks', termWeeks);
+    set('monthlyRentGross', money(monthlyGross));
+    set('monthlyRentNet', money(plan.monthlyNetPence));
+    set('monthlyRentVat', money(plan.monthlyVatPence));
+    set('monthlyRentTotal', money(plan.totalRentGrossPence));
+    // The weekly figures are the stored billing, not a re-derivation: the
+    // invoice run reads those columns, so those are what the document quotes.
+    set('weeklyRentGross', money(a.weekly_gross_pence));
+    set('weeklyRentNet', money(a.weekly_net_pence));
+    set('weeklyRentVat', money(a.weekly_vat_pence));
+    set('weeklyBillingTotal', money((a.weekly_gross_pence ?? 0) * termWeeks));
+    set('roundingAdjustment', money((a.weekly_gross_pence ?? 0) * termWeeks - plan.totalRentGrossPence));
+    set('vatRate', `${terms.vatRatePct}%`);
+    set('depositAmount', money(deposit));
+    set('includedMilesPerWeek', terms.mileageAllowanceMilesPerWeek);
+    set('excessMileRate', money(a.excess_mile_pence ?? terms.excessMilePence));
+    set('paymentMethod', 'Bank transfer, in advance, by standing order');
+    set('latePaymentCharge', terms.latePaymentCharge);
+    set('earlyTerminationFee', money((a.weekly_gross_pence ?? 0) * terms.earlyTerminationWeeks));
+    set('firstPaymentDate', a.start_date);
+    set('vehiclePrice', money(vehiclePrice));
+    set('optionCreditMonthly', money(optionCreditMonthly));
+    set('optionCreditWeekly', money(optionCreditWeekly));
+    set('buyoutPrice', money(buyout));
+    set('optionCreditOverTerm', money(plan.equityFinalPence - deposit));
+    set('equityAtEndOfTerm', money(plan.equityFinalPence));
+    set('balanceToBuyout', money(plan.buyoutBalancePence));
+    set(
+      'impliedApr',
+      plan.impliedAprPct === null
+        ? 'not applicable to these figures'
+        : `${plan.impliedAprPct.toFixed(2)}% APR (${plan.impliedAprEffectivePct?.toFixed(2)}% effective)`,
+    );
+    set('optionNoticePeriod', `${terms.optionNoticeDays} days' written notice`);
+    set('purchaseCompletionDays', `${terms.purchaseCompletionDays} days`);
+    // The insurance excess is the Customer's own and is not a published figure:
+    // it is left for the operator to record from the Customer's policy.
+  }
+
+  /* Insurance. The rent-to-buy is always the customer's own policy. */
+  if (type === 'rtb' || model === 'self') {
+    set('insuranceProvider', cert?.insurer);
+    set('insurancePolicyNumber', cert?.policy_no);
+    set('insuranceExpiryDate', cert?.cover_to);
+    set('insuranceEvidenceDate', todayISO);
+  }
+
+  return values;
+}
+
+/** The notice period as the document states it. */
+export function noticePeriodText(noticeWeeks: number | null | undefined): string {
+  const weeks = noticeWeeks ?? 4;
+  return weeks === 1 ? "one week's written notice" : `${weeks} weeks' written notice`;
+}
+
+/**
+ * The date the agreed term ends.
+ *
+ * NOT the `agreements.end_date` column: that column records when a hire
+ * actually ended or was transferred, and it is null for an agreement still
+ * running. The date the document must carry is the end of the AGREED term —
+ * the start date plus the term the customer is committed to. A rolling hire has
+ * no end date, so it is left blank.
+ */
+export function termEndDate(
+  startISO: string | null | undefined,
+  termWeeks: number | null | undefined,
+): string {
+  if (!startISO || !termWeeks || termWeeks <= 0) return '';
+  const start = new Date(`${startISO}T00:00:00Z`);
+  if (Number.isNaN(start.getTime())) return '';
+  start.setUTCDate(start.getUTCDate() + termWeeks * 7);
+  return start.toISOString().slice(0, 10);
+}
+
+/** Pence as pounds with two decimals, e.g. 35000 → "£350.00". */
+export function money(pence: number | null | undefined): string {
+  if (pence === null || pence === undefined) return '';
+  return formatGBP(pence);
+}

@@ -1,44 +1,32 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { type NextRequest, NextResponse } from 'next/server';
-import { rtbEquityAtWeek } from '@/lib/finance';
-import { formatGBP } from '@/lib/money';
 import { createClient } from '@/lib/supabase/server';
-import { brandDisplayName, brandLegalName, checkBrandingComplete, getBranding } from '@/lib/branding';
+import { checkBrandingComplete, getBranding } from '@/lib/branding';
 import {
-  CONTRACT_DOWNLOAD_BUTTON,
-  CONTRACT_SCRIPT,
   type CertLike,
-  DEAL_TERMS_STYLE,
-  applyBrandingToContract,
-  buildContractTokens,
-  buildDealTermsPanel,
+  buildAgreementFieldValues,
+  contractTemplateFields,
   contractTemplateFile,
-  fillContractTokens,
-  fillMirrors,
-  makeAllEditable,
-  markEditableFields,
-  poundsFixed,
-  poundsNoSymbol,
+  documentValues,
+  fillContractFields,
+  outstandingFields,
   resolveInsuranceModel,
 } from '@/lib/contracts';
 
-// Generate a populated contract: load the agreement + vehicle + driver +
+// Generate a populated agreement: load the agreement + vehicle + driver +
 // insurance certs (RLS-scoped via createClient), derive the insurance model
-// from the driver's record, choose the matching HTML template from docs/business,
-// FILL its data-tok fields from the database, and PREPEND a styled "Schedule"
-// cover section with the authoritative terms. The browser prints to PDF.
+// from the driver's record, read the matching document out of docs/contracts,
+// fill its fields from the database, and show the operator what is still to be
+// completed. The browser prints to PDF.
 export const runtime = 'nodejs';
 
 function esc(s: unknown): string {
   return String(s ?? '—')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function row(label: string, value: string): string {
-  return `<tr><td>${esc(label)}</td><td>${value}</td></tr>`;
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /** Friendly stop page shown when a tenant tries to generate a contract before
@@ -77,6 +65,60 @@ function brandingIncompleteResponse(missing: string[]): NextResponse {
   });
 }
 
+/** The notice above the document: what is still to be completed, and when. */
+function outstandingNotice(out: ReturnType<typeof outstandingFields>): string {
+  const section = (title: string, items: { key: string; label: string }[]) => {
+    if (items.length === 0) return '';
+    const list = items.map((i) => `<li><code>${esc(i.key)}</code> — ${esc(i.label)}</li>`).join('');
+    return `<h3>${esc(title)} (${items.length})</h3><ul>${list}</ul>`;
+  };
+  const body =
+    section('Still to be completed before this agreement is signed', out.beforeSigning) +
+    section('Completed at handover', out.atHandover) +
+    section('Completed when the Vehicle comes back', out.onReturn);
+  if (!body) {
+    return `<div class="outstanding"><h2>Ready to issue</h2>
+      <p>Every particular in this agreement has a value. Check it over, then print it or
+         download a copy to send to the customer.</p></div>`;
+  }
+  return `<div class="outstanding"><h2>Still to be completed</h2>
+    <p>These particulars are empty. Fill them in on the form, or complete them as the hire
+       progresses. The list is read from the agreement itself, so it cannot fall out of
+       step with the document.</p>${body}</div>`;
+}
+
+const NOTICE_STYLE = `<style>
+  .outstanding{max-width:830px;margin:18px auto 0;padding:16px 20px;border:1px solid #c9a94a;
+    border-radius:10px;background:#fffdf3;color:#16181d;font:14px/1.55 "Segoe UI",Calibri,system-ui,sans-serif}
+  .outstanding h2{margin:0 0 6px;font-size:16px}
+  .outstanding h3{margin:12px 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#5b6270}
+  .outstanding p{margin:0 0 8px;color:#5b6270}
+  .outstanding ul{margin:0;padding-left:20px}
+  .outstanding code{font-size:12px;color:#1d4ed8}
+  @media print{ .outstanding{display:none!important} }
+</style>`;
+
+/** The button and the script that produce a clean, filled copy on disk. */
+const DOWNLOAD_BUTTON =
+  '<button type="button" class="secondary" onclick="__downloadFilledContract()">Download completed copy</button>';
+
+const DOWNLOAD_SCRIPT = `<script>
+(function(){
+  window.__downloadFilledContract=function(){
+    var clone=document.documentElement.cloneNode(true);
+    var strip=clone.querySelectorAll('.outstanding, .bar, .panel, script');
+    for(var i=0;i<strip.length;i++) strip[i].parentNode.removeChild(strip[i]);
+    var html='<!doctype html>\\n'+clone.outerHTML;
+    var blob=new Blob([html],{type:'text/html'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(document.title||'agreement').replace(/[^a-z0-9\\-]+/gi,'-')+'.html';
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href); a.remove();},0);
+  };
+})();
+</script>`;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ agreementId: string }> },
@@ -109,13 +151,18 @@ export async function GET(
     vehicle_id: string;
     driver_id: string;
     start_date: string | null;
+    end_date: string | null;
     term_weeks: number | null;
+    term_months: number | null;
+    notice_weeks: number | null;
     weekly_gross_pence: number;
     weekly_net_pence: number;
     weekly_vat_pence: number;
+    monthly_gross_pence: number | null;
     deposit_pence: number;
     option_credit_weekly_pence: number | null;
     agreed_residual_pence: number | null;
+    agreed_vehicle_price_pence: number | null;
     excess_mile_pence: number;
   };
 
@@ -132,179 +179,62 @@ export async function GET(
   // self-insured edition (filling their insurer/policy); none → company fleet.
   const { model, cert } = resolveInsuranceModel((certs ?? []) as CertLike[]);
 
-  const v = (vehicle ?? {}) as {
-    registration?: string;
-    vin?: string;
-    make?: string;
-    model?: string;
-    colour?: string;
-    model_year?: number;
-    list_value_pence?: number;
-  };
-  const d = (driver ?? {}) as {
-    full_name?: string;
-    address?: string;
-    email?: string;
-    phone?: string;
-    pco_licence_no?: string;
-  };
-
   const templateFile = contractTemplateFile(ag.type, model);
   let html: string;
   try {
-    html = await readFile(path.join(process.cwd(), 'docs', 'business', templateFile), 'utf8');
+    html = await readFile(path.join(process.cwd(), 'docs', 'contracts', templateFile), 'utf8');
   } catch {
     return NextResponse.json({ error: 'template unavailable' }, { status: 500 });
   }
 
-  // Make the five headline figures (weekly rent, deposit, starting mileage,
-  // vehicle value, per-mile charge) click-to-edit + live-mirrored, and seed the
-  // body with this agreement's actual figures so it reads correctly even before
-  // (or without) the mirror script runs. The editable "Deal terms" panel is the
-  // single source the script propagates from. Scoped to the STANDARD rental
-  // editions — RTB carries its own bespoke rate/credit terms (e.g. 15p/mile),
-  // which the £1.00-per-mile panel would contradict.
-  //
-  // IMPORTANT: markEditableFields must run BEFORE fillContractTokens. It matches
-  // the template's literal default figures (incl. `data-tok="veh_value">98,000`)
-  // and rewrites them to mirror spans — stripping that `data-tok`. Filling tokens
-  // first would rewrite the span's inner text and break the literal match, so the
-  // Schedule's value row would silently stop mirroring for any non-£98,000 car.
-  let dealPanel = '';
-  if (ag.type === 'standard') {
-    html = markEditableFields(html);
-  }
+  // The particulars the document has, read out of the document itself. The
+  // list of "what is still to be completed" is built from these, so it can
+  // never disagree with the agreement the operator is looking at.
+  const fields = contractTemplateFields(html);
 
-  // Per-tenant branding (loaded above at the gate) fills the rent-to-buy company
-  // data-tok spans and rebrands the standard editions' hardcoded identity.
-  const companyTokens: Record<string, string> = { company_name: brandLegalName(branding) };
-  if (branding.address) companyTokens.company_address = branding.address;
-  if (branding.company_number) companyTokens.company_number = branding.company_number;
-  if (branding.vat_number) companyTokens.company_vat = branding.vat_number;
-
-  // Fill the template's data-tok fields from the database. Anything the DB does
-  // not hold (NI number, odometer, witness, signatures) keeps its placeholder.
-  html = fillContractTokens(
-    html,
-    {
-      ...buildContractTokens({
-        vehicle: vehicle ?? {},
-        driver: driver ?? {},
-        agreement: ag,
-        cert,
-        model,
-        todayISO: new Date().toISOString().slice(0, 10),
-      }),
-      ...companyTokens,
-    },
+  // Fill every particular the document has, from the agreement, the vehicle,
+  // the driver, the insurance record and the tenant's branding.
+  const values = documentValues(
+    buildAgreementFieldValues({
+      type: ag.type,
+      model,
+      agreement: ag,
+      vehicle: vehicle ?? {},
+      driver: driver ?? {},
+      cert,
+      branding,
+      todayISO: new Date().toISOString().slice(0, 10),
+    }),
+    fields,
   );
+  html = fillContractFields(html, values);
 
-  if (ag.type === 'standard') {
-    html = fillMirrors(html, {
-      weekly_rent: poundsFixed(ag.weekly_gross_pence),
-      deposit: poundsFixed(ag.deposit_pence),
-      veh_value: poundsNoSymbol(v.list_value_pence ?? null),
-      per_mile: poundsFixed(ag.excess_mile_pence),
-      start_mileage: '', // odometer at commencement is captured at handover
-    });
-    dealPanel = buildDealTermsPanel({
-      weeklyGrossPence: ag.weekly_gross_pence,
-      depositPence: ag.deposit_pence,
-      vehicleValuePence: v.list_value_pence ?? null,
-      perMilePence: ag.excess_mile_pence,
-    });
-  }
+  const outstanding = outstandingFields(fields, values);
 
-  // Rebrand the template's hardcoded Elite Fleet Management identity to the tenant's.
-  // No-op (byte-identical) for a tenant that has set no branding.
-  html = applyBrandingToContract(html, branding);
+  // The notice above the document, and the style that keeps it off the printout.
+  html = html.includes('</head>')
+    ? html.replace('</head>', `${NOTICE_STYLE}</head>`)
+    : `${NOTICE_STYLE}${html}`;
+  const notice = outstandingNotice(outstanding);
+  html = html.includes('<body>')
+    ? html.replace('<body>', `<body>${notice}`)
+    : `${notice}${html}`;
 
-  // Build the Schedule rows, reusing the template's own classes.
-  const termText = ag.term_weeks ? `${ag.term_weeks} weeks` : 'Rolling (weekly, 4 weeks’ notice)';
-  let scheduleRows =
-    row('Vehicle', esc(`${v.make ?? ''} ${v.model ?? ''}`.trim())) +
-    row('Registration (VRM)', esc(v.registration)) +
-    row('VIN', esc(v.vin)) +
-    row('Colour / Year', esc(`${v.colour ?? '—'} / ${v.model_year ?? '—'}`)) +
-    row('Hirer', esc(d.full_name)) +
-    row('Hirer address', esc(d.address)) +
-    row('PCO licence no.', esc(d.pco_licence_no)) +
-    row('Start date', esc(ag.start_date)) +
-    row('Term', esc(termText)) +
-    row('Weekly rent (gross, inc. VAT)', formatGBP(ag.weekly_gross_pence)) +
-    row('Weekly rent (net of VAT)', formatGBP(ag.weekly_net_pence)) +
-    row('Weekly VAT (20%)', formatGBP(ag.weekly_vat_pence)) +
-    row('Deposit', formatGBP(ag.deposit_pence));
-
-  if (ag.type === 'rtb' && ag.option_credit_weekly_pence != null) {
-    const weeks = ag.term_weeks ?? 0;
-    const eq = rtbEquityAtWeek(
-      weeks,
-      ag.option_credit_weekly_pence,
-      ag.deposit_pence,
-      v.list_value_pence ?? 0,
-    );
-    scheduleRows +=
-      row('Weekly option credit', formatGBP(ag.option_credit_weekly_pence)) +
-      row('Deposit applied to equity', formatGBP(ag.deposit_pence)) +
-      row(
-        'Agreed residual / option price',
-        ag.agreed_residual_pence != null ? formatGBP(ag.agreed_residual_pence) : '—',
-      ) +
-      row(
-        `Equity target at week ${weeks}`,
-        `${formatGBP(eq.equityTotalPence)}${
-          v.list_value_pence ? ` (${eq.pctOfVehicle}% of list)` : ''
-        }`,
-      );
-  }
-
-  const schedule = `
-<div class="sch">Schedule — Agreement Particulars</div>
-<div class="st">Parties, Vehicle &amp; Financial Terms</div>
-<table class="dt2"><tbody>${scheduleRows}</tbody></table>
-<div class="nb"><strong>Note</strong>These particulars are generated from ${esc(
-    brandDisplayName(branding),
-  )} for agreement ${esc(
-    ag.id,
-  )} and form part of, and are to be read with, the agreement below. Where they conflict, these particulars prevail.</div>
-<hr class="hr2">
-`;
-
-  // Insert the (standard-only) Deal-terms panel then the Schedule inside the
-  // printable page so the print CSS applies.
-  const anchor = '<div class="page">';
-  const idx = html.indexOf(anchor);
-  let out =
-    idx >= 0
-      ? html.slice(0, idx + anchor.length) + dealPanel + schedule + html.slice(idx + anchor.length)
-      : dealPanel + schedule + html;
-
-  // SaaS: make every field on the contract click-to-edit (company identity,
-  // parties, clauses, figures), shielding the signature pads + deal panel.
-  out = makeAllEditable(out);
-
-  // Add the "Download filled copy" button beside "Save as Signed PDF", and the
-  // mirror/serialise script — for EVERY contract type. The Deal-terms panel
-  // styles are standard-only (RTB has no such panel).
-  out = out.replace(
-    '<button class="btn bpdf" onclick="window.print()">',
-    `${CONTRACT_DOWNLOAD_BUTTON}<button class="btn bpdf" onclick="window.print()">`,
+  // A "Download completed copy" button beside the print button, and the script
+  // that serialises the filled page.
+  html = html.replace(
+    '<button type="button" onclick="window.print()">',
+    `${DOWNLOAD_BUTTON}<button type="button" onclick="window.print()">`,
   );
-  if (ag.type === 'standard') {
-    out = out.includes('</head>')
-      ? out.replace('</head>', `${DEAL_TERMS_STYLE}</head>`)
-      : `${DEAL_TERMS_STYLE}${out}`;
-  }
-  out = out.includes('</body>')
-    ? out.replace('</body>', `${CONTRACT_SCRIPT}</body>`)
-    : `${out}${CONTRACT_SCRIPT}`;
+  html = html.includes('</body>')
+    ? html.replace('</body>', `${DOWNLOAD_SCRIPT}</body>`)
+    : `${html}${DOWNLOAD_SCRIPT}`;
 
   const headers: Record<string, string> = { 'Content-Type': 'text/html; charset=utf-8' };
   if (download) {
     headers['Content-Disposition'] =
-      `attachment; filename="contract-${ag.type}-${ag.id.slice(0, 8)}.html"`;
+      `attachment; filename="agreement-${ag.type}-${ag.id.slice(0, 8)}.html"`;
   }
 
-  return new NextResponse(out, { status: 200, headers });
+  return new NextResponse(html, { status: 200, headers });
 }

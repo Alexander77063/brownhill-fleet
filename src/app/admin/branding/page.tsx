@@ -111,6 +111,28 @@ export default async function BrandingPage() {
         </Card>
 
         <Card>
+          <CardTitle>Fleet insurance &amp; breakdown</CardTitle>
+          <p className="mt-1 text-xs text-muted">
+            Named in Schedule 1 of the standard vehicle hire when the vehicle rides on your own
+            fleet policy, and the number the customer telephones if the vehicle breaks down.
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Fleet insurer" hint="the insurer your fleet policy is with">
+              <input name="fleet_insurer" defaultValue={b.fleet_insurer ?? ''} className={`${inputCls} w-full`} />
+            </Field>
+            <Field label="Fleet policy number">
+              <input name="fleet_policy_number" defaultValue={b.fleet_policy_number ?? ''} className={`${inputCls} w-full`} />
+            </Field>
+            <Field label="Fleet policy expires" hint="e.g. 31/12/2027">
+              <input name="fleet_policy_expiry" defaultValue={b.fleet_policy_expiry ?? ''} className={`${inputCls} w-full`} />
+            </Field>
+            <Field label="Breakdown number" hint="the number the customer telephones">
+              <input name="breakdown_number" defaultValue={b.breakdown_number ?? ''} className={`${inputCls} w-full`} />
+            </Field>
+          </div>
+        </Card>
+
+        <Card>
           <CardTitle>Email</CardTitle>
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="From name">

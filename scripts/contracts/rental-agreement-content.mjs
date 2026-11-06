@@ -91,20 +91,21 @@ export const FIELDS = [
   { key: 'vehicleMake', group: 'vehicle', label: 'Make', len: 20, hint: 'e.g. Mercedes-Benz' },
   { key: 'vehicleModel', group: 'vehicle', label: 'Model', len: 28, hint: 'e.g. S580e 4MATIC Long' },
   { key: 'vehicleReg', group: 'vehicle', label: 'Registration', len: 14, hint: 'e.g. BF24 XYZ' },
-  { key: 'vehicleVin', group: 'vehicle', label: 'VIN / chassis number', len: 24 },
-  { key: 'vehicleColour', group: 'vehicle', label: 'Colour', len: 18 },
-  { key: 'vehicleModelYear', group: 'vehicle', label: 'Model year', len: 8 },
+  { key: 'vehicleVin', group: 'vehicle', label: 'VIN / chassis number', len: 24, optional: true },
+  { key: 'vehicleColour', group: 'vehicle', label: 'Colour', len: 18, optional: true },
+  { key: 'vehicleModelYear', group: 'vehicle', label: 'Model year', len: 8, optional: true },
   { key: 'vehicleFuel', group: 'vehicle', label: 'Fuel type', len: 16, hint: 'e.g. Electric' },
   { key: 'vehicleListValue', group: 'vehicle', label: 'List price when supplied', len: 16,
-    hint: 'e.g. £120,000' },
-  { key: 'vehicleMileage', group: 'vehicle', label: 'Odometer at handover', len: 12, hint: 'e.g. 12,450' },
+    hint: 'e.g. £120,000', optional: true },
+  { key: 'vehicleMileage', group: 'vehicle', label: 'Odometer at handover', len: 12, hint: 'e.g. 12,450',
+    stage: 'handover' },
 
   // ── Term ────────────────────────────────────────────────────────────────
   { key: 'startDate', group: 'term', label: 'Start date', len: 16, type: 'date' },
   { key: 'endDate', group: 'term', label: 'End date', len: 16, type: 'date',
-    hint: 'Leave blank for a rolling agreement' },
+    hint: 'Leave blank for a rolling agreement', optional: true },
   { key: 'termWeeks', group: 'term', label: 'Term (weeks)', len: 10,
-    hint: 'e.g. 52' },
+    hint: 'e.g. 52', optional: true },
   { key: 'noticePeriod', group: 'term',
     label: 'Customer’s notice period to terminate (one month = 4 weeks)', len: 30,
     hint: 'one month (4 weeks)' },
@@ -119,34 +120,55 @@ export const FIELDS = [
   { key: 'vatRate', group: 'money', label: 'VAT rate applied', len: 10, hint: 'e.g. 20%' },
   { key: 'depositAmount', group: 'money', label: 'Security deposit', len: 16, hint: 'e.g. £500.00' },
   { key: 'includedMilesPerWeek', group: 'money', label: 'Mileage included each week', len: 12,
-    hint: 'e.g. 250' },
+    hint: 'e.g. 800 (3,200 miles a month, pro rata)' },
   { key: 'excessMileRate', group: 'money', label: 'Charge per mile over the allowance', len: 16,
     hint: 'e.g. £0.25' },
   { key: 'paymentMethod', group: 'money', label: 'How the rent is paid', len: 30,
     hint: 'e.g. Direct debit on the last working day of each week' },
-  { key: 'latePaymentInterestRate', group: 'money', label: 'Interest on late payment', len: 24,
-    hint: 'e.g. 4% above the Bank of England base rate' },
+  // Brownhill's standard hire is a hire, not credit: it carries no interest.
+  // The remedy for late payment is a fixed charge plus the right to terminate
+  // (clause 14), and the remedy for holding the Vehicle past the end date is
+  // a separate late return charge (clause 11.3).
+  { key: 'latePaymentCharge', group: 'money', label: 'Late payment charge', len: 28,
+    hint: 'e.g. £20.00 per day' },
+  { key: 'lateReturnCharge', group: 'money', label: 'Late return charge', len: 28,
+    hint: 'e.g. £118.00 per day' },
   { key: 'firstPaymentDate', group: 'money', label: 'First payment due', len: 16, type: 'date' },
 
   // ── Cover ───────────────────────────────────────────────────────────────
-  { key: 'damageExcessAmount', group: 'cover', label: 'Customer’s insurance excess, per claim', len: 16,
+  // The standard hire comes in two editions and the cover section differs
+  // between them, so the insurance fields are tagged with the edition they
+  // belong to. `only: 'self'` fields appear in the self-insured edition only;
+  // `only: 'company'` fields in the company-insured edition only.
+  { key: 'damageExcessAmount', group: 'cover', label: 'Insurance excess, per claim', len: 16,
     hint: 'e.g. £1,000.00' },
   { key: 'breakdownNumber', group: 'cover', label: 'Breakdown assistance number', len: 26,
     hint: 'e.g. 0800 123 4567' },
-  { key: 'insuranceProvider', group: 'cover', label: 'Customer’s insurer', len: 30,
+  { key: 'insuranceProvider', group: 'cover', label: 'Customer’s insurer', len: 30, only: 'self',
     hint: 'e.g. Aviva plc' },
-  { key: 'insurancePolicyNumber', group: 'cover', label: 'Insurance policy number', len: 22 },
-  { key: 'insuranceExpiryDate', group: 'cover', label: 'Insurance expires on', len: 16, type: 'date' },
-  { key: 'insuranceEvidenceDate', group: 'cover', label: 'Insurance evidence provided on', len: 16, type: 'date' },
+  { key: 'insurancePolicyNumber', group: 'cover', label: 'Customer’s insurance policy number', len: 22, only: 'self' },
+  { key: 'insuranceExpiryDate', group: 'cover', label: 'Customer’s insurance expires on', len: 16, type: 'date', only: 'self' },
+  { key: 'insuranceEvidenceDate', group: 'cover', label: 'Customer’s insurance evidence provided on', len: 16, type: 'date',
+    only: 'self', optional: true },
+  { key: 'companyPolicyInsurer', group: 'cover', label: 'Lessor’s fleet insurer', len: 30, only: 'company',
+    hint: 'e.g. Aviva plc', optional: true },
+  { key: 'companyPolicyNumber', group: 'cover', label: 'Lessor’s fleet policy number', len: 22, only: 'company',
+    optional: true },
+  { key: 'companyPolicyExpiry', group: 'cover', label: 'Lessor’s fleet policy expires on', len: 16, type: 'date',
+    only: 'company', optional: true },
 
   // ── Handover ────────────────────────────────────────────────────────────
-  { key: 'handoverDate', group: 'handover', label: 'Date the Vehicle was handed over', len: 16, type: 'date' },
+  // Completed on the day the Vehicle changes hands, not when the agreement is
+  // drafted. `stage: 'handover'` keeps them out of the list of things the
+  // operator must chase before signing.
+  { key: 'handoverDate', group: 'handover', label: 'Date the Vehicle was handed over', len: 16, type: 'date',
+    stage: 'handover' },
   { key: 'handoverFuelLevel', group: 'handover', label: 'Fuel / charge at handover', len: 18,
-    hint: 'e.g. Full' },
+    hint: 'e.g. Full', stage: 'handover' },
   { key: 'handoverConditionNotes', group: 'handover', label: 'Condition noted at handover', len: 60,
-    type: 'textarea', hint: 'e.g. Two small scuffs to offside rear bumper — photographed' },
+    type: 'textarea', hint: 'e.g. Two small scuffs to offside rear bumper — photographed', stage: 'handover' },
   { key: 'keysProvided', group: 'handover', label: 'Keys and equipment provided', len: 40,
-    hint: 'e.g. Two keys, charger, tyre repair kit' },
+    hint: 'e.g. Two keys, charger, tyre repair kit', stage: 'handover' },
 ];
 
 /** Look up a field by key, including the return-only ones. */
@@ -167,8 +189,24 @@ export function placeholderFor(key) {
  * `{{key}}` tokens.
  */
 export const BLOCKS = [
-  { t: 'title', text: 'VEHICLE RENTAL AGREEMENT' },
-  { t: 'subtitle', text: 'Standard rental — Schedule 1 and Schedule 2 form part of this agreement.' },
+  // The edition is named on the face of the document. An operator who has both
+  // editions open must never confuse them.
+  { t: 'title', only: 'company', text: 'VEHICLE RENTAL AGREEMENT' },
+  { t: 'title', only: 'self', text: 'VEHICLE RENTAL AGREEMENT — SELF-INSURED EDITION' },
+  {
+    t: 'subtitle',
+    only: 'company',
+    text:
+      'Standard rental — the Lessor insures the Vehicle. ' +
+      'Schedule 1 and Schedule 2 form part of this agreement.',
+  },
+  {
+    t: 'subtitle',
+    only: 'self',
+    text:
+      'Standard rental — the Customer insures the Vehicle. ' +
+      'Schedule 1 and Schedule 2 form part of this agreement.',
+  },
   { t: 'meta', text: 'Agreement reference: {{agreementReference}}   |   Date: {{agreementDate}}' },
 
   { t: 'h1', text: 'The parties' },
@@ -207,7 +245,7 @@ export const BLOCKS = [
       ['“Loss”', 'loss of or damage to the Vehicle (including a total loss), the cost of recovering or repairing it, the diminution in its value, and the loss of use of it.'],
       ['“Notice”', 'a notice in writing delivered by hand, by post to the relevant postal address, or by email to the relevant email address.'],
       ['“Rent”', 'the weekly rental amount stated in Schedule 1.'],
-      ['“Term”', 'the period beginning on the Start Date and ending on the End Date, or ending when the Vehicle is returned to the Lessor, whichever is earlier.'],
+      ['“Term”', 'the period beginning on the Start Date and ending on the end date stated in Schedule 1, or ending when the Vehicle is returned to the Lessor, whichever is earlier.'],
       ['“Vehicle”', 'the vehicle described in Schedule 1, together with its keys, its MOT certificate, its registration document and the equipment listed in Schedule 2.'],
     ],
   },
@@ -236,9 +274,9 @@ export const BLOCKS = [
   {
     t: 'p',
     text:
-      '2.2 The Term is: (a) a fixed term of {{termWeeks}} weeks ending on {{endDate}}; or ' +
-      '(b) a rolling agreement continuing until terminated under clause 2.3 or clause 14. ' +
-      '[Complete one only — delete the other.]',
+      '2.2 The Term is the period stated in Schedule 1. ' +
+      'Where an end date is stated in Schedule 1, the Term is a fixed term ending on that date; ' +
+      'where no end date is stated, this is a rolling agreement continuing until terminated under clause 2.3 or clause 14.',
   },
   {
     t: 'p',
@@ -254,9 +292,16 @@ export const BLOCKS = [
   {
     t: 'p',
     text:
-      '2.5 Because the Customer insures the Vehicle in their own name and at their own cost (clause 6), ' +
-      'the Customer may end this agreement on {{noticePeriod}} written Notice without paying any early termination charge. ' +
-      'The Customer must still return the Vehicle in accordance with clause 15 and pay every Charge that has already fallen due.',
+      '2.5 The Customer may cancel this agreement within 14 days of signing it, without giving any reason and without paying anything. ' +
+      'If the Customer cancels under this clause, the Customer must return the Vehicle to the Lessor and the Deposit is refunded in full. ' +
+      'This clause does not take away any other right the Customer has to cancel this agreement.',
+  },
+  {
+    t: 'p',
+    text:
+      '2.6 Nothing in this agreement takes away any right the Customer has under the Consumer Credit Act 1974 to cancel this agreement, ' +
+      'including the right to cancel a hire with a repayment obligation once the Customer has paid one third of the total amount payable. ' +
+      'The Customer must in any event return the Vehicle in accordance with clause 15 and pay every Charge that has already fallen due.',
   },
 
   { t: 'h1', text: '3. Rent and payment' },
@@ -277,9 +322,10 @@ export const BLOCKS = [
     t: 'p',
     text:
       '3.3 The Rent is payable by {{paymentMethod}}. ' +
-      'If the Rent is not paid when due, the Customer must pay interest on the overdue amount at ' +
-      '{{latePaymentInterestRate}}, calculated from the due date until payment is received. ' +
-      'Interest is payable on demand and the Lessor may recover its reasonable costs of recovering overdue sums.',
+      'If the Rent is not paid when due, the Customer must pay a late payment charge of {{latePaymentCharge}} ' +
+      'for each day or part day the Rent remains unpaid, together with the Lessor’s reasonable costs of recovering the overdue amount. ' +
+      'That charge is a fixed charge and is not interest. ' +
+      'Where the Rent remains unpaid for three days or more, the Lessor may end this agreement under clause 14.',
   },
   {
     t: 'p',
@@ -328,55 +374,114 @@ export const BLOCKS = [
   },
 
   { t: 'h1', text: '6. Insurance, licensing and the risk' },
+
+  // ── 6.1–6.5, COMPANY-INSURED EDITION ───────────────────────────────────────
+  // The vehicle rides on Brownhill's own fleet policy and the hirer pays the
+  // excess. This is the default: a hirer with no policy of their own on file
+  // is covered by the company.
   {
     t: 'p',
+    only: 'company',
     text:
-      '6.1 The Vehicle is insured by the Customer, not by the Lessor. ' +
-      'The Lessor does not carry any motor insurance for the Customer’s use of the Vehicle, and nothing in this agreement makes the Lessor responsible for a claim that the Customer’s own policy does not meet. ' +
+      '6.1 The Vehicle is hired with motor insurance arranged by the Lessor for private hire (hire and reward) use in the United Kingdom, ' +
+      'under the Lessor’s fleet policy. ' +
+      'The details of that policy are set out in Schedule 1, and the Lessor will notify the Customer of any replacement policy. ' +
+      'Nothing in this agreement makes the Customer responsible for the cost of that insurance.',
+  },
+  {
+    t: 'p',
+    only: 'company',
+    text:
+      '6.2 The Customer is responsible for the insurance excess of {{damageExcessAmount}} on any claim, ' +
+      'payable on demand and recoverable from the Deposit. ' +
+      'The Customer authorises the Lessor to handle claims relating to the Vehicle on the Customer’s behalf.',
+  },
+  {
+    t: 'p',
+    only: 'company',
+    text:
+      '6.3 The Customer must comply with all the conditions of the Lessor’s policy at all times, ' +
+      'and must not do anything that invalidates it, or that the Lessor’s insurer does not permit the Customer to do.',
+  },
+  {
+    t: 'p',
+    only: 'company',
+    text:
+      '6.4 The Customer must tell the Lessor immediately of any accident, however minor, and of any claim, ' +
+      'and must not admit liability to a third party without the Lessor’s written authority. ' +
+      'The Customer must give the Lessor all the assistance and information the Lessor reasonably needs in connection with any claim.',
+  },
+  {
+    t: 'p',
+    only: 'company',
+    text:
+      '6.5 The Lessor is the sole beneficiary of any insurance claim settlement in respect of the Vehicle. ' +
+      'Any payment is applied first to the repair of the Vehicle and then to the Lessor’s Loss, and the Customer must pay any shortfall.',
+  },
+
+  // ── 6.1–6.5, SELF-INSURED EDITION ─────────────────────────────────────────
+  // The hirer brings their own policy, so the Lessor carries none. This is
+  // what a hirer with a policy of their own on file gets.
+  {
+    t: 'p',
+    only: 'self',
+    text:
+      '6.1 The Vehicle is hired exclusive of insurance. ' +
+      'The Lessor does not carry any motor insurance for the Customer’s use of the Vehicle, ' +
+      'and nothing in this agreement makes the Lessor responsible for a claim that the Customer’s own policy does not meet. ' +
       'The cost of the Customer’s insurance is the Customer’s own and is not included in the Rent.',
   },
   {
     t: 'p',
+    only: 'self',
     text:
-      '6.2 The Customer must hold a current UK motor insurance policy that covers the Vehicle and the Customer for the whole of the Term, ' +
-      'and that permits the Customer to use the Vehicle for the purposes allowed by this agreement. ' +
-      'The policy must be comprehensive or better, must cover third-party liability to at least the statutory minimum, ' +
-      'and must not be a third-party-only policy.',
+      '6.2 The Customer must obtain and maintain, at their own expense and throughout the Term, a UK motor insurance policy that: ' +
+      '(a) covers the Vehicle for private hire (hire and reward) use in the United Kingdom; ' +
+      '(b) provides third-party liability cover of at least £5,000,000; ' +
+      '(c) names the Lessor as an interested party; and ' +
+      '(d) is comprehensive or better, and is not a third-party-only policy.',
   },
   {
     t: 'p',
+    only: 'self',
     text:
-      '6.3 The Customer must provide the Lessor with the policy schedule and the certificate of motor insurance before taking the Vehicle. ' +
-      'The details given in Schedule 1 are: insurer {{insuranceProvider}}, policy number {{insurancePolicyNumber}}, ' +
-      'policy expiring on {{insuranceExpiryDate}}, evidence provided on {{insuranceEvidenceDate}}. ' +
-      'The Customer must provide a replacement document within 7 days of each renewal and within 7 days of any change to the policy.',
+      '6.3 The Customer must provide the Lessor with the certificate of motor insurance and the policy schedule before taking the Vehicle, ' +
+      'and with a replacement within 48 hours of each renewal and within 7 days of any change to the policy. ' +
+      'The details of the policy provided are set out in Schedule 1.',
   },
   {
     t: 'p',
+    only: 'self',
     text:
       '6.4 The Customer must tell the Lessor in writing within 7 days if their policy is cancelled, if their insurer withdraws cover, ' +
-      'if their licence is revoked or surrendered, or if the Customer becomes subject to any medical condition or court order affecting their entitlement to drive or to hold a policy.',
+      'if their licence is revoked or surrendered, or if the Customer becomes subject to any medical condition or court order ' +
+      'affecting their entitlement to drive or to hold a policy. ' +
+      'Any lapse in insurance is a material breach of this agreement.',
   },
   {
     t: 'p',
+    only: 'self',
     text:
-      '6.5 The Customer must not drive, or permit anyone else to drive, the Vehicle unless the Vehicle is insured in accordance with clause 6.2, ' +
-      'and must comply with every term of their policy that applies to their use of the Vehicle. ' +
+      '6.5 The Customer must not drive, or permit anyone else to drive, the Vehicle unless it is insured in accordance with clause 6.2, ' +
+      'and must comply with every term of the policy that applies to their use of it. ' +
       'The Customer is responsible for the insurance excess of {{damageExcessAmount}} in respect of each claim, ' +
       'and if the Vehicle is not insured, or is insured below what clause 6.2 requires, the Customer bears the whole of any Loss.',
   },
+
+  // ── 6.6–6.8, BOTH EDITIONS ────────────────────────────────────────────────
   {
     t: 'p',
     text:
-      '6.6 The Customer must hold a current, valid driving licence of the type stated in Schedule 1 (' +
-      '{{customerLicenceType}}, licence number {{customerLicenceNumber}}). ' +
-      'The Lessor may ask the Customer to produce their licence and their insurance documents at any time during the Term, ' +
-      'and may suspend the hire if the Customer cannot produce them.',
+      '6.6 The Customer must hold a current, valid driving licence of the type stated in Schedule 1, ' +
+      'and must produce their licence on request. ' +
+      'The Lessor may ask the Customer to produce their licence at any time during the Term, ' +
+      'and may suspend the hire if the Customer cannot produce it.',
   },
   {
     t: 'p',
     text:
-      '6.7 The Customer must not carry any passenger or goods for reward, use the Vehicle for any unlawful purpose, ' +
+      '6.7 The Customer must not carry any passenger or goods for reward otherwise than under a private hire operator licence ' +
+      'the Lessor has been told about, use the Vehicle for any unlawful purpose, ' +
       'or drive it under the influence of alcohol, drugs or any substance impairing driving. ' +
       'Where the Vehicle is used for carrying passengers for hire, the Customer must hold the appropriate private hire operator licence ' +
       'and comply with it, and must tell the Lessor that they hold one.',
@@ -412,7 +517,8 @@ export const BLOCKS = [
   {
     t: 'p',
     text:
-      '8.1 If the Vehicle breaks down, the Customer must telephone {{breakdownNumber}} and must not authorise any repair, ' +
+      '8.1 If the Vehicle breaks down, the Customer must telephone the Lessor on the breakdown line stated in Schedule 1 ' +
+      'and must not authorise any repair, ' +
       'except where the Vehicle cannot be driven to the nearest garage and immediate roadside repair is necessary to protect the Vehicle or the Customer’s safety.',
   },
   {
@@ -484,6 +590,13 @@ export const BLOCKS = [
       '11.2 The Customer must tell the Lessor immediately of any notice received, and must not contest a notice that the Lessor has asked the Customer to contest ' +
       'without first notifying the Lessor. ' +
       'The Lessor may recover the cost of the Vehicle being unavailable while a notice is contested.',
+  },
+  {
+    t: 'p',
+    text:
+      '11.3 If the Vehicle is not returned on the end date stated in Schedule 1, or on the date the Lessor requires it to be returned under clause 14, ' +
+      'the Customer must pay a late return charge of {{lateReturnCharge}} for each day or part day the Vehicle is late, ' +
+      'together with the Lessor’s loss of use of the Vehicle.',
   },
 
   { t: 'h1', text: '12. The Customer’s obligations' },
@@ -668,7 +781,8 @@ export const BLOCKS = [
       ['Customer date of birth', '{{customerDob}}'],
       ['Customer telephone', '{{customerPhone}}'],
       ['Customer email address', '{{customerEmail}}'],
-      ['Customer driving licence', '{{customerLicenceType}}, number {{customerLicenceNumber}}'],
+      ['Type of licence held', '{{customerLicenceType}}'],
+      ['Driving licence number', '{{customerLicenceNumber}}'],
       ['Agreement reference', '{{agreementReference}}'],
       ['Date of agreement', '{{agreementDate}}'],
       ['Vehicle make and model', '{{vehicleMake}} {{vehicleModel}}'],
@@ -679,8 +793,8 @@ export const BLOCKS = [
       ['Fuel type', '{{vehicleFuel}}'],
       ['List price when supplied', '{{vehicleListValue}}'],
       ['Start date', '{{startDate}}'],
-      ['End date', '{{endDate}}'],
-      ['Term', '{{termWeeks}} weeks'],
+      ['End date (blank for a rolling agreement)', '{{endDate}}'],
+      ['Term in weeks (blank for a rolling agreement)', '{{termWeeks}}'],
       ['Customer’s notice period to terminate', '{{noticePeriod}}'],
       ['Weekly rent including VAT', '{{weeklyRentGross}}'],
       ['Weekly rent excluding VAT', '{{weeklyRentNet}}'],
@@ -688,11 +802,20 @@ export const BLOCKS = [
       ['Security deposit', '{{depositAmount}}'],
       ['Included mileage per week', '{{includedMilesPerWeek}} miles'],
       ['Charge per excess mile', '{{excessMileRate}}'],
-      ['Customer’s insurance — insurer', '{{insuranceProvider}}'],
-      ['Customer’s insurance — policy number', '{{insurancePolicyNumber}}'],
-      ['Customer’s insurance — expires on', '{{insuranceExpiryDate}}'],
-      ['Customer’s insurance — evidence provided on', '{{insuranceEvidenceDate}}'],
-      ['Customer’s insurance excess per claim', '{{damageExcessAmount}}'],
+      ['Late payment charge', '{{latePaymentCharge}}'],
+      ['Late return charge', '{{lateReturnCharge}}'],
+      // ── Insurance particulars: these rows differ by edition ──────────────
+      // The self-insured edition records the Customer's own policy; the
+      // company-insured edition records Brownhill's fleet policy. Only the
+      // excess is common to both.
+      { only: 'self', cells: ['Customer’s insurance — insurer', '{{insuranceProvider}}'] },
+      { only: 'self', cells: ['Customer’s insurance — policy number', '{{insurancePolicyNumber}}'] },
+      { only: 'self', cells: ['Customer’s insurance — expires on', '{{insuranceExpiryDate}}'] },
+      { only: 'self', cells: ['Customer’s insurance — evidence provided on', '{{insuranceEvidenceDate}}'] },
+      { only: 'company', cells: ['Lessor’s fleet policy — insurer', '{{companyPolicyInsurer}}'] },
+      { only: 'company', cells: ['Lessor’s fleet policy — policy number', '{{companyPolicyNumber}}'] },
+      { only: 'company', cells: ['Lessor’s fleet policy — expires on', '{{companyPolicyExpiry}}'] },
+      ['Insurance excess per claim', '{{damageExcessAmount}}'],
       ['Payment method', '{{paymentMethod}}'],
       ['First payment due', '{{firstPaymentDate}}'],
       ['Breakdown assistance', '{{breakdownNumber}}'],
@@ -745,11 +868,42 @@ export const RETURN_ONLY_FIELDS = [
   { key: 'returnConditionNotes', label: 'Condition noted on return', len: 60, type: 'textarea' },
 ];
 
-/** Document metadata, shared by both renderers. */
-export const META = {
-  title: 'Vehicle Rental Agreement',
-  subtitle: 'Standard rental',
-  filenameBase: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement',
-  docxFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement.docx',
-  htmlFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Fillable.html',
+/**
+ * The two editions of the standard hire.
+ *
+ * Brownhill insures the Vehicle for a company-insured hire and asks the
+ * Customer to insure it for a self-insured hire. The two need different
+ * insurance wording, different particulars in Schedule 1 and different
+ * documents, so they are built as two variants of one content module rather
+ * than two near-identical modules that would drift apart.
+ *
+ * `company` is the default edition: a hire with no policy of the Customer's
+ * own on file is covered by Brownhill's fleet policy.
+ */
+export const VARIANTS = ['company', 'self'];
+
+/** Document metadata for each edition, shared by both renderers. */
+export const VARIANT_META = {
+  company: {
+    title: 'Vehicle Rental Agreement',
+    subtitle: 'Standard rental — company insured',
+    filenameBase: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement',
+    docxFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement.docx',
+    htmlFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Fillable.html',
+    footerLabel: 'Vehicle Rental Agreement',
+    panelNote:
+      'This is the company-insured edition: Brownhill insures the Vehicle and the Customer pays the excess on any claim. ' +
+      'The “on return” column of Schedule 2 is completed by the Lessor when the Vehicle comes back.',
+  },
+  self: {
+    title: 'Vehicle Rental Agreement (Self-Insured Edition)',
+    subtitle: 'Standard rental — self insured',
+    filenameBase: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Self-Insured',
+    docxFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Self-Insured.docx',
+    htmlFilename: 'Brownhill-Fleet-Standard-Vehicle-Rental-Agreement-Self-Insured-Fillable.html',
+    footerLabel: 'Vehicle Rental Agreement (Self-Insured)',
+    panelNote:
+      'This is the self-insured edition: the Customer insures the Vehicle and must name the Lessor as an interested party. ' +
+      'The “on return” column of Schedule 2 is completed by the Lessor when the Vehicle comes back.',
+  },
 };

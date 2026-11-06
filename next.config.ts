@@ -89,10 +89,11 @@ const nextConfig: NextConfig = {
         },
       }
     : {}),
-  // The contract-generation route reads the HTML templates in docs/business at
-  // runtime; make sure they're traced into the serverless bundle on Vercel.
+  // The contract-generation route reads the HTML templates in docs/contracts at
+  // runtime; make sure they're traced into the serverless bundle on Vercel and
+  // into the standalone build the Brownhill desktop shell packages.
   outputFileTracingIncludes: {
-    '/api/contracts/[agreementId]': ['./docs/business/**'],
+    '/api/contracts/[agreementId]': ['./docs/contracts/**'],
   },
   experimental: {
     // Document uploads go through Server Actions, whose request body defaults to 1 MB.

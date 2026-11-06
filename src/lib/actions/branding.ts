@@ -54,6 +54,10 @@ const FIELDS: (keyof TenantBranding)[] = [
   "vat_number",
   "company_number",
   "contract_footer",
+  "fleet_insurer",
+  "fleet_policy_number",
+  "fleet_policy_expiry",
+  "breakdown_number",
 ];
 
 /** Save the tenant's branding/customization. Gated to tenant admins/owners. */
